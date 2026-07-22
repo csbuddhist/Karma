@@ -1,4 +1,4 @@
-use std::ffi::c_void;
+use std::{ffi::c_void, marker::PhantomData, rc::Rc};
 
 use karma_domain::MonitorId;
 use thiserror::Error;
@@ -7,7 +7,10 @@ use windows::{
     Win32::{
         Foundation::{LPARAM, RECT},
         Graphics::Gdi::{EnumDisplayMonitors, HDC, HMONITOR},
-        System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop,
+        System::WinRT::{
+            Graphics::Capture::IGraphicsCaptureItemInterop, RO_INIT_MULTITHREADED, RoInitialize,
+            RoUninitialize,
+        },
         UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId},
     },
     core,
@@ -47,6 +50,30 @@ pub enum WindowsAdapterError {
 impl WindowsAdapterError {
     fn api(operation: &'static str, source: core::Error) -> Self {
         Self::WindowsApi { operation, source }
+    }
+}
+
+pub struct WindowsRuntimeApartment {
+    _thread_bound: PhantomData<Rc<()>>,
+}
+
+impl WindowsRuntimeApartment {
+    pub fn initialize_mta() -> Result<Self, WindowsAdapterError> {
+        // SAFETY: the Agent initializes WinRT once on its startup thread and the
+        // returned guard balances the successful call with RoUninitialize.
+        unsafe { RoInitialize(RO_INIT_MULTITHREADED) }
+            .map_err(|source| WindowsAdapterError::api("RoInitialize", source))?;
+        Ok(Self {
+            _thread_bound: PhantomData,
+        })
+    }
+}
+
+impl Drop for WindowsRuntimeApartment {
+    fn drop(&mut self) {
+        // SAFETY: this guard is created only after a successful RoInitialize on
+        // the same thread and is neither Send nor moved across the startup path.
+        unsafe { RoUninitialize() };
     }
 }
 

@@ -10,5 +10,5 @@ pub use attribution::{
 #[cfg(windows)]
 pub use native::{
     ForegroundWindowSnapshot, MonitorHandle, MonitorSnapshot, WgcCaptureTarget,
-    WindowsAdapterError, enumerate_active_monitors, foreground_window,
+    WindowsAdapterError, WindowsRuntimeApartment, enumerate_active_monitors, foreground_window,
 };
