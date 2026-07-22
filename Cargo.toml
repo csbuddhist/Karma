@@ -1,5 +1,10 @@
 [workspace]
-members = ["crates/karma-ai", "crates/karma-domain", "crates/karma-policy"]
+members = [
+    "crates/karma-ai",
+    "crates/karma-domain",
+    "crates/karma-policy",
+    "crates/karma-windows",
+]
 resolver = "2"
 
 [workspace.package]

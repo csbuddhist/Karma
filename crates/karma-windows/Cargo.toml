@@ -1,0 +1,10 @@
+[package]
+name = "karma-windows"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+karma-domain = { path = "../karma-domain" }
+thiserror.workspace = true
