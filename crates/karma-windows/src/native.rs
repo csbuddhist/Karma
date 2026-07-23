@@ -183,6 +183,10 @@ impl WgcCaptureTarget {
         }
         Ok((size.Width as u32, size.Height as u32))
     }
+
+    pub(crate) fn capture_item(&self) -> &GraphicsCaptureItem {
+        &self.item
+    }
 }
 
 #[cfg(test)]

@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+karma-ai = { path = "../karma-ai" }
 karma-domain = { path = "../karma-domain" }
 thiserror.workspace = true
 

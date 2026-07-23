@@ -6,6 +6,8 @@ mod capture_state;
 mod d3d11_device;
 #[cfg(windows)]
 mod native;
+#[cfg(windows)]
+mod wgc_session;
 
 pub use attribution::{
     AttributedWindow, AttributionResult, Rect, SourceAttributor, UnreliableReason, WindowCandidate,
@@ -18,3 +20,5 @@ pub use native::{
     ForegroundWindowSnapshot, MonitorHandle, MonitorSnapshot, WgcCaptureTarget,
     WindowsAdapterError, WindowsRuntimeApartment, enumerate_active_monitors, foreground_window,
 };
+#[cfg(windows)]
+pub use wgc_session::{CapturedGpuFrame, WgcCaptureSession};

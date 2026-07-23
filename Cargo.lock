@@ -59,6 +59,7 @@ dependencies = [
 name = "karma-windows"
 version = "0.1.0"
 dependencies = [
+ "karma-ai",
  "karma-domain",
  "thiserror",
  "windows",
