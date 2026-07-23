@@ -1,10 +1,12 @@
 #![forbid(unsafe_code)]
 
+mod frame;
 mod manifest;
 mod observation;
 mod scheduler;
 mod word_pack;
 
+pub use frame::{BgraFrame, FrameDimensions, FrameError, PreparedFrame};
 pub use manifest::{AssetKind, AssetManifest, ManifestError};
 pub use observation::{ImageInference, ObservationAssembler, ObservationInput};
 pub use scheduler::{FrameMetadata, FrameScheduler, FrameWork};
