@@ -1,0 +1,59 @@
+{
+  "asset": {
+    "kind": "image_classifier",
+    "license": "Apache-2.0",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "version": "viddexa-nano-1"
+  },
+  "file_bytes": 1,
+  "file_name": "model.onnx",
+  "input": {
+    "color_order": "rgb",
+    "layout": "nchw",
+    "mean": [
+      0.485,
+      0.456,
+      0.406
+    ],
+    "name": "pixel_values",
+    "scale": 0.00392156862745098,
+    "shape": [
+      1,
+      3,
+      224,
+      224
+    ],
+    "std": [
+      0.47853944,
+      0.4732864,
+      0.47434163
+    ]
+  },
+  "labels": [
+    {
+      "index": 0,
+      "name": "normal"
+    },
+    {
+      "index": 1,
+      "name": "hentai"
+    },
+    {
+      "index": 2,
+      "name": "porn"
+    },
+    {
+      "index": 3,
+      "name": "sexy"
+    },
+    {
+      "index": 4,
+      "name": "drawing"
+    }
+  ],
+  "minimum_runtime_version": "1.22",
+  "opset": 18,
+  "output_name": "logits",
+  "source_repository": "https://huggingface.co/viddexa/nsfw-detection-2-nano",
+  "source_revision": "913bc502e69fa3edfe2cfce72c98cad4ddc6149b"
+}

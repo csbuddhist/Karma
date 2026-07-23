@@ -1,2 +1,5 @@
 .worktrees/
 target/
+tools/model-export/.venv/
+tools/model-export/__pycache__/
+target/

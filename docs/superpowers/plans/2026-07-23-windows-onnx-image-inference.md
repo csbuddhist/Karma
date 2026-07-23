@@ -48,7 +48,7 @@
 - [ ] **Step 1: Write failing manifest tests**
 
 Add tests that construct a valid manifest with `[1, 3, 224, 224]`, five indexed labels, scale
-`1.0 / 255.0`, ImageNet mean/std, and then independently mutate duplicate labels, a non-static
+`1.0 / 255.0`, the pinned EfficientNet processor mean/std, and then independently mutate duplicate labels, a non-static
 shape, zero file length, and a non-HTTPS source.
 
 ```rust
@@ -332,16 +332,19 @@ Expected: import fails because `export_viddexa.py` does not exist.
 Pin:
 
 ```text
-huggingface-hub==0.33.4
+huggingface-hub==0.34.4
 onnx==1.18.0
 onnxruntime==1.22.1
+pillow==11.3.0
 safetensors==0.5.3
 torch==2.7.1
-transformers==4.53.2
+transformers==4.56.1
 ```
 
 Load with `revision=REVISION`, `use_safetensors=True`, `trust_remote_code=False`; export static
-input `[1,3,224,224]` at opset 18; run `onnx.checker.check_model`; compare PyTorch and
+input `[1,3,224,224]` at opset 18. Validate the upstream 1280-kernel pooler, replace it with the
+equivalent `AdaptiveAvgPool2d(1)`, and compare logits before and after replacement. This avoids
+the legacy exporter changing the oversized pooling denominator. Run `onnx.checker.check_model`; compare PyTorch and
 ONNX Runtime logits for a deterministic generated RGB gradient with absolute tolerance `1e-4`;
 write the final byte length and SHA-256 into `manifest.json`.
 
