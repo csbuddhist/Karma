@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, mpsc::SyncSender};
 
 use karma_ai::LatestFrameMailbox;
 use karma_domain::MonitorId;
@@ -92,6 +92,15 @@ fn apply_event(state: &Mutex<CaptureSessionState>, event: CaptureSessionEvent) {
     lock_state(state).apply(event);
 }
 
+fn notify(notifier: &Mutex<Option<SyncSender<()>>>) {
+    let sender = notifier
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(sender) = sender.as_ref() {
+        let _ = sender.try_send(());
+    }
+}
+
 pub struct WgcCaptureSession {
     monitor_id: MonitorId,
     target: WgcCaptureTarget,
@@ -101,6 +110,7 @@ pub struct WgcCaptureSession {
     target_closed_token: Option<i64>,
     mailbox: Arc<LatestFrameMailbox<CapturedGpuFrame>>,
     state: Arc<Mutex<CaptureSessionState>>,
+    notifier: Arc<Mutex<Option<SyncSender<()>>>>,
     stopped: bool,
 }
 
@@ -127,15 +137,18 @@ impl WgcCaptureSession {
 
         let mailbox = Arc::new(LatestFrameMailbox::new());
         let state = Arc::new(Mutex::new(CaptureSessionState::new()));
+        let notifier = Arc::new(Mutex::new(None::<SyncSender<()>>));
         let expected_size = (width, height);
 
         let callback_mailbox = Arc::clone(&mailbox);
         let callback_state = Arc::clone(&state);
+        let callback_notifier = Arc::clone(&notifier);
         let callback_monitor_id = monitor_id.clone();
         let frame_handler =
             TypedEventHandler::<Direct3D11CaptureFramePool, IInspectable>::new(move |sender, _| {
                 let Some(sender) = sender.as_ref() else {
                     apply_event(&callback_state, CaptureSessionEvent::Failed);
+                    notify(&callback_notifier);
                     return Ok(());
                 };
                 let frame = match sender.TryGetNextFrame() {
@@ -143,6 +156,7 @@ impl WgcCaptureSession {
                     Err(_) => {
                         apply_event(&callback_state, CaptureSessionEvent::Failed);
                         let _ = callback_mailbox.take();
+                        notify(&callback_notifier);
                         return Ok(());
                     }
                 };
@@ -155,15 +169,19 @@ impl WgcCaptureSession {
                         ) {
                             callback_mailbox.push(frame);
                             state.apply(CaptureSessionEvent::FrameArrived);
+                            drop(state);
+                            notify(&callback_notifier);
                         }
                     }
                     Ok(_) => {
                         apply_event(&callback_state, CaptureSessionEvent::SizeChanged);
                         let _ = callback_mailbox.take();
+                        notify(&callback_notifier);
                     }
                     Err(_) => {
                         apply_event(&callback_state, CaptureSessionEvent::Failed);
                         let _ = callback_mailbox.take();
+                        notify(&callback_notifier);
                     }
                 }
                 Ok(())
@@ -175,10 +193,12 @@ impl WgcCaptureSession {
 
         let closed_mailbox = Arc::clone(&mailbox);
         let closed_state = Arc::clone(&state);
+        let closed_notifier = Arc::clone(&notifier);
         let closed_handler =
             TypedEventHandler::<GraphicsCaptureItem, IInspectable>::new(move |_, _| {
                 apply_event(&closed_state, CaptureSessionEvent::TargetClosed);
                 let _ = closed_mailbox.take();
+                notify(&closed_notifier);
                 Ok(())
             });
         let target_closed_token = match target.capture_item().Closed(&closed_handler) {
@@ -226,6 +246,7 @@ impl WgcCaptureSession {
             target_closed_token: Some(target_closed_token),
             mailbox,
             state,
+            notifier,
             stopped: false,
         })
     }
@@ -242,11 +263,23 @@ impl WgcCaptureSession {
         self.mailbox.take()
     }
 
+    pub(crate) fn set_frame_notifier(&self, sender: SyncSender<()>) {
+        *self
+            .notifier
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(sender);
+    }
+
     pub fn stop(&mut self) -> Result<(), WindowsAdapterError> {
         if self.stopped {
             return Ok(());
         }
         self.stopped = true;
+        let _ = self
+            .notifier
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
         apply_event(&self.state, CaptureSessionEvent::Stopped);
         let _ = self.mailbox.take();
 
