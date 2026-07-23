@@ -6,4 +6,5 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+karma-ai = { path = "../../crates/karma-ai" }
 karma-windows = { path = "../../crates/karma-windows" }

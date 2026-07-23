@@ -99,7 +99,7 @@ mod native {
     use thiserror::Error;
 
     use super::{FrameWorkerReport, FrameWorkerStatus, WorkerAction, next_action};
-    use crate::{WgcCaptureSession, WindowsFrameProcessor};
+    use crate::{WgcCaptureSession, WindowsFrameProcessor, WindowsRuntimeApartment};
 
     pub trait PreparedFrameConsumer: Send + 'static {
         fn consume(&mut self, frame: PreparedFrame, work: FrameWork);
@@ -139,6 +139,11 @@ mod native {
         notifier: SyncSender<()>,
         report: Arc<Mutex<FrameWorkerReport>>,
     ) {
+        let Ok(_runtime) = WindowsRuntimeApartment::initialize_mta() else {
+            set_status(&report, FrameWorkerStatus::Failed);
+            let _ = session.stop();
+            return;
+        };
         session.set_frame_notifier(notifier);
         set_status(&report, FrameWorkerStatus::Running);
         let mut scheduler = FrameScheduler::default();

@@ -3,8 +3,9 @@ mod startup;
 
 #[cfg(windows)]
 use karma_windows::{
-    MonitorSnapshot, WgcCaptureTarget, WindowsAdapterError, WindowsRuntimeApartment,
-    enumerate_active_monitors,
+    D3d11CaptureDevice, FrameWorkerStatus, MonitorSnapshot, NoopFrameConsumer, WgcCaptureSession,
+    WgcCaptureTarget, WindowsAdapterError, WindowsFrameProcessor, WindowsFrameWorker,
+    WindowsRuntimeApartment, enumerate_active_monitors,
 };
 #[cfg(windows)]
 use startup::{CaptureTargetFactory, MonitorInventory, StartupProbe};
@@ -36,14 +37,51 @@ impl CaptureTargetFactory<MonitorSnapshot> for WindowsCaptureTargetFactory {
 }
 
 #[cfg(windows)]
-fn run_windows() -> Result<(), WindowsAdapterError> {
+fn run_windows() -> Result<(), Box<dyn std::error::Error>> {
     let _runtime = WindowsRuntimeApartment::initialize_mta()?;
     let summary = StartupProbe::run(&WindowsMonitorInventory, &WindowsCaptureTargetFactory);
     println!(
         "status={} monitors={} wgc_ready={} wgc_failed={}",
         summary.status, summary.monitor_count, summary.wgc_ready_count, summary.wgc_failed_count
     );
-    Ok(())
+
+    let mut workers = Vec::new();
+    for monitor in enumerate_active_monitors()? {
+        let result = (|| {
+            // Each monitor owns a separate immediate context because D3D11
+            // immediate contexts must not be used concurrently by workers.
+            let device = D3d11CaptureDevice::new()?;
+            let target = WgcCaptureTarget::for_monitor(monitor.handle)?;
+            let session = WgcCaptureSession::start(monitor.id.clone(), target, &device)?;
+            let processor =
+                WindowsFrameProcessor::new(&device, karma_ai::FramePreparationConfig::default());
+            WindowsFrameWorker::start(session, processor, NoopFrameConsumer)
+                .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)
+        })();
+        match result {
+            Ok(worker) => workers.push(worker),
+            Err(error) => eprintln!(
+                "status=degraded component=frame_pipeline monitor={} error={}",
+                monitor.id.0, error
+            ),
+        }
+    }
+    if workers.is_empty() {
+        return Err(std::io::Error::other("no monitor frame workers started").into());
+    }
+
+    loop {
+        let active = workers.iter().any(|worker| {
+            matches!(
+                worker.report().status(),
+                FrameWorkerStatus::Starting | FrameWorkerStatus::Running
+            )
+        });
+        if !active {
+            return Err(std::io::Error::other("all monitor frame workers stopped").into());
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
 }
 
 #[cfg(windows)]
