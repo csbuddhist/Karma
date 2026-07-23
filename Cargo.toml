@@ -1,0 +1,19 @@
+[workspace]
+members = [
+    "apps/karma-agent-windows",
+    "crates/karma-ai",
+    "crates/karma-domain",
+    "crates/karma-policy",
+    "crates/karma-windows",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"

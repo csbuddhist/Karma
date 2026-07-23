@@ -167,6 +167,10 @@ score >= 0.95                         → 立即处置
 - WGC 不可用时可降级到 DXGI Desktop Duplication，但必须记录降级事件。
 - 锁屏、UAC 安全桌面和受 DRM 保护内容不承诺可采集。
 
+当前仓库已实现 Windows 帧输入切片：每个活动显示器使用独立 D3D11 设备、FreeThreaded WGC 会话和容量 1 最新帧邮箱；优先通过 D3D11 Video Processor 缩放到最长边 640，再映射 bounded staging texture。GPU 路径不可用时可使用受 16K 边长和 256 MiB 上限约束的 CPU 正确性降级，并立即零化临时像素。Agent 当前只把 `PreparedFrame` 交给空推理消费者，尚未接入 ONNX/OCR 或应用处置。
+
+macOS 开发机上的测试和 `x86_64-pc-windows-msvc` 交叉编译只证明便携算法、Rust 类型约束和 Windows API 签名正确；GPU 驱动行为、实际帧颜色、资源释放及多屏性能必须按 [Windows 帧管线真机验收清单](docs/windows-frame-pipeline-acceptance.md) 在 Windows 10 22H2/Windows 11 上验证，未记录该证据前不视为运行时验收完成。
+
 ### macOS
 
 - 使用 `SCShareableContent` 枚举 `SCDisplay`。

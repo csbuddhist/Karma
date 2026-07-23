@@ -1,0 +1,17 @@
+[package]
+name = "karma-ai"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+karma-domain = { path = "../karma-domain" }
+regex = "1"
+serde.workspace = true
+thiserror.workspace = true
+unicode-normalization = "0.1"
+zeroize = "1.8"
+
+[dev-dependencies]
+serde_json.workspace = true
