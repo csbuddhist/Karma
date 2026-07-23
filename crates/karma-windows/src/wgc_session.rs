@@ -21,12 +21,16 @@ use crate::{
 };
 
 pub struct CapturedGpuFrame {
+    monitor_id: MonitorId,
     inner: Option<Direct3D11CaptureFrame>,
 }
 
 impl CapturedGpuFrame {
-    fn new(inner: Direct3D11CaptureFrame) -> Self {
-        Self { inner: Some(inner) }
+    fn new(monitor_id: MonitorId, inner: Direct3D11CaptureFrame) -> Self {
+        Self {
+            monitor_id,
+            inner: Some(inner),
+        }
     }
 
     fn frame(&self) -> &Direct3D11CaptureFrame {
@@ -43,6 +47,10 @@ impl CapturedGpuFrame {
             return Err(WindowsAdapterError::InvalidCaptureSize);
         }
         Ok((size.Width as u32, size.Height as u32))
+    }
+
+    pub fn monitor_id(&self) -> &MonitorId {
+        &self.monitor_id
     }
 
     pub fn surface(&self) -> Result<IDirect3DSurface, WindowsAdapterError> {
@@ -123,6 +131,7 @@ impl WgcCaptureSession {
 
         let callback_mailbox = Arc::clone(&mailbox);
         let callback_state = Arc::clone(&state);
+        let callback_monitor_id = monitor_id.clone();
         let frame_handler =
             TypedEventHandler::<Direct3D11CaptureFramePool, IInspectable>::new(move |sender, _| {
                 let Some(sender) = sender.as_ref() else {
@@ -130,7 +139,7 @@ impl WgcCaptureSession {
                     return Ok(());
                 };
                 let frame = match sender.TryGetNextFrame() {
-                    Ok(frame) => CapturedGpuFrame::new(frame),
+                    Ok(frame) => CapturedGpuFrame::new(callback_monitor_id.clone(), frame),
                     Err(_) => {
                         apply_event(&callback_state, CaptureSessionEvent::Failed);
                         let _ = callback_mailbox.take();
@@ -309,5 +318,10 @@ mod tests {
     fn captured_frame_exposes_monotonic_relative_milliseconds() {
         let _read_time: fn(&CapturedGpuFrame) -> Result<i64, WindowsAdapterError> =
             CapturedGpuFrame::captured_at_ms;
+    }
+
+    #[test]
+    fn captured_frame_keeps_monitor_identity() {
+        let _monitor: fn(&CapturedGpuFrame) -> &MonitorId = CapturedGpuFrame::monitor_id;
     }
 }

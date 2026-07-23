@@ -2,6 +2,7 @@ use karma_ai::FrameDimensions;
 use thiserror::Error;
 
 const MAXIMUM_MAPPED_EDGE: u32 = 640;
+const MAXIMUM_MAPPED_BYTES: usize = 640 * 640 * 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum MappedFrameError {
@@ -13,6 +14,8 @@ pub enum MappedFrameError {
     SourceTooShort { minimum: usize, actual: usize },
     #[error("mapped frame arithmetic overflow")]
     ArithmeticOverflow,
+    #[error("mapped tight frame length {actual} exceeds maximum {maximum}")]
+    ByteLimitExceeded { maximum: usize, actual: usize },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,10 +28,24 @@ pub struct MappedBgraLayout {
 
 impl MappedBgraLayout {
     pub fn new(dimensions: FrameDimensions, row_pitch: usize) -> Result<Self, MappedFrameError> {
+        Self::new_with_limits(
+            dimensions,
+            row_pitch,
+            MAXIMUM_MAPPED_EDGE,
+            MAXIMUM_MAPPED_BYTES,
+        )
+    }
+
+    fn new_with_limits(
+        dimensions: FrameDimensions,
+        row_pitch: usize,
+        maximum_edge: u32,
+        maximum_bytes: usize,
+    ) -> Result<Self, MappedFrameError> {
         let actual_edge = dimensions.width().max(dimensions.height());
-        if actual_edge > MAXIMUM_MAPPED_EDGE {
+        if actual_edge > maximum_edge {
             return Err(MappedFrameError::EdgeExceeded {
-                maximum: MAXIMUM_MAPPED_EDGE,
+                maximum: maximum_edge,
                 actual: actual_edge,
             });
         }
@@ -44,6 +61,15 @@ impl MappedBgraLayout {
         }
         let height = usize::try_from(dimensions.height())
             .map_err(|_| MappedFrameError::ArithmeticOverflow)?;
+        let tight_len = tight_stride
+            .checked_mul(height)
+            .ok_or(MappedFrameError::ArithmeticOverflow)?;
+        if tight_len > maximum_bytes {
+            return Err(MappedFrameError::ByteLimitExceeded {
+                maximum: maximum_bytes,
+                actual: tight_len,
+            });
+        }
         let mapped_len = row_pitch
             .checked_mul(height)
             .ok_or(MappedFrameError::ArithmeticOverflow)?;
@@ -106,13 +132,16 @@ mod native {
     use windows::Win32::Graphics::{
         Direct3D11::{
             D3D11_CPU_ACCESS_READ, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE, D3D11_TEXTURE2D_DESC,
-            D3D11_USAGE_STAGING, ID3D11DeviceContext, ID3D11Texture2D,
+            D3D11_USAGE_STAGING, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
         },
         Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC},
     };
 
     use super::{MappedBgraLayout, MappedFrameError};
     use crate::{D3d11CaptureDevice, WindowsAdapterError};
+
+    const MAXIMUM_FALLBACK_EDGE: u32 = 16_384;
+    const MAXIMUM_FALLBACK_BYTES: usize = 256 * 1024 * 1024;
 
     struct MapGuard<'a> {
         context: &'a ID3D11DeviceContext,
@@ -127,15 +156,17 @@ mod native {
         }
     }
 
-    pub struct StagingTextureReader<'device> {
-        device: &'device D3d11CaptureDevice,
+    pub struct StagingTextureReader {
+        device: ID3D11Device,
+        context: ID3D11DeviceContext,
         staging: Option<(FrameDimensions, ID3D11Texture2D)>,
     }
 
-    impl<'device> StagingTextureReader<'device> {
-        pub fn new(device: &'device D3d11CaptureDevice) -> Self {
+    impl StagingTextureReader {
+        pub fn new(device: &D3d11CaptureDevice) -> Self {
             Self {
-                device,
+                device: device.native_device().clone(),
+                context: device.immediate_context().clone(),
                 staging: None,
             }
         }
@@ -168,11 +199,8 @@ mod native {
                 // SAFETY: the description is fully initialized, no initial data
                 // is supplied, and the output points to live Option storage.
                 unsafe {
-                    self.device.native_device().CreateTexture2D(
-                        &description,
-                        None,
-                        Some(&mut texture),
-                    )
+                    self.device
+                        .CreateTexture2D(&description, None, Some(&mut texture))
                 }
                 .map_err(|source| {
                     WindowsAdapterError::api("ID3D11Device.CreateTexture2D staging", source)
@@ -188,12 +216,14 @@ mod native {
             Ok(&self.staging.as_ref().expect("staging texture exists").1)
         }
 
-        pub fn read(
+        fn read_with_limits(
             &mut self,
             monitor_id: MonitorId,
             captured_at_ms: i64,
             source: &ID3D11Texture2D,
             dimensions: FrameDimensions,
+            maximum_edge: u32,
+            maximum_bytes: usize,
         ) -> Result<BgraFrame, WindowsAdapterError> {
             let mut source_description = D3D11_TEXTURE2D_DESC::default();
             // SAFETY: the description is writable and the source is live.
@@ -205,7 +235,7 @@ mod native {
                 return Err(WindowsAdapterError::StagingSourceMismatch);
             }
 
-            let context = self.device.immediate_context().clone();
+            let context = self.context.clone();
             let staging = self.ensure_staging(dimensions)?;
             // SAFETY: source and staging have matching dimensions and BGRA8
             // format; both resources remain live through Map and row copy.
@@ -225,8 +255,13 @@ mod native {
                     windows::core::Error::empty(),
                 ));
             }
-            let layout = MappedBgraLayout::new(dimensions, mapped.RowPitch as usize)
-                .map_err(WindowsAdapterError::MappedFrame)?;
+            let layout = MappedBgraLayout::new_with_limits(
+                dimensions,
+                mapped.RowPitch as usize,
+                maximum_edge,
+                maximum_bytes,
+            )
+            .map_err(WindowsAdapterError::MappedFrame)?;
             // SAFETY: a successful Map exposes at least RowPitch bytes for each
             // texture row; checked layout arithmetic determines the exact span.
             let source_pixels =
@@ -243,6 +278,40 @@ mod native {
             )
             .map_err(WindowsAdapterError::FrameData)
         }
+
+        pub fn read(
+            &mut self,
+            monitor_id: MonitorId,
+            captured_at_ms: i64,
+            source: &ID3D11Texture2D,
+            dimensions: FrameDimensions,
+        ) -> Result<BgraFrame, WindowsAdapterError> {
+            self.read_with_limits(
+                monitor_id,
+                captured_at_ms,
+                source,
+                dimensions,
+                super::MAXIMUM_MAPPED_EDGE,
+                super::MAXIMUM_MAPPED_BYTES,
+            )
+        }
+
+        pub(crate) fn read_source(
+            &mut self,
+            monitor_id: MonitorId,
+            captured_at_ms: i64,
+            source: &ID3D11Texture2D,
+            dimensions: FrameDimensions,
+        ) -> Result<BgraFrame, WindowsAdapterError> {
+            self.read_with_limits(
+                monitor_id,
+                captured_at_ms,
+                source,
+                dimensions,
+                MAXIMUM_FALLBACK_EDGE,
+                MAXIMUM_FALLBACK_BYTES,
+            )
+        }
     }
 
     impl From<MappedFrameError> for WindowsAdapterError {
@@ -255,15 +324,19 @@ mod native {
     mod tests {
         use super::*;
 
-        fn create_reader(device: &D3d11CaptureDevice) -> StagingTextureReader<'_> {
+        fn create_reader(device: &D3d11CaptureDevice) -> StagingTextureReader {
             StagingTextureReader::new(device)
         }
 
         #[test]
         fn staging_reader_constructor_keeps_device_lifetime() {
-            let _create: for<'device> fn(
-                &'device D3d11CaptureDevice,
-            ) -> StagingTextureReader<'device> = create_reader;
+            let _create: fn(&D3d11CaptureDevice) -> StagingTextureReader = create_reader;
+        }
+
+        #[test]
+        fn staging_reader_can_be_owned_by_a_processing_worker() {
+            fn require_send<T: Send>() {}
+            require_send::<StagingTextureReader>();
         }
     }
 }

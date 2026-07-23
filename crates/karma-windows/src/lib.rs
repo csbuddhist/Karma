@@ -4,6 +4,7 @@ mod attribution;
 mod capture_state;
 #[cfg(windows)]
 mod d3d11_device;
+mod frame_processor;
 #[cfg(windows)]
 mod gpu_frame;
 #[cfg(windows)]
@@ -20,6 +21,9 @@ pub use attribution::{
 pub use capture_state::{CaptureSessionEvent, CaptureSessionState, CaptureSessionStatus};
 #[cfg(windows)]
 pub use d3d11_device::{CaptureDriver, D3d11CaptureDevice};
+pub use frame_processor::FrameProcessingHealth;
+#[cfg(windows)]
+pub use frame_processor::{FrameProcessingError, WindowsFrameProcessor};
 #[cfg(windows)]
 pub use gpu_frame::NativeCaptureTexture;
 #[cfg(windows)]
