@@ -16,6 +16,7 @@ use windows::{
     core,
 };
 
+use crate::MappedFrameError;
 use crate::Rect;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +52,12 @@ pub enum WindowsAdapterError {
     CaptureTextureTooSmall,
     #[error("capture texture has unsupported DXGI format {actual}")]
     UnsupportedCaptureFormat { actual: i32 },
+    #[error("mapped frame layout is invalid")]
+    MappedFrame(#[source] MappedFrameError),
+    #[error("staging source texture does not match the requested frame")]
+    StagingSourceMismatch,
+    #[error("prepared frame data is invalid")]
+    FrameData(#[source] karma_ai::FrameError),
 }
 
 impl WindowsAdapterError {

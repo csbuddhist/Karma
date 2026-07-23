@@ -8,6 +8,7 @@ mod d3d11_device;
 mod gpu_frame;
 #[cfg(windows)]
 mod native;
+mod staging_reader;
 #[cfg(windows)]
 mod wgc_session;
 
@@ -24,5 +25,8 @@ pub use native::{
     ForegroundWindowSnapshot, MonitorHandle, MonitorSnapshot, WgcCaptureTarget,
     WindowsAdapterError, WindowsRuntimeApartment, enumerate_active_monitors, foreground_window,
 };
+#[cfg(windows)]
+pub use staging_reader::StagingTextureReader;
+pub use staging_reader::{MappedBgraLayout, MappedFrameError};
 #[cfg(windows)]
 pub use wgc_session::{CapturedGpuFrame, WgcCaptureSession};
