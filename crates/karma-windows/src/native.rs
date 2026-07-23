@@ -45,6 +45,12 @@ pub enum WindowsAdapterError {
     },
     #[error("capture target returned a non-positive size")]
     InvalidCaptureSize,
+    #[error("capture frame returned a negative relative timestamp")]
+    InvalidCaptureTimestamp,
+    #[error("capture texture is smaller than its content")]
+    CaptureTextureTooSmall,
+    #[error("capture texture has unsupported DXGI format {actual}")]
+    UnsupportedCaptureFormat { actual: i32 },
 }
 
 impl WindowsAdapterError {

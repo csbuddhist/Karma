@@ -5,6 +5,8 @@ mod capture_state;
 #[cfg(windows)]
 mod d3d11_device;
 #[cfg(windows)]
+mod gpu_frame;
+#[cfg(windows)]
 mod native;
 #[cfg(windows)]
 mod wgc_session;
@@ -15,6 +17,8 @@ pub use attribution::{
 pub use capture_state::{CaptureSessionEvent, CaptureSessionState, CaptureSessionStatus};
 #[cfg(windows)]
 pub use d3d11_device::{CaptureDriver, D3d11CaptureDevice};
+#[cfg(windows)]
+pub use gpu_frame::NativeCaptureTexture;
 #[cfg(windows)]
 pub use native::{
     ForegroundWindowSnapshot, MonitorHandle, MonitorSnapshot, WgcCaptureTarget,

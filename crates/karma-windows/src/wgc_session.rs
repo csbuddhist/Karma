@@ -50,6 +50,20 @@ impl CapturedGpuFrame {
             .Surface()
             .map_err(|source| WindowsAdapterError::api("Direct3D11CaptureFrame.Surface", source))
     }
+
+    pub fn captured_at_ms(&self) -> Result<i64, WindowsAdapterError> {
+        let duration = self
+            .frame()
+            .SystemRelativeTime()
+            .map_err(|source| {
+                WindowsAdapterError::api("Direct3D11CaptureFrame.SystemRelativeTime", source)
+            })?
+            .Duration;
+        if duration < 0 {
+            return Err(WindowsAdapterError::InvalidCaptureTimestamp);
+        }
+        Ok(duration / 10_000)
+    }
 }
 
 impl Drop for CapturedGpuFrame {
@@ -289,5 +303,11 @@ mod tests {
             WgcCaptureTarget,
             &D3d11CaptureDevice,
         ) -> Result<WgcCaptureSession, WindowsAdapterError> = WgcCaptureSession::start;
+    }
+
+    #[test]
+    fn captured_frame_exposes_monotonic_relative_milliseconds() {
+        let _read_time: fn(&CapturedGpuFrame) -> Result<i64, WindowsAdapterError> =
+            CapturedGpuFrame::captured_at_ms;
     }
 }
