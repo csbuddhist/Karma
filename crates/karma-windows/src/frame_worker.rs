@@ -17,6 +17,7 @@ pub enum FrameWorkerStatus {
 pub struct FrameWorkerReport {
     status: FrameWorkerStatus,
     processed_frames: u64,
+    gpu_fallbacks: u64,
     processing_failures: u64,
 }
 
@@ -25,6 +26,7 @@ impl Default for FrameWorkerReport {
         Self {
             status: FrameWorkerStatus::Starting,
             processed_frames: 0,
+            gpu_fallbacks: 0,
             processing_failures: 0,
         }
     }
@@ -41,6 +43,10 @@ impl FrameWorkerReport {
 
     pub fn processing_failures(self) -> u64 {
         self.processing_failures
+    }
+
+    pub fn gpu_fallbacks(self) -> u64 {
+        self.gpu_fallbacks
     }
 }
 
@@ -167,11 +173,13 @@ mod native {
                             consumer.consume(prepared, work);
                             let mut current = lock_report(&report);
                             current.processed_frames = current.processed_frames.saturating_add(1);
+                            current.gpu_fallbacks = processor.health().gpu_fallbacks();
                         }
                         Err(_) => {
                             let mut current = lock_report(&report);
                             current.processing_failures =
                                 current.processing_failures.saturating_add(1);
+                            current.gpu_fallbacks = processor.health().gpu_fallbacks();
                             current.status = FrameWorkerStatus::Failed;
                             break;
                         }
@@ -284,6 +292,14 @@ mod tests {
             next_action(false, CaptureSessionStatus::Running, false),
             WorkerAction::Wait
         );
+    }
+
+    #[test]
+    fn worker_report_contains_only_health_counters() {
+        let report = super::FrameWorkerReport::default();
+        assert_eq!(report.processed_frames(), 0);
+        assert_eq!(report.gpu_fallbacks(), 0);
+        assert_eq!(report.processing_failures(), 0);
     }
 
     #[test]
