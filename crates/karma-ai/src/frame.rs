@@ -142,6 +142,22 @@ pub struct PreparedFrame {
 }
 
 impl PreparedFrame {
+    pub(crate) fn new(
+        monitor_id: MonitorId,
+        captured_at_ms: i64,
+        dimensions: FrameDimensions,
+        pixels: Vec<u8>,
+        fingerprint: u64,
+    ) -> Self {
+        Self {
+            monitor_id,
+            captured_at_ms,
+            dimensions,
+            pixels: Zeroizing::new(pixels),
+            fingerprint,
+        }
+    }
+
     pub fn monitor_id(&self) -> &MonitorId {
         &self.monitor_id
     }
