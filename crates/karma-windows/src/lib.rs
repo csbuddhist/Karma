@@ -7,6 +7,8 @@ mod d3d11_device;
 #[cfg(windows)]
 mod gpu_frame;
 #[cfg(windows)]
+mod gpu_scaler;
+#[cfg(windows)]
 mod native;
 mod staging_reader;
 #[cfg(windows)]
@@ -20,6 +22,8 @@ pub use capture_state::{CaptureSessionEvent, CaptureSessionState, CaptureSession
 pub use d3d11_device::{CaptureDriver, D3d11CaptureDevice};
 #[cfg(windows)]
 pub use gpu_frame::NativeCaptureTexture;
+#[cfg(windows)]
+pub use gpu_scaler::{GpuFrameScaler, GpuScalerError};
 #[cfg(windows)]
 pub use native::{
     ForegroundWindowSnapshot, MonitorHandle, MonitorSnapshot, WgcCaptureTarget,
