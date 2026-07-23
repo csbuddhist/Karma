@@ -8,6 +8,9 @@ use crate::{AssetKind, AssetManifest};
 pub const VIDDEXA_REPOSITORY: &str = "https://huggingface.co/viddexa/nsfw-detection-2-nano";
 pub const VIDDEXA_REVISION: &str = "913bc502e69fa3edfe2cfce72c98cad4ddc6149b";
 pub const VIDDEXA_LABELS: [&str; 5] = ["normal", "hentai", "porn", "sexy", "drawing"];
+pub const VIDDEXA_SCALE: f32 = 1.0 / 255.0;
+pub const VIDDEXA_MEAN: [f32; 3] = [0.485, 0.456, 0.406];
+pub const VIDDEXA_STD: [f32; 3] = [0.47853944, 0.4732864, 0.47434163];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -104,14 +107,9 @@ impl ImageModelManifest {
         if self.input.name.trim().is_empty() || self.output_name.trim().is_empty() {
             return Err(ImageManifestError::InvalidTensorName);
         }
-        if !self.input.scale.is_finite()
-            || self.input.scale <= 0.0
-            || self.input.mean.iter().any(|value| !value.is_finite())
-            || self
-                .input
-                .std
-                .iter()
-                .any(|value| !value.is_finite() || *value <= 0.0)
+        if self.input.scale != VIDDEXA_SCALE
+            || self.input.mean != VIDDEXA_MEAN
+            || self.input.std != VIDDEXA_STD
         {
             return Err(ImageManifestError::InvalidNormalization);
         }
@@ -170,9 +168,9 @@ mod tests {
                 shape: [1, 3, 224, 224],
                 layout: TensorLayout::Nchw,
                 color_order: ColorOrder::Rgb,
-                scale: 1.0 / 255.0,
-                mean: [0.485, 0.456, 0.406],
-                std: [0.229, 0.224, 0.225],
+                scale: VIDDEXA_SCALE,
+                mean: VIDDEXA_MEAN,
+                std: VIDDEXA_STD,
             },
             output_name: "logits".into(),
             labels: VIDDEXA_LABELS
@@ -210,15 +208,15 @@ mod tests {
     #[test]
     fn rejects_invalid_normalization() {
         let mut value = valid_manifest();
-        value.input.std[1] = 0.0;
+        value.input.std[1] = 0.473;
 
         assert_eq!(
             value.validate(),
             Err(ImageManifestError::InvalidNormalization)
         );
 
-        value.input.std[1] = 0.224;
-        value.input.mean[0] = f32::NAN;
+        let mut value = valid_manifest();
+        value.input.scale = 1.0;
         assert_eq!(
             value.validate(),
             Err(ImageManifestError::InvalidNormalization)

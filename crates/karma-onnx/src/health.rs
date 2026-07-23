@@ -23,13 +23,13 @@ impl InferenceHealth {
         self.last_latency_micros
     }
 
-    pub(crate) fn record_success(&mut self, latency_micros: u64) {
+    pub fn record_success(&mut self, latency_micros: u64) {
         self.inferences = self.inferences.saturating_add(1);
         self.total_latency_micros = self.total_latency_micros.saturating_add(latency_micros);
         self.last_latency_micros = latency_micros;
     }
 
-    pub(crate) fn record_failure(&mut self) {
+    pub fn record_failure(&mut self) {
         self.failures = self.failures.saturating_add(1);
     }
 }

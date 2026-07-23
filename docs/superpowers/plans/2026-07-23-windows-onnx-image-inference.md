@@ -251,8 +251,9 @@ karma-ai = { path = "../karma-ai" }
 ```
 
 Parse the JSON manifest with a 1 MiB maximum manifest size, validate it, resolve `file_name` only
-inside the manifest directory, reject absolute paths and path components, check metadata length,
-then hash with a 64 KiB buffer using `Sha256`.
+inside the manifest directory, reject absolute paths and path components, and cap the model at
+128 MiB. Read and hash the model through one open file handle, then retain those verified bytes so
+every monitor Session loads the exact bytes that passed SHA-256 verification.
 
 - [ ] **Step 4: Verify asset GREEN**
 

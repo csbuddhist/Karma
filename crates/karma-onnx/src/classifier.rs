@@ -40,7 +40,7 @@ impl OnnxImageClassifier {
             .map_err(|_| InferenceError::new(InferenceErrorKind::RuntimeInitialization))?
             .with_intra_threads(1)
             .map_err(|_| InferenceError::new(InferenceErrorKind::RuntimeInitialization))?
-            .commit_from_file(model.model_path())
+            .commit_from_memory(model.model_bytes())
             .map_err(|_| InferenceError::new(InferenceErrorKind::RuntimeInitialization))?;
         validate_session(&session, model)?;
         let mut indexed_labels = model.manifest().labels.clone();
@@ -58,7 +58,26 @@ impl OnnxImageClassifier {
         self.health
     }
 
-    fn classify_inner(&mut self, frame: &PreparedFrame) -> Result<ImageInference, InferenceError> {
+    pub fn verify_reference_logits(
+        &mut self,
+        frame: &PreparedFrame,
+        expected: &[f32],
+    ) -> Result<(), InferenceError> {
+        if expected.len() != self.labels.len() || expected.iter().any(|value| !value.is_finite()) {
+            return Err(InferenceError::new(InferenceErrorKind::OutputInvalid));
+        }
+        let actual = self.run_logits(frame)?;
+        if actual
+            .iter()
+            .zip(expected)
+            .any(|(actual, expected)| (*actual - *expected).abs() > 1e-4)
+        {
+            return Err(InferenceError::new(InferenceErrorKind::OutputInvalid));
+        }
+        Ok(())
+    }
+
+    fn run_logits(&mut self, frame: &PreparedFrame) -> Result<Vec<f32>, InferenceError> {
         let tensor = ImageTensorBuilder::build(frame, &self.input)
             .map_err(|_| InferenceError::new(InferenceErrorKind::InputPreparation))?;
         let view = ArrayViewD::from_shape(IxDyn(&tensor.shape()), tensor.as_slice())
@@ -78,7 +97,15 @@ impl OnnxImageClassifier {
         if **shape != [1, 5] || logits.len() != self.labels.len() {
             return Err(InferenceError::new(InferenceErrorKind::OutputInvalid));
         }
-        let probabilities = softmax(logits)?;
+        if logits.iter().any(|value| !value.is_finite()) {
+            return Err(InferenceError::new(InferenceErrorKind::OutputInvalid));
+        }
+        Ok(logits.to_vec())
+    }
+
+    fn classify_inner(&mut self, frame: &PreparedFrame) -> Result<ImageInference, InferenceError> {
+        let logits = self.run_logits(frame)?;
+        let probabilities = softmax(&logits)?;
         let classified = ClassifierOutput::new(self.labels.clone(), probabilities)
             .map_err(|_| InferenceError::new(InferenceErrorKind::OutputInvalid))?;
         ViddexaRiskMapper::map(&classified)
@@ -202,7 +229,7 @@ mod tests {
                 color_order: ColorOrder::Rgb,
                 scale: 1.0 / 255.0,
                 mean: [0.485, 0.456, 0.406],
-                std: [0.229, 0.224, 0.225],
+                std: [0.47853944, 0.4732864, 0.47434163],
             },
             output_name: "logits".into(),
             labels: VIDDEXA_LABELS
@@ -237,7 +264,8 @@ mod tests {
 
     #[test]
     fn runs_fixture_and_maps_named_softmax_output() {
-        let (_directory, model) = verified_model("pixel_values");
+        let (directory, model) = verified_model("pixel_values");
+        fs::write(directory.path().join("model.onnx"), b"replaced").unwrap();
         let mut classifier = model.create_classifier().unwrap();
 
         let inference = classifier.classify(&prepared_frame()).unwrap();
@@ -255,6 +283,25 @@ mod tests {
         assert_eq!(
             model.create_classifier().unwrap_err().kind(),
             InferenceErrorKind::ModelContractMismatch
+        );
+    }
+
+    #[test]
+    fn verifies_reference_logits_without_exposing_runtime_output() {
+        let (_directory, model) = verified_model("pixel_values");
+        let mut classifier = model.create_classifier().unwrap();
+
+        assert!(
+            classifier
+                .verify_reference_logits(&prepared_frame(), &[0.0, 1.0, 2.0, 3.0, 4.0])
+                .is_ok()
+        );
+        assert_eq!(
+            classifier
+                .verify_reference_logits(&prepared_frame(), &[0.0, 1.0, 2.0, 3.0, 4.1])
+                .unwrap_err()
+                .kind(),
+            InferenceErrorKind::OutputInvalid
         );
     }
 }

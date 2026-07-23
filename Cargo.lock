@@ -247,6 +247,8 @@ name = "karma-agent-windows"
 version = "0.1.0"
 dependencies = [
  "karma-ai",
+ "karma-domain",
+ "karma-onnx",
  "karma-windows",
 ]
 

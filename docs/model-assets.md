@@ -29,8 +29,20 @@ The exporter:
 The upstream index-zero label is `safe`; the product manifest normalizes this to `normal`. Other
 labels retain their upstream names and indices.
 
+Validate the exported asset through the Rust runtime before packaging:
+
+```bash
+cargo run -p karma-onnx --example verify-model -- \
+  target/model-assets/viddexa-nano/manifest.json
+```
+
+This command verifies the bytes, constructs the CPU session, checks the graph contract, and runs a
+generated non-sensitive reference frame without printing logits, probabilities, or scores.
+
 ## Packaging
 
 The package pipeline copies `model.onnx`, `manifest.json`, and the Apache-2.0 model license into the
 read-only installation asset directory. At runtime, Karma verifies the manifest, file length,
 SHA-256, graph input/output names, element types, and static shapes before the first inference.
+Sessions are created from the verified in-memory bytes, so replacing the path after verification
+cannot change the graph loaded by a later monitor worker.

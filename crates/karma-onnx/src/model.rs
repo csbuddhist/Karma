@@ -1,8 +1,9 @@
 use std::{
     fmt,
     fs::{self, File},
-    io::{BufReader, Read},
-    path::{Path, PathBuf},
+    io::Read,
+    path::Path,
+    sync::Arc,
 };
 
 use karma_ai::ImageModelManifest;
@@ -10,7 +11,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 pub const MAX_MANIFEST_BYTES: usize = 1024 * 1024;
-const HASH_BUFFER_BYTES: usize = 64 * 1024;
+pub const MAX_MODEL_BYTES: usize = 128 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InferenceErrorKind {
@@ -57,7 +58,7 @@ impl InferenceError {
 
 pub struct VerifiedImageModel {
     manifest: ImageModelManifest,
-    model_path: PathBuf,
+    model_bytes: Arc<[u8]>,
 }
 
 impl fmt::Debug for VerifiedImageModel {
@@ -89,18 +90,32 @@ impl VerifiedImageModel {
             .parent()
             .ok_or_else(|| InferenceError::new(InferenceErrorKind::ManifestInvalid))?;
         let model_path = directory.join(&manifest.file_name);
-        let model_metadata = fs::metadata(&model_path)
-            .map_err(|_| InferenceError::new(InferenceErrorKind::ModelMissing))?;
-        if model_metadata.len() != manifest.file_bytes {
+        let expected_bytes = usize::try_from(manifest.file_bytes)
+            .map_err(|_| InferenceError::new(InferenceErrorKind::ModelHashMismatch))?;
+        if expected_bytes > MAX_MODEL_BYTES {
             return Err(InferenceError::new(InferenceErrorKind::ModelHashMismatch));
         }
-        let actual_hash = hash_file(&model_path)?;
+        let mut file = File::open(&model_path)
+            .map_err(|_| InferenceError::new(InferenceErrorKind::ModelMissing))?;
+        let metadata = file
+            .metadata()
+            .map_err(|_| InferenceError::new(InferenceErrorKind::ModelMissing))?;
+        if metadata.len() != manifest.file_bytes {
+            return Err(InferenceError::new(InferenceErrorKind::ModelHashMismatch));
+        }
+        let mut model_bytes = Vec::with_capacity(expected_bytes);
+        file.read_to_end(&mut model_bytes)
+            .map_err(|_| InferenceError::new(InferenceErrorKind::ModelHashMismatch))?;
+        if model_bytes.len() != expected_bytes {
+            return Err(InferenceError::new(InferenceErrorKind::ModelHashMismatch));
+        }
+        let actual_hash = format!("{:x}", Sha256::digest(&model_bytes));
         if actual_hash != manifest.asset.sha256 {
             return Err(InferenceError::new(InferenceErrorKind::ModelHashMismatch));
         }
         Ok(Self {
             manifest,
-            model_path,
+            model_bytes: model_bytes.into(),
         })
     }
 
@@ -112,27 +127,9 @@ impl VerifiedImageModel {
         crate::OnnxImageClassifier::from_model(self)
     }
 
-    pub(crate) fn model_path(&self) -> &Path {
-        &self.model_path
+    pub(crate) fn model_bytes(&self) -> &[u8] {
+        &self.model_bytes
     }
-}
-
-fn hash_file(path: &Path) -> Result<String, InferenceError> {
-    let file =
-        File::open(path).map_err(|_| InferenceError::new(InferenceErrorKind::ModelMissing))?;
-    let mut reader = BufReader::with_capacity(HASH_BUFFER_BYTES, file);
-    let mut hasher = Sha256::new();
-    let mut buffer = [0u8; HASH_BUFFER_BYTES];
-    loop {
-        let read = reader
-            .read(&mut buffer)
-            .map_err(|_| InferenceError::new(InferenceErrorKind::ModelHashMismatch))?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-    }
-    Ok(format!("{:x}", hasher.finalize()))
 }
 
 #[cfg(test)]
@@ -169,7 +166,7 @@ mod tests {
                 color_order: ColorOrder::Rgb,
                 scale: 1.0 / 255.0,
                 mean: [0.485, 0.456, 0.406],
-                std: [0.229, 0.224, 0.225],
+                std: [0.47853944, 0.4732864, 0.47434163],
             },
             output_name: "logits".into(),
             labels: VIDDEXA_LABELS
@@ -245,6 +242,19 @@ mod tests {
         assert_eq!(
             VerifiedImageModel::load(&path).unwrap_err().kind(),
             InferenceErrorKind::ManifestInvalid
+        );
+    }
+
+    #[test]
+    fn oversized_model_is_rejected_before_allocation() {
+        let directory = TempDir::new().unwrap();
+        let mut value = manifest(b"model");
+        value.file_bytes = MAX_MODEL_BYTES as u64 + 1;
+        let path = write_manifest(&directory, &value);
+
+        assert_eq!(
+            VerifiedImageModel::load(&path).unwrap_err().kind(),
+            InferenceErrorKind::ModelHashMismatch
         );
     }
 }

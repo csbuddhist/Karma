@@ -19,7 +19,8 @@ pub use image_classifier::{
 };
 pub use image_manifest::{
     ColorOrder, ImageInputContract, ImageManifestError, ImageModelManifest, ModelLabel,
-    TensorLayout, VIDDEXA_LABELS, VIDDEXA_REPOSITORY, VIDDEXA_REVISION,
+    TensorLayout, VIDDEXA_LABELS, VIDDEXA_MEAN, VIDDEXA_REPOSITORY, VIDDEXA_REVISION,
+    VIDDEXA_SCALE, VIDDEXA_STD,
 };
 pub use image_tensor::{ImageTensor, ImageTensorBuilder, ImageTensorError};
 pub use mailbox::LatestFrameMailbox;
