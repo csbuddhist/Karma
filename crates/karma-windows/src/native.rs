@@ -48,7 +48,7 @@ pub enum WindowsAdapterError {
 }
 
 impl WindowsAdapterError {
-    fn api(operation: &'static str, source: core::Error) -> Self {
+    pub(crate) fn api(operation: &'static str, source: core::Error) -> Self {
         Self::WindowsApi { operation, source }
     }
 }
