@@ -1,0 +1,18 @@
+[package]
+name = "karma-onnx"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+karma-ai = { path = "../karma-ai" }
+ndarray = "0.16"
+ort = { version = "=2.0.0-rc.10", default-features = false, features = ["std", "ndarray", "download-binaries", "copy-dylibs"] }
+serde_json.workspace = true
+sha2 = "0.10"
+thiserror.workspace = true
+
+[dev-dependencies]
+karma-domain = { path = "../karma-domain" }
+tempfile = "3"

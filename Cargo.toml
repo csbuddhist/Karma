@@ -3,6 +3,7 @@ members = [
     "apps/karma-agent-windows",
     "crates/karma-ai",
     "crates/karma-domain",
+    "crates/karma-onnx",
     "crates/karma-policy",
     "crates/karma-windows",
 ]
