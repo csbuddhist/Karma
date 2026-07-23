@@ -44,9 +44,10 @@ impl FrameScheduler {
             };
         };
 
-        let run_image = frame.captured_at_ms - previous.image_at_ms >= 500;
-        let run_ocr = frame.captured_at_ms - previous.ocr_at_ms >= 1000
-            && frame.fingerprint != previous.ocr_fingerprint;
+        let image_elapsed = frame.captured_at_ms.saturating_sub(previous.image_at_ms);
+        let ocr_elapsed = frame.captured_at_ms.saturating_sub(previous.ocr_at_ms);
+        let run_image = image_elapsed >= 500;
+        let run_ocr = ocr_elapsed >= 1000 && frame.fingerprint != previous.ocr_fingerprint;
 
         if run_image {
             previous.image_at_ms = frame.captured_at_ms;
