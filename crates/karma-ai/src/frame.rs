@@ -72,6 +72,7 @@ impl BgraFrame {
         stride: usize,
         pixels: Vec<u8>,
     ) -> Result<Self, FrameError> {
+        let pixels = Zeroizing::new(pixels);
         let minimum = dimensions.tight_stride()?;
         if stride < minimum {
             return Err(FrameError::StrideTooSmall {
@@ -95,7 +96,7 @@ impl BgraFrame {
             captured_at_ms,
             dimensions,
             stride,
-            pixels: Zeroizing::new(pixels),
+            pixels,
         })
     }
 
