@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod ctc;
 mod frame;
 mod frame_pipeline;
 mod image_classifier;
@@ -17,6 +18,7 @@ mod preparation;
 mod scheduler;
 mod word_pack;
 
+pub use ctc::{CtcDecoder, CtcDictionary, CtcError, DecodedLine};
 pub use frame::{BgraFrame, FrameDimensions, FrameError, PreparedFrame};
 pub use frame_pipeline::{FramePipeline, ScheduledFrame};
 pub use image_classifier::{
@@ -580,5 +582,165 @@ mod ocr_contract_tests {
             OcrTextBatch::from_lines(vec!["four".into(), "five!".into()], 8),
             Err(OcrTextError::CharacterLimitExceeded)
         );
+    }
+}
+
+#[cfg(test)]
+mod ctc_tests {
+    use super::*;
+
+    fn decoder(entries: &str, blank_index: usize) -> CtcDecoder {
+        CtcDecoder::new(
+            CtcDictionary::parse(entries, blank_index).unwrap(),
+            0.5,
+            128,
+            4_096,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn ctc_decoder_removes_blanks_before_dictionary_lookup() {
+        let decoded = decoder("A\nB\nC\n", 3)
+            .decode_line(
+                &[
+                    8.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, 8.0, -2.0, 8.0, -2.0, -2.0, -2.0,
+                    -2.0, -2.0, 8.0,
+                ],
+                &[1, 4, 4],
+            )
+            .unwrap();
+
+        assert_eq!(decoded.character_count(), 2);
+        assert!(decoded.confidence() >= 0.5);
+    }
+
+    #[test]
+    fn ctc_decoder_collapses_adjacent_duplicate_tokens() {
+        let decoded = decoder("A\nB\nC\n", 0)
+            .decode_line(
+                &[
+                    -2.0, 8.0, -2.0, -2.0, -2.0, 8.0, -2.0, -2.0, -2.0, -2.0, 8.0, -2.0, 8.0, -2.0,
+                    -2.0, -2.0,
+                ],
+                &[1, 4, 4],
+            )
+            .unwrap();
+
+        assert_eq!(decoded.character_count(), 2);
+    }
+
+    #[test]
+    fn ctc_decoder_keeps_repeated_token_when_blank_separates_it() {
+        let decoded = decoder("A\nB\nC\n", 0)
+            .decode_line(
+                &[
+                    -2.0, 8.0, -2.0, -2.0, 8.0, -2.0, -2.0, -2.0, -2.0, 8.0, -2.0, -2.0, 8.0, -2.0,
+                    -2.0, -2.0,
+                ],
+                &[1, 4, 4],
+            )
+            .unwrap();
+
+        assert_eq!(decoded.character_count(), 2);
+    }
+
+    #[test]
+    fn ctc_decoder_counts_simplified_traditional_and_ascii_scalars() {
+        let decoded = decoder("简\n繁\nA\n", 3)
+            .decode_line(
+                &[
+                    8.0, -2.0, -2.0, -2.0, -2.0, 8.0, -2.0, -2.0, -2.0, -2.0, 8.0, -2.0, -2.0,
+                    -2.0, -2.0, 8.0,
+                ],
+                &[1, 4, 4],
+            )
+            .unwrap();
+
+        assert_eq!(decoded.character_count(), 3);
+        assert!(!format!("{decoded:?}").contains("简繁A"));
+    }
+
+    #[test]
+    fn ctc_dictionary_rejects_empty_and_duplicate_entries() {
+        assert!(matches!(
+            CtcDictionary::parse("A\n\n", 1),
+            Err(CtcError::InvalidDictionary)
+        ));
+        assert!(matches!(
+            CtcDictionary::parse("A\nA\n", 1),
+            Err(CtcError::InvalidDictionary)
+        ));
+    }
+
+    #[test]
+    fn ctc_decoder_rejects_non_finite_logits() {
+        assert!(matches!(
+            decoder("A\nB\n", 2).decode_line(&[f32::NAN, 0.0, 0.0], &[1, 1, 3]),
+            Err(CtcError::NonFiniteLogits)
+        ));
+    }
+
+    #[test]
+    fn ctc_decoder_rejects_class_count_mismatch() {
+        assert!(matches!(
+            decoder("A\nB\n", 2).decode_line(&[0.0; 8], &[1, 2, 4]),
+            Err(CtcError::ClassCountMismatch)
+        ));
+    }
+
+    #[test]
+    fn ctc_decoder_excludes_low_confidence_lines_from_a_batch() {
+        let decoded = decoder("A\nB\n", 2)
+            .decode_batch(
+                &[
+                    8.0, -2.0, -2.0, 8.0, -2.0, -2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                ],
+                &[2, 2, 3],
+            )
+            .unwrap();
+
+        assert_eq!(decoded.line_count(), 1);
+        assert_eq!(decoded.character_count(), 1);
+    }
+
+    #[test]
+    fn ctc_decoder_truncates_each_line_at_128_unicode_scalars() {
+        let mut logits = Vec::new();
+        for _ in 0..129 {
+            logits.extend_from_slice(&[8.0, -2.0]);
+            logits.extend_from_slice(&[-2.0, 8.0]);
+        }
+        let decoded = decoder("敏\n", 1)
+            .decode_line(&logits, &[1, 258, 2])
+            .unwrap();
+
+        assert_eq!(decoded.character_count(), 128);
+    }
+
+    #[test]
+    fn ctc_decoder_stops_after_4096_total_scalars() {
+        let mut logits = Vec::new();
+        for _ in 0..4_097 {
+            logits.extend_from_slice(&[-2.0, 8.0, -2.0]);
+        }
+        let decoded = decoder("A\nB\n", 0)
+            .decode_batch(&logits, &[4_097, 1, 3])
+            .unwrap();
+
+        assert_eq!(decoded.line_count(), 4_096);
+        assert_eq!(decoded.character_count(), 4_096);
+    }
+
+    #[test]
+    fn ctc_public_debug_and_errors_redact_sensitive_runtime_data() {
+        let error = decoder("敏感\n", 1)
+            .decode_line(&[f32::INFINITY, 0.0], &[1, 1, 2])
+            .unwrap_err();
+
+        let rendered = format!("{error:?} {error}");
+        assert!(!rendered.contains("敏感"));
+        assert!(!rendered.contains("inf"));
+        assert!(!rendered.contains('0'));
     }
 }
