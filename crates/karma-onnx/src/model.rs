@@ -23,6 +23,12 @@ pub enum InferenceErrorKind {
     InputPreparation,
     InferenceFailed,
     OutputInvalid,
+    OcrContractInvalid,
+    OcrAssetMissing,
+    OcrAssetHashMismatch,
+    OcrDictionaryInvalid,
+    OcrReferenceInvalid,
+    OcrLicenseInvalid,
 }
 
 impl fmt::Display for InferenceErrorKind {
@@ -36,6 +42,12 @@ impl fmt::Display for InferenceErrorKind {
             Self::InputPreparation => "input_preparation",
             Self::InferenceFailed => "inference_failed",
             Self::OutputInvalid => "output_invalid",
+            Self::OcrContractInvalid => "ocr_contract_invalid",
+            Self::OcrAssetMissing => "ocr_asset_missing",
+            Self::OcrAssetHashMismatch => "ocr_asset_hash_mismatch",
+            Self::OcrDictionaryInvalid => "ocr_dictionary_invalid",
+            Self::OcrReferenceInvalid => "ocr_reference_invalid",
+            Self::OcrLicenseInvalid => "ocr_license_invalid",
         })
     }
 }
