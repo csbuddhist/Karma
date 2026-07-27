@@ -20,12 +20,13 @@ The downloader honors the standard `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` e
 variables through Python's standard HTTPS client. It verifies the pinned byte length and SHA-256
 before extraction and rejects redirects away from the exact pinned URL. Extraction rejects
 absolute and traversing paths, backslash paths, duplicate members, file/directory prefix
-collisions, links, devices, sparse entries, unexpected member counts, and oversized payloads
-before writing any member.
+collisions, links, devices, every pax and legacy-GNU sparse representation, unexpected member
+counts, and oversized payloads before writing any member.
 
 ## Locked environment
 
-Use Python 3.11 and install only the exact, hashed wheels from the official PyPI index:
+The production export and verification CLIs fail closed unless they run under exactly CPython
+3.11. Install only the exact, hashed wheels from the official PyPI index:
 
 ```bash
 /opt/homebrew/bin/uv venv --python 3.11 .venv-ocr-export
@@ -36,7 +37,10 @@ Use Python 3.11 and install only the exact, hashed wheels from the official PyPI
 
 `requirements.in` records the direct dependency choices. `requirements.lock` pins the complete
 transitive graph, carries hashes for published wheels, specifies `https://pypi.org/simple`, and
-disables source-distribution builds.
+disables source-distribution builds. `models.toml` independently records the reviewed Python,
+PaddlePaddle, Paddle2ONNX, ONNX, and ONNX Runtime versions. Before any download or bundle work,
+the tools require the config, lock, installed distributions, verifier constants, and manifest to
+agree exactly.
 
 ## Export and verification
 
@@ -63,10 +67,12 @@ The exporter:
 1. downloads and verifies the selected detector and recognizer archives;
 2. safely extracts only the three expected Paddle inference files per model;
 3. invokes the installed `paddle2onnx` executable as a checked subprocess with opset 18 and its
-   checker enabled, with optional optimization disabled so the converter cannot auto-install
-   undeclared packages from a secondary index;
+   checker enabled; the executable must be a non-symlinked regular executable inside the active
+   venv's `bin`/`Scripts` directory, PATH fallback is forbidden, and optional optimization is
+   disabled so the converter cannot auto-install undeclared packages from a secondary index;
 4. fixes only the detector's single-image batch metadata, adds a final `[0, 1]` clamp for harmless
-   sigmoid roundoff, runs the ONNX checker, and enforces dynamic spatial shapes;
+   sigmoid roundoff, runs the ONNX checker, requires float32 graph inputs and outputs, and enforces
+   dynamic spatial shapes;
 5. rasterizes fixed, non-sensitive simplified-Chinese (`安全`), traditional-Chinese (`繁體`), and
    English (`SAFE`) samples in memory without loading user data;
 6. compares Paddle and ONNX outputs with `3e-4` relative and `1e-4` absolute tolerance while
@@ -90,7 +96,12 @@ cargo run -p karma-onnx --example verify_ocr_bundle -- \
 The Python verifier rechecks every file and aggregate digest, the current Rust manifest contract,
 ONNX graph contracts, and reference inference. The Rust verifier loads the complete
 `VerifiedOcrBundle` and creates the runtime engine, which repeats reference inference through the
-production ONNX Runtime path.
+production ONNX Runtime path. The Python verifier first stats and bounded-reads the manifest, then
+requires the exact directory tree and rejects every non-regular entry before touching declared
+artifacts. It stats all assets against the Rust runtime's 1 MiB manifest, 256 MiB
+per-model/reference, 4 MiB dictionary, and 64 KiB license caps before hashing, parsing reference
+JSON, loading ONNX, or starting ORT. Artifact reads are bounded and hashes stream with exact
+declared-length enforcement.
 
 `assets/ocr/pp-ocrv5-mobile/manifest.example.json` is a schema-review example only. Its zero
 digests, one-byte lengths, and one-entry dictionary are placeholders; the exporter writes all

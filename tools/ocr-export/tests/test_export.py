@@ -4,7 +4,9 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
+import socket
 import struct
 import subprocess
 import sys
@@ -29,6 +31,20 @@ def load_export_module():
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
+    return module
+
+
+def load_verify_module(exporter):
+    verify_path = TOOL_DIRECTORY / "verify.py"
+    spec = importlib.util.spec_from_file_location("karma_ocr_verify", verify_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("unable to load verifier")
+    module = importlib.util.module_from_spec(spec)
+    with mock.patch.dict(
+        sys.modules,
+        {spec.name: module, "export": exporter},
+    ):
+        spec.loader.exec_module(module)
     return module
 
 
@@ -86,6 +102,17 @@ class ConfigurationContractTests(unittest.TestCase):
             {
                 "detector": "PP-OCRv5_server_det",
                 "recognizer": "PP-OCRv5_server_rec",
+            },
+        )
+        self.assertEqual(
+            config["toolchain"],
+            {
+                "python_implementation": "cpython",
+                "python_version": "3.11",
+                "paddlepaddle_version": "3.0.0",
+                "paddle2onnx_version": "2.1.0",
+                "onnx_version": "1.17.0",
+                "onnx_runtime_version": "1.22.0",
             },
         )
 
@@ -192,6 +219,29 @@ class SafeExtractionTests(unittest.TestCase):
                 self.assertFalse(output.exists())
                 self.assertFalse((root / "escape").exists())
 
+    def test_rejects_old_gnu_sparse_before_writing_any_output(self):
+        exporter = load_export_module()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            archive = root / "old-gnu-sparse.tar"
+            sparse = tarfile.TarInfo("model/inference.pdiparams")
+            sparse.type = tarfile.GNUTYPE_SPARSE
+            sparse.size = 0
+            archive.write_bytes(
+                sparse.tobuf(format=tarfile.GNU_FORMAT) + b"\0" * 1024
+            )
+
+            with tarfile.open(archive, mode="r:") as value:
+                member = value.getmembers()[0]
+                self.assertTrue(member.isreg())
+                self.assertTrue(member.issparse())
+                self.assertIsNotNone(member.sparse)
+
+            output = root / "output"
+            with self.assertRaises(exporter.ExportError):
+                exporter.safe_extract_tar(archive, output)
+            self.assertFalse(output.exists())
+
 
 class ExportPrimitiveTests(unittest.TestCase):
     def test_failed_subprocess_is_never_accepted(self):
@@ -244,16 +294,103 @@ class ExportPrimitiveTests(unittest.TestCase):
     def test_converter_discovery_stays_in_the_active_venv(self):
         exporter = load_export_module()
         with tempfile.TemporaryDirectory() as temporary:
-            binary_directory = Path(temporary) / "bin"
-            binary_directory.mkdir()
-            python = binary_directory / "python"
-            converter = binary_directory / "paddle2onnx"
-            python.symlink_to(sys.executable)
+            prefix = Path(temporary) / "venv"
+            binary_directory = prefix / ("Scripts" if os.name == "nt" else "bin")
+            binary_directory.mkdir(parents=True)
+            converter_name = "paddle2onnx.exe" if os.name == "nt" else "paddle2onnx"
+            converter = binary_directory / converter_name
             converter.write_text("#!/bin/sh\n", encoding="utf-8")
             converter.chmod(0o755)
 
-            with mock.patch.object(exporter.sys, "executable", str(python)):
-                self.assertEqual(exporter._paddle2onnx_executable(), converter)
+            with (
+                mock.patch.object(exporter.sys, "prefix", str(prefix)),
+                mock.patch.object(
+                    exporter.sys,
+                    "base_prefix",
+                    str(base_prefix := Path(temporary) / "base"),
+                ),
+            ):
+                self.assertEqual(
+                    exporter._paddle2onnx_executable(),
+                    converter.resolve(),
+                )
+                self.assertNotEqual(prefix, base_prefix)
+
+    def test_converter_discovery_never_falls_back_to_path_or_symlinks(self):
+        exporter = load_export_module()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            prefix = root / "venv"
+            binary_directory = prefix / ("Scripts" if os.name == "nt" else "bin")
+            binary_directory.mkdir(parents=True)
+            path_binary = root / "path-bin"
+            path_binary.mkdir()
+            converter_name = "paddle2onnx.exe" if os.name == "nt" else "paddle2onnx"
+            outside = path_binary / converter_name
+            outside.write_text("#!/bin/sh\n", encoding="utf-8")
+            outside.chmod(0o755)
+            (binary_directory / converter_name).symlink_to(outside)
+
+            with (
+                mock.patch.object(exporter.sys, "prefix", str(prefix)),
+                mock.patch.object(exporter.sys, "base_prefix", str(root / "base")),
+                mock.patch.dict(os.environ, {"PATH": str(path_binary)}),
+                self.assertRaises(exporter.ExportError),
+            ):
+                exporter._paddle2onnx_executable()
+
+    def test_production_cli_requires_exact_cpython_311(self):
+        exporter = load_export_module()
+        with (
+            mock.patch.object(
+                exporter.sys, "implementation", SimpleNamespace(name="pypy")
+            ),
+            self.assertRaises(exporter.ExportError),
+        ):
+            exporter.require_production_python()
+        with (
+            mock.patch.object(exporter.sys, "version_info", (3, 12, 0)),
+            self.assertRaises(exporter.ExportError),
+        ):
+            exporter.require_production_python()
+
+    def test_export_and_verify_main_fail_before_argument_work_on_wrong_python(self):
+        exporter = load_export_module()
+        verifier = load_verify_module(exporter)
+        for module in (exporter, verifier):
+            with (
+                self.subTest(module=module.__name__),
+                mock.patch.object(
+                    exporter,
+                    "require_production_python",
+                    side_effect=exporter.ExportError("wrong interpreter"),
+                ),
+                mock.patch.object(
+                    module,
+                    "build_argument_parser",
+                    side_effect=AssertionError("argument work must not begin"),
+                ),
+            ):
+                self.assertEqual(module.main(), 1)
+
+    def test_installed_toolchain_must_match_reviewed_versions(self):
+        exporter = load_export_module()
+        configuration = exporter.load_model_config()
+        actual = {
+            "paddlepaddle": "3.0.0",
+            "paddle2onnx": "2.1.0",
+            "onnx": "1.17.0",
+            "onnxruntime": "1.22.1",
+        }
+        with (
+            mock.patch.object(
+                exporter.importlib.metadata,
+                "version",
+                side_effect=lambda name: actual[name],
+            ),
+            self.assertRaises(exporter.ExportError),
+        ):
+            exporter.validate_installed_toolchain(configuration)
 
     def test_detector_keeps_spatial_axes_dynamic_but_fixes_single_batch(self):
         exporter = load_export_module()
@@ -334,6 +471,87 @@ class ExportPrimitiveTests(unittest.TestCase):
             ],
         )
 
+    def test_onnx_contract_rejects_non_f32_detector_and_recognizer(self):
+        exporter = load_export_module()
+        try:
+            import onnx
+        except ImportError as error:
+            self.skipTest(f"pinned ONNX dependency unavailable: {error}")
+
+        def non_f32_model(role: str):
+            if role == "detector":
+                input_shape = [1, 3, "height", "width"]
+                output_shape = [1, 1, "height", "width"]
+                input_info = onnx.helper.make_tensor_value_info(
+                    "x", onnx.TensorProto.DOUBLE, input_shape
+                )
+                output_info = onnx.helper.make_tensor_value_info(
+                    "fetch_name_0", onnx.TensorProto.DOUBLE, output_shape
+                )
+                nodes = [
+                    onnx.helper.make_node(
+                        "Identity", ["x"], ["fetch_name_0.unclamped"]
+                    ),
+                    onnx.helper.make_node(
+                        "Clip",
+                        [
+                            "fetch_name_0.unclamped",
+                            "karma.detector.probability.minimum",
+                            "karma.detector.probability.maximum",
+                        ],
+                        ["fetch_name_0"],
+                    ),
+                ]
+                initializers = [
+                    onnx.helper.make_tensor(
+                        "karma.detector.probability.minimum",
+                        onnx.TensorProto.DOUBLE,
+                        [],
+                        [0.0],
+                    ),
+                    onnx.helper.make_tensor(
+                        "karma.detector.probability.maximum",
+                        onnx.TensorProto.DOUBLE,
+                        [],
+                        [1.0],
+                    ),
+                ]
+            else:
+                input_info = onnx.helper.make_tensor_value_info(
+                    "x",
+                    onnx.TensorProto.DOUBLE,
+                    ["batch", 3, 48, "width"],
+                )
+                output_info = onnx.helper.make_tensor_value_info(
+                    "fetch_name_0",
+                    onnx.TensorProto.DOUBLE,
+                    ["batch", "time", 2],
+                )
+                nodes = [
+                    onnx.helper.make_node("Identity", ["x"], ["fetch_name_0"])
+                ]
+                initializers = []
+            graph = onnx.helper.make_graph(
+                nodes,
+                f"non-f32-{role}",
+                [input_info],
+                [output_info],
+                initializer=initializers,
+            )
+            return onnx.helper.make_model(
+                graph,
+                opset_imports=[onnx.helper.make_opsetid("", 18)],
+            )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for role in ("detector", "recognizer"):
+                with self.subTest(role=role):
+                    path = root / f"{role}.onnx"
+                    onnx.save(non_f32_model(role), path)
+                    with self.assertRaises(exporter.ExportError):
+                        exporter.check_onnx_contract(path, role)
+
     def test_paddle_reference_configuration_avoids_legacy_memory_pass(self):
         exporter = load_export_module()
 
@@ -370,6 +588,147 @@ class ExportPrimitiveTests(unittest.TestCase):
         exporter = load_export_module()
         with self.assertRaises(SystemExit):
             exporter.build_argument_parser().parse_args(["--profile", "lightweight"])
+
+
+class VerifierHardeningTests(unittest.TestCase):
+    @staticmethod
+    def exact_tree(root: Path) -> None:
+        exporter = load_export_module()
+        for relative in {"manifest.json", *exporter.BUNDLE_DIGEST_PATHS}:
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"x")
+
+    def test_verifier_toolchain_cannot_self_attest_a_mismatched_environment(self):
+        exporter = load_export_module()
+        verifier = load_verify_module(exporter)
+        configuration = exporter.load_model_config()
+        mismatched = {
+            "paddlepaddle_version": "3.0.0",
+            "paddle2onnx_version": "2.1.0",
+            "onnx_version": "1.17.0",
+            "onnx_runtime_version": "1.22.1",
+        }
+        with (
+            mock.patch.object(
+                exporter,
+                "_package_version",
+                side_effect=lambda name: {
+                    "paddlepaddle": "3.0.0",
+                    "paddle2onnx": "2.1.0",
+                    "onnx": "1.17.0",
+                    "onnxruntime": "1.22.1",
+                }[name],
+            ),
+            self.assertRaises(exporter.ExportError),
+        ):
+            verifier._verify_toolchain(mismatched, configuration)
+
+    def test_verifier_stats_oversized_files_before_reading_them(self):
+        exporter = load_export_module()
+        verifier = load_verify_module(exporter)
+        self.assertEqual(verifier.MAXIMUM_MANIFEST_BYTES, 1024 * 1024)
+        self.assertEqual(verifier.MAXIMUM_MODEL_BYTES, 256 * 1024 * 1024)
+        self.assertEqual(verifier.MAXIMUM_DICTIONARY_BYTES, 4 * 1024 * 1024)
+        self.assertEqual(verifier.MAXIMUM_LICENSE_BYTES, 64 * 1024)
+        self.assertEqual(verifier.MAXIMUM_REFERENCE_BYTES, 256 * 1024 * 1024)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = root / "manifest.json"
+            with manifest.open("wb") as output:
+                output.truncate(verifier.MAXIMUM_MANIFEST_BYTES + 1)
+            reference = root / "reference.bin"
+            with reference.open("wb") as output:
+                output.truncate(verifier.MAXIMUM_REFERENCE_BYTES + 1)
+
+            with (
+                mock.patch.object(
+                    Path,
+                    "read_bytes",
+                    side_effect=AssertionError("unbounded read attempted"),
+                ),
+                self.assertRaises(exporter.ExportError),
+            ):
+                verifier._read_manifest(manifest)
+            with (
+                mock.patch.object(
+                    Path,
+                    "read_bytes",
+                    side_effect=AssertionError("unbounded read attempted"),
+                ),
+                self.assertRaises(exporter.ExportError),
+            ):
+                verifier._parse_reference_input(reference)
+
+    def test_declared_oversized_model_is_rejected_before_hash_or_onnx(self):
+        exporter = load_export_module()
+        verifier = load_verify_module(exporter)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with (
+                mock.patch.object(
+                    Path,
+                    "open",
+                    side_effect=AssertionError("file I/O must not begin"),
+                ),
+                self.assertRaises(exporter.ExportError),
+            ):
+                verifier._verify_artifact(
+                    root,
+                    "detector.onnx",
+                    expected_bytes=verifier.MAXIMUM_MODEL_BYTES + 1,
+                    expected_sha256="0" * 64,
+                    maximum_bytes=verifier.MAXIMUM_MODEL_BYTES,
+                )
+
+    def test_exact_tree_rejects_unexpected_directories_and_non_regular_files(self):
+        exporter = load_export_module()
+        verifier = load_verify_module(exporter)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.exact_tree(root)
+            verifier._verify_exact_tree(root)
+            (root / "unexpected").mkdir()
+            with self.assertRaises(exporter.ExportError):
+                verifier._verify_exact_tree(root)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.exact_tree(root)
+            notice = root / "NOTICE.md"
+            notice.unlink()
+            notice.symlink_to(root / "LICENSE")
+            with self.assertRaises(exporter.ExportError):
+                verifier._verify_exact_tree(root)
+
+        if hasattr(os, "mkfifo"):
+            with tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                self.exact_tree(root)
+                notice = root / "NOTICE.md"
+                notice.unlink()
+                os.mkfifo(notice)
+                with self.assertRaises(exporter.ExportError):
+                    verifier._verify_exact_tree(root)
+
+        if hasattr(socket, "AF_UNIX"):
+            with tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                self.exact_tree(root)
+                notice = root / "NOTICE.md"
+                notice.unlink()
+                value = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                try:
+                    try:
+                        value.bind(os.fspath(notice))
+                    except PermissionError:
+                        pass
+                    else:
+                        with self.assertRaises(exporter.ExportError):
+                            verifier._verify_exact_tree(root)
+                finally:
+                    value.close()
 
 
 if __name__ == "__main__":

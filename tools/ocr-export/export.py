@@ -13,6 +13,7 @@ import math
 import os
 from pathlib import Path, PurePosixPath
 import shutil
+import stat
 import struct
 import subprocess
 import sys
@@ -37,6 +38,20 @@ OPSET = 18
 REFERENCE_TOLERANCE = 1.0e-4
 PADDLE_COMPARISON_ATOL = 1.0e-4
 PADDLE_COMPARISON_RTOL = 3.0e-4
+EXPECTED_TOOLCHAIN = {
+    "python_implementation": "cpython",
+    "python_version": "3.11",
+    "paddlepaddle_version": "3.0.0",
+    "paddle2onnx_version": "2.1.0",
+    "onnx_version": "1.17.0",
+    "onnx_runtime_version": "1.22.0",
+}
+TOOLCHAIN_DISTRIBUTIONS = {
+    "paddlepaddle_version": "paddlepaddle",
+    "paddle2onnx_version": "paddle2onnx",
+    "onnx_version": "onnx",
+    "onnx_runtime_version": "onnxruntime",
+}
 BUNDLE_DIGEST_PATHS = (
     "LICENSE",
     "NOTICE.md",
@@ -69,6 +84,7 @@ class ExportConfiguration:
     revision: str
     release: str
     documentation_url: str
+    toolchain: dict[str, str]
     profiles: dict[str, dict[str, str]]
     models: dict[str, ModelPin]
 
@@ -105,7 +121,7 @@ def _validate_official_url(value: object, model_name: str) -> str:
 
 def load_model_config(path: Path = MODELS_PATH) -> ExportConfiguration:
     raw = tomllib.loads(path.read_text(encoding="utf-8"))
-    if set(raw) != {"provenance", "profiles", "models"}:
+    if set(raw) != {"provenance", "toolchain", "profiles", "models"}:
         raise ExportError("models.toml has unexpected top-level keys")
     provenance = raw["provenance"]
     if set(provenance) != {
@@ -135,6 +151,19 @@ def load_model_config(path: Path = MODELS_PATH) -> ExportConfiguration:
         raise ExportError("PaddleOCR documentation is not pinned to the source commit")
     if not isinstance(release, str) or not release.startswith("v"):
         raise ExportError("PaddleOCR release is invalid")
+    toolchain = raw["toolchain"]
+    if toolchain != EXPECTED_TOOLCHAIN:
+        raise ExportError("models.toml toolchain pins are invalid")
+    locked_requirements = {}
+    for line in (TOOL_DIRECTORY / "requirements.lock").read_text(
+        encoding="utf-8"
+    ).splitlines():
+        if line and not line.startswith(("#", " ", "\t", "--")) and "==" in line:
+            name, version = line.split("==", 1)
+            locked_requirements[name] = version.removesuffix(" \\")
+    for key, distribution in TOOLCHAIN_DISTRIBUTIONS.items():
+        if locked_requirements.get(distribution) != toolchain[key]:
+            raise ExportError("models.toml toolchain does not match requirements.lock")
 
     expected_models = {
         "PP-OCRv5_mobile_det": "detector",
@@ -188,9 +217,35 @@ def load_model_config(path: Path = MODELS_PATH) -> ExportConfiguration:
         revision=revision,
         release=release,
         documentation_url=documentation_url,
+        toolchain=dict(toolchain),
         profiles=raw["profiles"],
         models=models,
     )
+
+
+def require_production_python() -> None:
+    if (
+        sys.implementation.name != EXPECTED_TOOLCHAIN["python_implementation"]
+        or sys.version_info[:2] != (3, 11)
+    ):
+        raise ExportError("production OCR tooling requires exactly CPython 3.11")
+
+
+def validate_installed_toolchain(
+    configuration: ExportConfiguration,
+) -> dict[str, str]:
+    require_production_python()
+    installed = {
+        key: _package_version(distribution)
+        for key, distribution in TOOLCHAIN_DISTRIBUTIONS.items()
+    }
+    expected = {
+        key: configuration.toolchain[key]
+        for key in TOOLCHAIN_DISTRIBUTIONS
+    }
+    if installed != expected:
+        raise ExportError("installed OCR export toolchain does not match reviewed pins")
+    return installed
 
 
 def artifact_metadata(path: Path) -> dict[str, int | str]:
@@ -281,10 +336,10 @@ def safe_extract_tar(archive_path: Path, destination: Path) -> None:
             if path in seen:
                 raise ExportError("archive contains a duplicate path")
             seen.add(path)
+            if _is_sparse_member(member):
+                raise ExportError("archive contains a sparse file")
             if not (member.isdir() or member.isreg()):
                 raise ExportError("archive contains a link or special file")
-            if any(key.startswith("GNU.sparse") for key in member.pax_headers):
-                raise ExportError("archive contains a sparse file")
             if member.size < 0:
                 raise ExportError("archive member size is invalid")
             extracted_bytes += member.size
@@ -325,6 +380,15 @@ def safe_extract_tar(archive_path: Path, destination: Path) -> None:
                     remaining -= len(chunk)
                 if source.read(1):
                     raise ExportError("archive member exceeded its declared length")
+
+
+def _is_sparse_member(member: tarfile.TarInfo) -> bool:
+    return (
+        member.type == tarfile.GNUTYPE_SPARSE
+        or member.issparse()
+        or getattr(member, "sparse", None) is not None
+        or any(key.startswith("GNU.sparse") for key in member.pax_headers)
+    )
 
 
 def run_checked(
@@ -430,13 +494,27 @@ def _package_version(distribution: str) -> str:
 
 
 def _paddle2onnx_executable() -> Path:
-    candidate = Path(sys.executable).parent / "paddle2onnx"
-    if candidate.is_file() and os.access(candidate, os.X_OK):
-        return candidate
-    discovered = shutil.which("paddle2onnx")
-    if discovered is None:
-        raise ExportError("paddle2onnx executable is unavailable")
-    return Path(discovered)
+    if sys.prefix == getattr(sys, "base_prefix", sys.prefix):
+        raise ExportError("paddle2onnx requires an active virtual environment")
+    try:
+        prefix = Path(sys.prefix).resolve(strict=True)
+    except OSError as error:
+        raise ExportError("active virtual environment is unavailable") from error
+    binary_directory = prefix / ("Scripts" if os.name == "nt" else "bin")
+    name = "paddle2onnx.exe" if os.name == "nt" else "paddle2onnx"
+    candidate = binary_directory / name
+    try:
+        binary_mode = binary_directory.stat(follow_symlinks=False).st_mode
+        mode = candidate.stat(follow_symlinks=False).st_mode
+    except OSError as error:
+        raise ExportError("paddle2onnx is unavailable inside the active venv") from error
+    if (
+        not stat.S_ISDIR(binary_mode)
+        or not stat.S_ISREG(mode)
+        or not os.access(candidate, os.X_OK)
+    ):
+        raise ExportError("paddle2onnx inside the active venv is not executable")
+    return candidate
 
 
 def _load_yaml(model_directory: Path) -> dict[str, Any]:
@@ -616,6 +694,11 @@ def check_onnx_contract(path: Path, role: str) -> tuple[str, str, int | None]:
         raise ExportError("converted model must have one input and one output")
     input_value = model.graph.input[0]
     output_value = model.graph.output[0]
+    if (
+        input_value.type.tensor_type.elem_type != onnx.TensorProto.FLOAT
+        or output_value.type.tensor_type.elem_type != onnx.TensorProto.FLOAT
+    ):
+        raise ExportError("converted model input and output must be TensorProto.FLOAT")
     input_shape = _tensor_shape(input_value)
     output_shape = _tensor_shape(output_value)
     class_count = None
@@ -1049,10 +1132,8 @@ def _build_manifest(
             ),
         },
         "export_toolchain": {
-            "paddlepaddle_version": _package_version("paddlepaddle"),
-            "paddle2onnx_version": _package_version("paddle2onnx"),
-            "onnx_version": _package_version("onnx"),
-            "onnx_runtime_version": _package_version("onnxruntime"),
+            key: configuration.toolchain[key]
+            for key in TOOLCHAIN_DISTRIBUTIONS
         },
         "opset": OPSET,
         "minimum_runtime_version": "1.22",
@@ -1075,6 +1156,7 @@ def _write_manifest(path: Path, manifest: dict[str, Any]) -> None:
 
 def export_bundle(profile: str, output: Path) -> None:
     configuration = load_model_config()
+    validate_installed_toolchain(configuration)
     profile_models = configuration.profiles[profile]
     detector_pin = configuration.models[profile_models["detector"]]
     recognizer_pin = configuration.models[profile_models["recognizer"]]
@@ -1216,8 +1298,9 @@ def build_argument_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
-    arguments = build_argument_parser().parse_args()
     try:
+        require_production_python()
+        arguments = build_argument_parser().parse_args()
         export_bundle(arguments.profile, arguments.output)
     except (ExportError, OSError, subprocess.CalledProcessError) as error:
         print(f"status=failed error={type(error).__name__}", file=sys.stderr)

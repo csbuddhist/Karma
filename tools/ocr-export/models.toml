@@ -4,6 +4,14 @@ revision = "33cbdd9deb2e00f61e7966db70669b249c005a37"
 release = "v3.5.0"
 documentation_url = "https://github.com/PaddlePaddle/PaddleOCR/blob/33cbdd9deb2e00f61e7966db70669b249c005a37/docs/version3.x/pipeline_usage/OCR.en.md"
 
+[toolchain]
+python_implementation = "cpython"
+python_version = "3.11"
+paddlepaddle_version = "3.0.0"
+paddle2onnx_version = "2.1.0"
+onnx_version = "1.17.0"
+onnx_runtime_version = "1.22.0"
+
 [profiles.lightweight]
 detector = "PP-OCRv5_mobile_det"
 recognizer = "PP-OCRv5_mobile_rec"

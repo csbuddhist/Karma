@@ -27,6 +27,6 @@ three-file inference layout. These hashes are local reproducibility and change-d
 They must not be represented as publisher-provided, publisher-signed, or independently
 authenticated checksums.
 
-The conversion environment is locked to PaddlePaddle `3.0.0`, Paddle2ONNX `2.1.0`, ONNX `1.17.0`,
-and ONNX Runtime `1.22.0`, plus fully pinned transitive dependencies in
+The conversion environment is locked to CPython `3.11`, PaddlePaddle `3.0.0`, Paddle2ONNX `2.1.0`,
+ONNX `1.17.0`, and ONNX Runtime `1.22.0`, plus fully pinned transitive dependencies in
 `tools/ocr-export/requirements.lock`.

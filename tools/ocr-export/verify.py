@@ -5,10 +5,12 @@ from __future__ import annotations
 
 from array import array
 import argparse
+import hashlib
 import json
 import math
 import os
 from pathlib import Path
+import stat
 import struct
 import sys
 from typing import Any
@@ -17,7 +19,31 @@ import export as exporter
 
 
 MAXIMUM_MANIFEST_BYTES = 1024 * 1024
+MAXIMUM_MODEL_BYTES = 256 * 1024 * 1024
+MAXIMUM_DICTIONARY_BYTES = 4 * 1024 * 1024
+MAXIMUM_LICENSE_BYTES = 64 * 1024
+MAXIMUM_NOTICE_BYTES = 1024 * 1024
 MAXIMUM_REFERENCE_BYTES = 256 * 1024 * 1024
+EXPECTED_VERIFIER_TOOLCHAIN = {
+    "paddlepaddle_version": "3.0.0",
+    "paddle2onnx_version": "2.1.0",
+    "onnx_version": "1.17.0",
+    "onnx_runtime_version": "1.22.0",
+}
+ROOT_REGULAR_FILES = {
+    "manifest.json",
+    "LICENSE",
+    "NOTICE.md",
+    "detector.onnx",
+    "recognizer.onnx",
+    "dictionary.txt",
+}
+REFERENCE_REGULAR_FILES = {
+    "detector-input.bin",
+    "detector-output.json",
+    "recognizer-input.bin",
+    "recognizer-output.json",
+}
 TOP_LEVEL_KEYS = {
     "format_version",
     "asset",
@@ -47,11 +73,59 @@ def _exact_keys(value: object, expected: set[str], context: str) -> dict[str, An
 def _read_manifest(path: Path) -> dict[str, Any]:
     if path.name != "manifest.json":
         raise exporter.ExportError("bundle manifest must be named manifest.json")
-    payload = path.read_bytes()
-    if not payload or len(payload) > MAXIMUM_MANIFEST_BYTES:
-        raise exporter.ExportError("bundle manifest length is invalid")
+    payload = _read_bounded_regular_file(
+        path, MAXIMUM_MANIFEST_BYTES, "bundle manifest"
+    )
     value = json.loads(payload)
     return _exact_keys(value, TOP_LEVEL_KEYS, "manifest")
+
+
+def _regular_file_size(
+    path: Path,
+    maximum_bytes: int,
+    context: str,
+    *,
+    expected_bytes: int | None = None,
+) -> int:
+    try:
+        metadata = path.stat(follow_symlinks=False)
+    except OSError as error:
+        raise exporter.ExportError(f"{context} is missing") from error
+    size = metadata.st_size
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or size <= 0
+        or size > maximum_bytes
+        or (expected_bytes is not None and size != expected_bytes)
+    ):
+        raise exporter.ExportError(f"{context} length or file type is invalid")
+    return size
+
+
+def _read_bounded_regular_file(
+    path: Path,
+    maximum_bytes: int,
+    context: str,
+    *,
+    expected_bytes: int | None = None,
+) -> bytes:
+    size = _regular_file_size(
+        path,
+        maximum_bytes,
+        context,
+        expected_bytes=expected_bytes,
+    )
+    with path.open("rb") as source:
+        opened = os.fstat(source.fileno())
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_size != size
+        ):
+            raise exporter.ExportError(f"{context} changed before reading")
+        payload = source.read(size + 1)
+    if len(payload) != size:
+        raise exporter.ExportError(f"{context} changed while being read")
+    return payload
 
 
 def _verify_artifact(
@@ -60,18 +134,42 @@ def _verify_artifact(
     *,
     expected_bytes: object,
     expected_sha256: object,
+    maximum_bytes: int,
 ) -> None:
     if (
         not isinstance(expected_bytes, int)
         or isinstance(expected_bytes, bool)
         or expected_bytes <= 0
+        or expected_bytes > maximum_bytes
         or not exporter._is_lower_sha256(expected_sha256)
     ):
         raise exporter.ExportError(f"{relative_path} metadata is invalid")
     path = directory / relative_path
-    if not path.is_file() or path.is_symlink():
-        raise exporter.ExportError(f"{relative_path} is missing or not a regular file")
-    exporter.verify_file(path, expected_bytes, expected_sha256)
+    _regular_file_size(
+        path,
+        maximum_bytes,
+        relative_path,
+        expected_bytes=expected_bytes,
+    )
+    digest = hashlib.sha256()
+    remaining = expected_bytes
+    with path.open("rb") as source:
+        opened = os.fstat(source.fileno())
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_size != expected_bytes
+        ):
+            raise exporter.ExportError(f"{relative_path} changed before hashing")
+        while remaining:
+            chunk = source.read(min(1024 * 1024, remaining))
+            if not chunk:
+                raise exporter.ExportError(f"{relative_path} ended while hashing")
+            digest.update(chunk)
+            remaining -= len(chunk)
+        if source.read(1):
+            raise exporter.ExportError(f"{relative_path} exceeded its declared length")
+    if digest.hexdigest() != expected_sha256:
+        raise exporter.ExportError(f"{relative_path} digest is invalid")
 
 
 def _verify_model(
@@ -111,12 +209,15 @@ def _verify_model(
         file_name,
         expected_bytes=model["file_bytes"],
         expected_sha256=asset["sha256"],
+        maximum_bytes=MAXIMUM_MODEL_BYTES,
     )
 
 
 def _parse_reference_input(path: Path) -> tuple[list[int], array]:
-    payload = path.read_bytes()
-    if len(payload) < 12 or len(payload) > MAXIMUM_REFERENCE_BYTES:
+    payload = _read_bounded_regular_file(
+        path, MAXIMUM_REFERENCE_BYTES, "reference input"
+    )
+    if len(payload) < 12:
         raise exporter.ExportError("reference input length is invalid")
     if payload[:4] != b"KOR1":
         raise exporter.ExportError("reference input magic is invalid")
@@ -142,9 +243,9 @@ def _parse_reference_input(path: Path) -> tuple[list[int], array]:
 
 
 def _parse_reference_output(path: Path) -> tuple[list[int], list[float]]:
-    payload = path.read_bytes()
-    if not payload or len(payload) > MAXIMUM_REFERENCE_BYTES:
-        raise exporter.ExportError("reference output length is invalid")
+    payload = _read_bounded_regular_file(
+        path, MAXIMUM_REFERENCE_BYTES, "reference output"
+    )
     value = _exact_keys(json.loads(payload), {"shape", "values"}, "reference output")
     shape = value["shape"]
     values = value["values"]
@@ -193,6 +294,7 @@ def _verify_reference_metadata(
             expected_path,
             expected_bytes=artifact["file_bytes"],
             expected_sha256=artifact["sha256"],
+            maximum_bytes=MAXIMUM_REFERENCE_BYTES,
         )
         if name.endswith("_input"):
             parsed[name] = _parse_reference_input(directory / expected_path)
@@ -236,24 +338,91 @@ def _verify_onnx_reference(
         raise exporter.ExportError("ONNX reference output does not match")
 
 
-def _verify_exact_files(directory: Path) -> None:
-    expected = {"manifest.json", *exporter.BUNDLE_DIGEST_PATHS}
-    actual: set[str] = set()
-    for path in directory.rglob("*"):
-        if path.is_symlink():
-            raise exporter.ExportError("bundle contains a symbolic link")
-        if path.is_file():
-            actual.add(path.relative_to(directory).as_posix())
-    if actual != expected:
-        raise exporter.ExportError("bundle contains missing or unexpected files")
+def _verify_exact_tree(directory: Path) -> None:
+    try:
+        root_metadata = directory.stat(follow_symlinks=False)
+        with os.scandir(directory) as scanner:
+            root_entries = {entry.name: entry for entry in scanner}
+    except OSError as error:
+        raise exporter.ExportError("bundle directory is unavailable") from error
+    if not stat.S_ISDIR(root_metadata.st_mode):
+        raise exporter.ExportError("bundle root is not a regular directory")
+    if set(root_entries) != ROOT_REGULAR_FILES | {"reference"}:
+        raise exporter.ExportError("bundle root entries are not exact")
+    for name in ROOT_REGULAR_FILES:
+        if not root_entries[name].is_file(follow_symlinks=False):
+            raise exporter.ExportError("bundle root contains a non-regular file")
+    reference = root_entries["reference"]
+    if not reference.is_dir(follow_symlinks=False):
+        raise exporter.ExportError("bundle reference entry is not a regular directory")
+    try:
+        with os.scandir(directory / "reference") as scanner:
+            reference_entries = {entry.name: entry for entry in scanner}
+    except OSError as error:
+        raise exporter.ExportError("bundle reference directory is unavailable") from error
+    if set(reference_entries) != REFERENCE_REGULAR_FILES:
+        raise exporter.ExportError("bundle reference entries are not exact")
+    if any(
+        not entry.is_file(follow_symlinks=False)
+        for entry in reference_entries.values()
+    ):
+        raise exporter.ExportError("bundle reference contains a non-regular file")
+
+
+def _verify_tree_bounds(directory: Path) -> None:
+    bounds = {
+        "LICENSE": MAXIMUM_LICENSE_BYTES,
+        "NOTICE.md": MAXIMUM_NOTICE_BYTES,
+        "detector.onnx": MAXIMUM_MODEL_BYTES,
+        "recognizer.onnx": MAXIMUM_MODEL_BYTES,
+        "dictionary.txt": MAXIMUM_DICTIONARY_BYTES,
+        "reference/detector-input.bin": MAXIMUM_REFERENCE_BYTES,
+        "reference/detector-output.json": MAXIMUM_REFERENCE_BYTES,
+        "reference/recognizer-input.bin": MAXIMUM_REFERENCE_BYTES,
+        "reference/recognizer-output.json": MAXIMUM_REFERENCE_BYTES,
+    }
+    for relative, maximum in bounds.items():
+        _regular_file_size(
+            directory / relative,
+            maximum,
+            relative,
+        )
+
+
+def _verify_toolchain(
+    value: object,
+    configuration: exporter.ExportConfiguration,
+) -> None:
+    toolchain = _exact_keys(
+        value,
+        set(exporter.TOOLCHAIN_DISTRIBUTIONS),
+        "export toolchain",
+    )
+    expected = {
+        key: configuration.toolchain[key]
+        for key in exporter.TOOLCHAIN_DISTRIBUTIONS
+    }
+    installed = exporter.validate_installed_toolchain(configuration)
+    if (
+        configuration.toolchain["python_implementation"] != "cpython"
+        or configuration.toolchain["python_version"] != "3.11"
+        or expected != EXPECTED_VERIFIER_TOOLCHAIN
+        or toolchain != EXPECTED_VERIFIER_TOOLCHAIN
+        or installed != EXPECTED_VERIFIER_TOOLCHAIN
+    ):
+        raise exporter.ExportError(
+            "manifest or verifier toolchain does not match reviewed pins"
+        )
 
 
 def verify_bundle(manifest_path: Path) -> tuple[str, str]:
     manifest_path = manifest_path.expanduser().resolve()
     directory = manifest_path.parent
-    manifest = _read_manifest(manifest_path)
-    _verify_exact_files(directory)
     configuration = exporter.load_model_config()
+    exporter.validate_installed_toolchain(configuration)
+    manifest = _read_manifest(manifest_path)
+    _verify_exact_tree(directory)
+    _verify_tree_bounds(directory)
     profile = manifest["profile"]
     if profile not in configuration.profiles:
         raise exporter.ExportError("bundle profile is invalid")
@@ -265,6 +434,7 @@ def verify_bundle(manifest_path: Path) -> tuple[str, str]:
         or manifest["minimum_runtime_version"] != "1.22"
     ):
         raise exporter.ExportError("bundle root contract is invalid")
+    _verify_toolchain(manifest["export_toolchain"], configuration)
 
     profile_models = configuration.profiles[profile]
     detector_pin = configuration.models[profile_models["detector"]]
@@ -308,11 +478,20 @@ def verify_bundle(manifest_path: Path) -> tuple[str, str]:
         "dictionary.txt",
         expected_bytes=dictionary["file_bytes"],
         expected_sha256=dictionary_asset["sha256"],
+        maximum_bytes=MAXIMUM_DICTIONARY_BYTES,
     )
-    if (directory / "dictionary.txt").read_text(encoding="utf-8").splitlines() != dictionary[
-        "entries"
-    ]:
+    dictionary_bytes = _read_bounded_regular_file(
+        directory / "dictionary.txt",
+        MAXIMUM_DICTIONARY_BYTES,
+        "dictionary",
+        expected_bytes=dictionary["file_bytes"],
+    )
+    if dictionary_bytes.decode("utf-8").splitlines() != dictionary["entries"]:
         raise exporter.ExportError("dictionary bytes do not match manifest entries")
+
+    references = _verify_reference_metadata(
+        directory, manifest["reference_artifacts"]
+    )
 
     asset = _exact_keys(
         manifest["asset"], {"kind", "version", "license", "sha256"}, "bundle asset"
@@ -405,28 +584,6 @@ def verify_bundle(manifest_path: Path) -> tuple[str, str]:
     }:
         raise exporter.ExportError("threshold or resource contract is invalid")
 
-    toolchain = _exact_keys(
-        manifest["export_toolchain"],
-        {
-            "paddlepaddle_version",
-            "paddle2onnx_version",
-            "onnx_version",
-            "onnx_runtime_version",
-        },
-        "export toolchain",
-    )
-    installed_versions = {
-        "paddlepaddle_version": exporter._package_version("paddlepaddle"),
-        "paddle2onnx_version": exporter._package_version("paddle2onnx"),
-        "onnx_version": exporter._package_version("onnx"),
-        "onnx_runtime_version": exporter._package_version("onnxruntime"),
-    }
-    if toolchain != installed_versions:
-        raise exporter.ExportError("manifest toolchain does not match verifier environment")
-
-    references = _verify_reference_metadata(
-        directory, manifest["reference_artifacts"]
-    )
     _verify_onnx_reference(
         directory / "detector.onnx",
         detector_contract,
@@ -451,8 +608,9 @@ def build_argument_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
-    arguments = build_argument_parser().parse_args()
     try:
+        exporter.require_production_python()
+        arguments = build_argument_parser().parse_args()
         profile, version = verify_bundle(arguments.manifest)
     except (exporter.ExportError, OSError, ValueError, json.JSONDecodeError) as error:
         print(f"status=failed error={type(error).__name__}", file=sys.stderr)
