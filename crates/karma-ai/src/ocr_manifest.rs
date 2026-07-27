@@ -10,6 +10,14 @@ use crate::{AssetKind, AssetManifest, ColorOrder, ManifestError, TensorLayout};
 
 pub const MAX_OCR_MODEL_BYTES: u64 = 256 * 1024 * 1024;
 pub const MAX_OCR_DICTIONARY_BYTES: u64 = 4 * 1024 * 1024;
+pub const OCR_LIGHTWEIGHT_DETECTOR_MODEL: &str = "PP-OCRv5_mobile_det";
+pub const OCR_LIGHTWEIGHT_RECOGNIZER_MODEL: &str = "PP-OCRv5_mobile_rec";
+pub const OCR_ACCURATE_DETECTOR_MODEL: &str = "PP-OCRv5_server_det";
+pub const OCR_ACCURATE_RECOGNIZER_MODEL: &str = "PP-OCRv5_server_rec";
+pub const OCR_REFERENCE_DETECTOR_INPUT_PATH: &str = "reference/detector-input.bin";
+pub const OCR_REFERENCE_DETECTOR_OUTPUT_PATH: &str = "reference/detector-output.json";
+pub const OCR_REFERENCE_RECOGNIZER_INPUT_PATH: &str = "reference/recognizer-input.bin";
+pub const OCR_REFERENCE_RECOGNIZER_OUTPUT_PATH: &str = "reference/recognizer-output.json";
 const APACHE_2_LICENSE: &str = "Apache-2.0";
 const OCR_OPSET: u16 = 18;
 const OCR_RUNTIME_VERSION: &str = "1.22";
@@ -44,8 +52,26 @@ pub enum OcrTensorElementType {
 #[serde(deny_unknown_fields)]
 pub struct OcrModelAsset {
     pub asset: AssetManifest,
+    pub model_name: String,
     pub file_name: String,
     pub file_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OcrReferenceArtifact {
+    pub path: String,
+    pub file_bytes: u64,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OcrReferenceArtifacts {
+    pub detector_input: OcrReferenceArtifact,
+    pub detector_output: OcrReferenceArtifact,
+    pub recognizer_input: OcrReferenceArtifact,
+    pub recognizer_output: OcrReferenceArtifact,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,6 +81,8 @@ pub struct OcrDictionaryManifest {
     pub file_name: String,
     pub file_bytes: u64,
     pub entries: Vec<String>,
+    /// A CTC blank may be the extra class immediately after `entries`; decoders must skip it
+    /// before looking up dictionary entries.
     pub blank_index: usize,
     pub languages: Vec<OcrLanguage>,
 }
@@ -114,6 +142,7 @@ pub struct OcrBundleManifest {
     pub recognizer_contract: OcrTensorContract,
     pub thresholds: OcrThresholds,
     pub resource_limits: OcrResourceLimits,
+    pub reference_artifacts: OcrReferenceArtifacts,
     pub opset: u16,
     pub minimum_runtime_version: String,
 }
@@ -130,6 +159,8 @@ pub enum OcrManifestError {
     InvalidOpset,
     #[error("OCR bundle runtime version is invalid")]
     InvalidRuntimeVersion,
+    #[error("OCR model names do not match the selected profile")]
+    ModelProfileMismatch,
     #[error("OCR detector tensor contract is invalid")]
     InvalidDetectorContract,
     #[error("OCR recognizer tensor contract is invalid")]
@@ -140,6 +171,19 @@ pub enum OcrManifestError {
     InvalidThresholds,
     #[error("OCR resource limits are invalid")]
     InvalidResourceLimits,
+    #[error("OCR reference artifact metadata is invalid")]
+    InvalidReferenceArtifacts,
+}
+
+impl Default for OcrThresholds {
+    fn default() -> Self {
+        Self {
+            probability: 0.3,
+            text_box: 0.6,
+            expansion: 1.5,
+            recognition_confidence: 0.5,
+        }
+    }
 }
 
 impl OcrBundleManifest {
@@ -169,6 +213,7 @@ impl OcrBundleManifest {
         if self.recognizer.file_name != "recognizer.onnx" {
             return Err(OcrManifestError::InvalidAsset);
         }
+        self.validate_profile_models()?;
         self.validate_dictionary()?;
         if self.opset != OCR_OPSET {
             return Err(OcrManifestError::InvalidOpset);
@@ -187,6 +232,25 @@ impl OcrBundleManifest {
         }
         if !has_exact_resource_limits(&self.resource_limits) {
             return Err(OcrManifestError::InvalidResourceLimits);
+        }
+        self.validate_reference_artifacts()?;
+        Ok(())
+    }
+
+    fn validate_profile_models(&self) -> Result<(), OcrManifestError> {
+        let (expected_detector, expected_recognizer) = match self.profile {
+            OcrModelProfile::Lightweight => (
+                OCR_LIGHTWEIGHT_DETECTOR_MODEL,
+                OCR_LIGHTWEIGHT_RECOGNIZER_MODEL,
+            ),
+            OcrModelProfile::Accurate => {
+                (OCR_ACCURATE_DETECTOR_MODEL, OCR_ACCURATE_RECOGNIZER_MODEL)
+            }
+        };
+        if self.detector.model_name != expected_detector
+            || self.recognizer.model_name != expected_recognizer
+        {
+            return Err(OcrManifestError::ModelProfileMismatch);
         }
         Ok(())
     }
@@ -211,6 +275,26 @@ impl OcrBundleManifest {
             self.dictionary.entries.iter().map(String::as_str).collect();
         if unique_entries.len() != self.dictionary.entries.len() {
             return Err(OcrManifestError::InvalidDictionary);
+        }
+        Ok(())
+    }
+
+    fn validate_reference_artifacts(&self) -> Result<(), OcrManifestError> {
+        let artifacts = &self.reference_artifacts;
+        if !is_reference_artifact_valid(
+            &artifacts.detector_input,
+            OCR_REFERENCE_DETECTOR_INPUT_PATH,
+        ) || !is_reference_artifact_valid(
+            &artifacts.detector_output,
+            OCR_REFERENCE_DETECTOR_OUTPUT_PATH,
+        ) || !is_reference_artifact_valid(
+            &artifacts.recognizer_input,
+            OCR_REFERENCE_RECOGNIZER_INPUT_PATH,
+        ) || !is_reference_artifact_valid(
+            &artifacts.recognizer_output,
+            OCR_REFERENCE_RECOGNIZER_OUTPUT_PATH,
+        ) {
+            return Err(OcrManifestError::InvalidReferenceArtifacts);
         }
         Ok(())
     }
@@ -253,6 +337,28 @@ fn is_pinned_revision(value: &str) -> bool {
 fn is_safe_file_name(value: &str) -> bool {
     let mut components = Path::new(value).components();
     matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none()
+}
+
+fn is_reference_artifact_valid(artifact: &OcrReferenceArtifact, expected_path: &str) -> bool {
+    artifact.path == expected_path
+        && is_safe_reference_path(&artifact.path)
+        && artifact.file_bytes != 0
+        && is_lowercase_sha256(&artifact.sha256)
+}
+
+fn is_safe_reference_path(value: &str) -> bool {
+    let mut components = Path::new(value).components();
+    matches!(
+        (components.next(), components.next(), components.next()),
+        (Some(Component::Normal(directory)), Some(Component::Normal(_)), None) if directory == "reference"
+    )
+}
+
+fn is_lowercase_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
 fn is_detector_contract_valid(contract: &OcrTensorContract) -> bool {

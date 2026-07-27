@@ -25,6 +25,7 @@ pub enum ColorOrder {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ImageInputContract {
     pub name: String,
     pub shape: [usize; 4],
@@ -36,12 +37,14 @@ pub struct ImageInputContract {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelLabel {
     pub index: usize,
     pub name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ImageModelManifest {
     pub asset: AssetManifest,
     pub source_repository: String,
@@ -243,5 +246,29 @@ mod tests {
         let mut value = valid_manifest();
         value.opset = 17;
         assert_eq!(value.validate(), Err(ImageManifestError::InvalidOpset));
+    }
+
+    #[test]
+    fn manifest_json_rejects_unknown_fields_at_every_image_contract_level() {
+        let mut manifest = serde_json::to_value(valid_manifest()).unwrap();
+        manifest
+            .as_object_mut()
+            .unwrap()
+            .insert("unexpected".into(), serde_json::Value::Null);
+        assert!(serde_json::from_value::<ImageModelManifest>(manifest).is_err());
+
+        let mut manifest = serde_json::to_value(valid_manifest()).unwrap();
+        manifest["input"]
+            .as_object_mut()
+            .unwrap()
+            .insert("unexpected".into(), serde_json::Value::Null);
+        assert!(serde_json::from_value::<ImageModelManifest>(manifest).is_err());
+
+        let mut manifest = serde_json::to_value(valid_manifest()).unwrap();
+        manifest["labels"][0]
+            .as_object_mut()
+            .unwrap()
+            .insert("unexpected".into(), serde_json::Value::Null);
+        assert!(serde_json::from_value::<ImageModelManifest>(manifest).is_err());
     }
 }

@@ -31,9 +31,13 @@ pub use manifest::{AssetKind, AssetManifest, ManifestError};
 pub use observation::{ImageInference, ObservationAssembler, ObservationInput};
 pub use ocr_engine::OcrEngine;
 pub use ocr_manifest::{
-    MAX_OCR_DICTIONARY_BYTES, MAX_OCR_MODEL_BYTES, OcrBundleManifest, OcrDictionaryManifest,
-    OcrLanguage, OcrManifestError, OcrModelAsset, OcrModelProfile, OcrResourceLimits,
-    OcrTensorContract, OcrTensorElementType, OcrThresholds,
+    MAX_OCR_DICTIONARY_BYTES, MAX_OCR_MODEL_BYTES, OCR_ACCURATE_DETECTOR_MODEL,
+    OCR_ACCURATE_RECOGNIZER_MODEL, OCR_LIGHTWEIGHT_DETECTOR_MODEL,
+    OCR_LIGHTWEIGHT_RECOGNIZER_MODEL, OCR_REFERENCE_DETECTOR_INPUT_PATH,
+    OCR_REFERENCE_DETECTOR_OUTPUT_PATH, OCR_REFERENCE_RECOGNIZER_INPUT_PATH,
+    OCR_REFERENCE_RECOGNIZER_OUTPUT_PATH, OcrBundleManifest, OcrDictionaryManifest, OcrLanguage,
+    OcrManifestError, OcrModelAsset, OcrModelProfile, OcrReferenceArtifact, OcrReferenceArtifacts,
+    OcrResourceLimits, OcrTensorContract, OcrTensorElementType, OcrThresholds,
 };
 pub use ocr_text::{OcrTextBatch, OcrTextError};
 pub use preparation::{FramePreparationConfig, FramePreparer};
@@ -62,6 +66,7 @@ mod ocr_contract_tests {
                     license: "Apache-2.0".into(),
                     sha256: "b".repeat(64),
                 },
+                model_name: OCR_LIGHTWEIGHT_DETECTOR_MODEL.into(),
                 file_name: "detector.onnx".into(),
                 file_bytes: 1_024,
             },
@@ -72,6 +77,7 @@ mod ocr_contract_tests {
                     license: "Apache-2.0".into(),
                     sha256: "c".repeat(64),
                 },
+                model_name: OCR_LIGHTWEIGHT_RECOGNIZER_MODEL.into(),
                 file_name: "recognizer.onnx".into(),
                 file_bytes: 1_024,
             },
@@ -139,6 +145,28 @@ mod ocr_contract_tests {
                 maximum_batch_size: 8,
                 maximum_line_characters: 128,
                 maximum_total_characters: 4_096,
+            },
+            reference_artifacts: OcrReferenceArtifacts {
+                detector_input: OcrReferenceArtifact {
+                    path: OCR_REFERENCE_DETECTOR_INPUT_PATH.into(),
+                    file_bytes: 16,
+                    sha256: "e".repeat(64),
+                },
+                detector_output: OcrReferenceArtifact {
+                    path: OCR_REFERENCE_DETECTOR_OUTPUT_PATH.into(),
+                    file_bytes: 16,
+                    sha256: "f".repeat(64),
+                },
+                recognizer_input: OcrReferenceArtifact {
+                    path: OCR_REFERENCE_RECOGNIZER_INPUT_PATH.into(),
+                    file_bytes: 16,
+                    sha256: "0".repeat(64),
+                },
+                recognizer_output: OcrReferenceArtifact {
+                    path: OCR_REFERENCE_RECOGNIZER_OUTPUT_PATH.into(),
+                    file_bytes: 16,
+                    sha256: "1".repeat(64),
+                },
             },
             opset: 18,
             minimum_runtime_version: "1.22".into(),
@@ -257,6 +285,85 @@ mod ocr_contract_tests {
         assert_eq!(
             manifest.validate(),
             Err(OcrManifestError::InvalidResourceLimits)
+        );
+    }
+
+    #[test]
+    fn ocr_manifest_binds_each_profile_to_its_official_model_pair() {
+        let mut manifest = valid_manifest();
+        manifest.detector.model_name = OCR_ACCURATE_DETECTOR_MODEL.into();
+        assert_eq!(
+            manifest.validate(),
+            Err(OcrManifestError::ModelProfileMismatch)
+        );
+
+        let mut manifest = valid_manifest();
+        manifest.profile = OcrModelProfile::Accurate;
+        manifest.detector.model_name = OCR_ACCURATE_DETECTOR_MODEL.into();
+        manifest.recognizer.model_name = OCR_ACCURATE_RECOGNIZER_MODEL.into();
+        assert_eq!(manifest.validate(), Ok(()));
+    }
+
+    #[test]
+    fn ocr_manifest_rejects_invalid_reference_artifact_metadata() {
+        let mut manifest = valid_manifest();
+        manifest.reference_artifacts.detector_input.path = "reference/../detector-input.bin".into();
+        assert_eq!(
+            manifest.validate(),
+            Err(OcrManifestError::InvalidReferenceArtifacts)
+        );
+
+        let mut manifest = valid_manifest();
+        manifest.reference_artifacts.detector_output.path = "reference/detector-output.bin".into();
+        assert_eq!(
+            manifest.validate(),
+            Err(OcrManifestError::InvalidReferenceArtifacts)
+        );
+
+        let mut manifest = valid_manifest();
+        manifest.reference_artifacts.recognizer_input.file_bytes = 0;
+        assert_eq!(
+            manifest.validate(),
+            Err(OcrManifestError::InvalidReferenceArtifacts)
+        );
+
+        let mut manifest = valid_manifest();
+        manifest.reference_artifacts.recognizer_output.sha256 = "A".repeat(64);
+        assert_eq!(
+            manifest.validate(),
+            Err(OcrManifestError::InvalidReferenceArtifacts)
+        );
+    }
+
+    #[test]
+    fn ocr_thresholds_default_to_the_documented_values() {
+        assert_eq!(
+            OcrThresholds::default(),
+            OcrThresholds {
+                probability: 0.3,
+                text_box: 0.6,
+                expansion: 1.5,
+                recognition_confidence: 0.5,
+            }
+        );
+    }
+
+    #[test]
+    fn ocr_manifest_accepts_a_ctc_blank_after_dictionary_entries() {
+        let mut manifest = valid_manifest();
+        manifest.dictionary.blank_index = manifest.dictionary.entries.len();
+
+        assert_eq!(manifest.validate(), Ok(()));
+    }
+
+    #[test]
+    fn ocr_manifest_rejects_a_ctc_blank_past_dictionary_entries() {
+        let mut manifest = valid_manifest();
+        manifest.dictionary.blank_index = manifest.dictionary.entries.len() + 1;
+
+        assert_eq!(
+            manifest.validate(),
+            Err(OcrManifestError::InvalidDictionary)
         );
     }
 
