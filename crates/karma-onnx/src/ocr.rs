@@ -212,6 +212,10 @@ impl OcrEngine for OnnxOcrEngine {
             }
         }
     }
+
+    fn resource_limit_events(&self) -> u64 {
+        self.health.resource_limit_events()
+    }
 }
 
 struct ClassifyOutcome {

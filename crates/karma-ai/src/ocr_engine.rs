@@ -8,4 +8,7 @@ pub trait OcrEngine {
         frame: &PreparedFrame,
         word_pack: &WordPack,
     ) -> Result<OcrMatchSummary, Self::Error>;
+
+    /// Returns the cumulative number of resource-limit events observed by this engine.
+    fn resource_limit_events(&self) -> u64;
 }

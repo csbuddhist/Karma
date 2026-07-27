@@ -9,6 +9,9 @@ license.workspace = true
 karma-ai = { path = "../../crates/karma-ai" }
 karma-onnx = { path = "../../crates/karma-onnx" }
 karma-windows = { path = "../../crates/karma-windows" }
+karma-domain = { path = "../../crates/karma-domain" }
+serde.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
-karma-domain = { path = "../../crates/karma-domain" }
+tempfile = "3"

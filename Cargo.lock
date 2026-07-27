@@ -403,6 +403,9 @@ dependencies = [
  "karma-domain",
  "karma-onnx",
  "karma-windows",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

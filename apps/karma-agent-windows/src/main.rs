@@ -1,6 +1,8 @@
 #[cfg(any(windows, test))]
 mod image_consumer;
 #[cfg(any(windows, test))]
+mod ocr_profile;
+#[cfg(any(windows, test))]
 mod startup;
 
 #[cfg(windows)]
