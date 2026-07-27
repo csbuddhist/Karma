@@ -9,7 +9,9 @@ mod mailbox;
 mod manifest;
 mod observation;
 mod ocr_engine;
+mod ocr_geometry;
 mod ocr_manifest;
+mod ocr_tensor;
 mod ocr_text;
 mod preparation;
 mod scheduler;
@@ -30,6 +32,7 @@ pub use mailbox::LatestFrameMailbox;
 pub use manifest::{AssetKind, AssetManifest, ManifestError};
 pub use observation::{ImageInference, ObservationAssembler, ObservationInput};
 pub use ocr_engine::OcrEngine;
+pub use ocr_geometry::{TextQuadrilateral, sort_and_limit_boxes};
 pub use ocr_manifest::{
     MAX_OCR_DICTIONARY_BYTES, MAX_OCR_EXPORT_TOOL_VERSION_LENGTH, MAX_OCR_MODEL_BYTES,
     OCR_ACCURATE_DETECTOR_MODEL, OCR_ACCURATE_RECOGNIZER_MODEL, OCR_LIGHTWEIGHT_DETECTOR_MODEL,
@@ -40,6 +43,10 @@ pub use ocr_manifest::{
     OcrExportToolchain, OcrLanguage, OcrManifestError, OcrModelAsset, OcrModelProfile,
     OcrReferenceArtifact, OcrReferenceArtifacts, OcrResourceLimits, OcrTensorContract,
     OcrTensorElementType, OcrThresholds, OcrUpstreamAsset,
+};
+pub use ocr_tensor::{
+    DetectionTransform, DetectorTensor, DetectorTensorBuilder, OcrTensorError,
+    RecognizerTensorBatch, RecognizerTensorBuilder,
 };
 pub use ocr_text::{OcrTextBatch, OcrTextError};
 pub use preparation::{FramePreparationConfig, FramePreparer};
