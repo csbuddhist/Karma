@@ -182,7 +182,7 @@ impl CtcDecoder {
             }
         }
 
-        OcrTextBatch::from_lines(lines, self.maximum_total_characters)
+        OcrTextBatch::from_zeroizing_lines(lines, self.maximum_total_characters)
             .map_err(|_| CtcError::ArithmeticOverflow)
     }
 
@@ -291,8 +291,8 @@ impl DecodedLine {
         self.confidence
     }
 
-    fn into_text(mut self) -> String {
-        std::mem::take(&mut *self.text)
+    fn into_text(self) -> Zeroizing<String> {
+        self.text
     }
 }
 
@@ -323,4 +323,54 @@ fn most_likely_class(logits: &[f32]) -> Result<(usize, f32), CtcError> {
         .sum::<f32>();
     let probability = 1.0 / denominator;
     Ok((class, probability))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn logits(classes: usize, sequence: &[usize]) -> Vec<f32> {
+        let mut values = vec![-8.0; classes * sequence.len()];
+        for (time, class) in sequence.iter().copied().enumerate() {
+            values[time * classes + class] = 8.0;
+        }
+        values
+    }
+
+    fn decoded_lines(batch: &OcrTextBatch) -> Vec<&str> {
+        batch.line_refs().collect()
+    }
+
+    #[test]
+    fn decoded_content_removes_blanks_and_collapses_only_adjacent_repeats() {
+        let decoder = CtcDecoder::new(
+            CtcDictionary::parse("a\n中\n文", 3).unwrap(),
+            0.5,
+            128,
+            4_096,
+        )
+        .unwrap();
+        let values = logits(4, &[3, 0, 0, 3, 0, 1, 1, 3, 1, 2]);
+
+        let batch = decoder.decode_batch(&values, &[1, 10, 4]).unwrap();
+
+        assert_eq!(decoded_lines(&batch), ["aa中中文"]);
+    }
+
+    #[test]
+    fn decoded_batch_preserves_mixed_language_line_order() {
+        let decoder = CtcDecoder::new(
+            CtcDictionary::parse("A\n简\n體", 3).unwrap(),
+            0.5,
+            128,
+            4_096,
+        )
+        .unwrap();
+        let mut values = logits(4, &[0, 1, 3]);
+        values.extend(logits(4, &[2, 0, 3]));
+
+        let batch = decoder.decode_batch(&values, &[2, 3, 4]).unwrap();
+
+        assert_eq!(decoded_lines(&batch), ["A简", "體A"]);
+    }
 }

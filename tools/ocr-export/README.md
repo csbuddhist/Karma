@@ -104,8 +104,8 @@ JSON, loading ONNX, or starting ORT. Artifact reads are bounded and hashes strea
 declared-length enforcement.
 
 `assets/ocr/pp-ocrv5-mobile/manifest.example.json` is a schema-review example only. Its zero
-digests, one-byte lengths, and one-entry dictionary are placeholders; the exporter writes all
-production values from the verified local artifacts.
+digests, one-byte lengths, and one-entry dictionary are deliberately non-production sample values;
+the exporter writes all production values from the verified local artifacts.
 
 Archives are cached under `.local-models/.cache/ocr-export` when the documented output layout is
 used. `.local-models`, `.venv-ocr-export`, Python caches, archives, `.part` files, ONNX weights, and

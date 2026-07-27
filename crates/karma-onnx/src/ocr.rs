@@ -154,6 +154,7 @@ impl OnnxOcrEngine {
                 &tensor,
                 chunk.len(),
                 self.class_count,
+                self.limits.maximum_recognizer_width,
             )?;
             drop(tensor);
             let decoder = CtcDecoder::from_shared(
@@ -227,6 +228,21 @@ struct ClassifyOutcome {
 struct SessionOutput {
     shape: Vec<usize>,
     values: Zeroizing<Vec<f32>>,
+}
+
+enum RuntimeOutputContract {
+    Exact(Vec<usize>),
+    Recognizer {
+        batch: usize,
+        maximum_time_steps: usize,
+        class_count: usize,
+    },
+}
+
+#[derive(Clone, Copy)]
+struct SessionErrorKinds {
+    run: InferenceErrorKind,
+    output: InferenceErrorKind,
 }
 
 struct ReferenceTensor {
@@ -324,8 +340,11 @@ fn run_detector(
         &contract.output_name,
         &shape,
         tensor.as_slice(),
-        InferenceErrorKind::InferenceFailed,
-        InferenceErrorKind::OutputInvalid,
+        SessionErrorKinds {
+            run: InferenceErrorKind::InferenceFailed,
+            output: InferenceErrorKind::OutputInvalid,
+        },
+        &RuntimeOutputContract::Exact(vec![1, 1, shape[2], shape[3]]),
     )?;
     if output.shape != [1, 1, shape[2], shape[3]] {
         return Err(InferenceError::new(InferenceErrorKind::OutputInvalid));
@@ -340,6 +359,7 @@ fn run_recognizer(
     tensor: &RecognizerTensorBatch,
     batch: usize,
     class_count: usize,
+    maximum_time_steps: usize,
 ) -> Result<SessionOutput, InferenceError> {
     let shape = tensor.shape();
     let output = run_session(
@@ -348,8 +368,15 @@ fn run_recognizer(
         &contract.output_name,
         &shape,
         tensor.as_slice(),
-        InferenceErrorKind::InferenceFailed,
-        InferenceErrorKind::OutputInvalid,
+        SessionErrorKinds {
+            run: InferenceErrorKind::InferenceFailed,
+            output: InferenceErrorKind::OutputInvalid,
+        },
+        &RuntimeOutputContract::Recognizer {
+            batch,
+            maximum_time_steps,
+            class_count,
+        },
     )?;
     if output.shape.len() != 3
         || output.shape[0] != batch
@@ -367,42 +394,95 @@ fn run_session(
     output_name: &str,
     shape: &[usize],
     values: &[f32],
-    run_error: InferenceErrorKind,
-    output_error: InferenceErrorKind,
+    errors: SessionErrorKinds,
+    output_contract: &RuntimeOutputContract,
 ) -> Result<SessionOutput, InferenceError> {
-    let view =
-        ArrayViewD::from_shape(IxDyn(shape), values).map_err(|_| InferenceError::new(run_error))?;
-    let input = TensorRef::from_array_view(view).map_err(|_| InferenceError::new(run_error))?;
+    let view = ArrayViewD::from_shape(IxDyn(shape), values)
+        .map_err(|_| InferenceError::new(errors.run))?;
+    let input = TensorRef::from_array_view(view).map_err(|_| InferenceError::new(errors.run))?;
     let mut outputs = session
         .run(ort::inputs![input_name => input])
-        .map_err(|_| InferenceError::new(run_error))?;
+        .map_err(|_| InferenceError::new(errors.run))?;
     let output = outputs
         .get_mut(output_name)
-        .ok_or_else(|| InferenceError::new(output_error))?;
+        .ok_or_else(|| InferenceError::new(errors.output))?;
     let (runtime_shape, runtime_values) = output
         .try_extract_tensor_mut::<f32>()
-        .map_err(|_| InferenceError::new(output_error))?;
-    copy_and_zeroize_runtime_output(runtime_shape, runtime_values, output_error)
+        .map_err(|_| InferenceError::new(errors.output))?;
+    copy_and_zeroize_runtime_output(
+        runtime_shape,
+        runtime_values,
+        errors.output,
+        output_contract,
+    )
 }
 
 /// ORT's mutable tensor view is exclusively borrowed from `SessionOutputs`.
-/// Copying into zeroizing ownership and wiping that view happen before any fallible validation.
+/// Shape and element ceilings are checked before copying into zeroizing ownership. The borrowed
+/// ORT memory is wiped on every success and rejection path.
 fn copy_and_zeroize_runtime_output(
     runtime_shape: &[i64],
     runtime_values: &mut [f32],
     output_error: InferenceErrorKind,
+    output_contract: &RuntimeOutputContract,
 ) -> Result<SessionOutput, InferenceError> {
+    let shape = match validate_runtime_output(runtime_shape, runtime_values.len(), output_contract)
+    {
+        Ok(shape) => shape,
+        Err(()) => {
+            runtime_values.zeroize();
+            return Err(InferenceError::new(output_error));
+        }
+    };
+    if runtime_values.iter().any(|value| !value.is_finite()) {
+        runtime_values.zeroize();
+        return Err(InferenceError::new(output_error));
+    }
     let values = Zeroizing::new(runtime_values.to_vec());
     runtime_values.zeroize();
+    Ok(SessionOutput { shape, values })
+}
+
+fn validate_runtime_output(
+    runtime_shape: &[i64],
+    runtime_value_count: usize,
+    contract: &RuntimeOutputContract,
+) -> Result<Vec<usize>, ()> {
+    let expected_rank = match contract {
+        RuntimeOutputContract::Exact(shape) => shape.len(),
+        RuntimeOutputContract::Recognizer { .. } => 3,
+    };
+    if runtime_shape.len() != expected_rank {
+        return Err(());
+    }
     let shape = runtime_shape
         .iter()
         .map(|dimension| usize::try_from(*dimension))
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| InferenceError::new(output_error))?;
-    if values.iter().any(|value| !value.is_finite()) {
-        return Err(InferenceError::new(output_error));
+        .map_err(|_| ())?;
+    let valid_shape = match contract {
+        RuntimeOutputContract::Exact(expected) => shape.as_slice() == expected.as_slice(),
+        RuntimeOutputContract::Recognizer {
+            batch,
+            maximum_time_steps,
+            class_count,
+        } => {
+            shape[0] == *batch
+                && (1..=*maximum_time_steps).contains(&shape[1])
+                && shape[2] == *class_count
+        }
+    };
+    if !valid_shape {
+        return Err(());
     }
-    Ok(SessionOutput { shape, values })
+    let expected_elements = shape
+        .iter()
+        .try_fold(1_usize, |total, dimension| total.checked_mul(*dimension))
+        .ok_or(())?;
+    if expected_elements != runtime_value_count {
+        return Err(());
+    }
+    Ok(shape)
 }
 
 fn verify_references(
@@ -435,8 +515,11 @@ fn verify_references(
         &bundle.manifest().detector_contract.output_name,
         &detector_reference.shape,
         &detector_reference.values,
-        InferenceErrorKind::OcrReferenceInvalid,
-        InferenceErrorKind::OcrReferenceInvalid,
+        SessionErrorKinds {
+            run: InferenceErrorKind::OcrReferenceInvalid,
+            output: InferenceErrorKind::OcrReferenceInvalid,
+        },
+        &RuntimeOutputContract::Exact(vec![1, 1, *detector_height, *detector_width]),
     )?;
     if detector_actual.shape != [1, 1, *detector_height, *detector_width] {
         return Err(reference_invalid());
@@ -474,8 +557,21 @@ fn verify_references(
         &bundle.manifest().recognizer_contract.output_name,
         &recognizer_reference.shape,
         &recognizer_reference.values,
-        InferenceErrorKind::OcrReferenceInvalid,
-        InferenceErrorKind::OcrReferenceInvalid,
+        SessionErrorKinds {
+            run: InferenceErrorKind::OcrReferenceInvalid,
+            output: InferenceErrorKind::OcrReferenceInvalid,
+        },
+        &RuntimeOutputContract::Recognizer {
+            batch: *recognizer_batch,
+            maximum_time_steps: bundle.manifest().resource_limits.maximum_recognizer_width,
+            class_count: bundle
+                .manifest()
+                .dictionary
+                .entries
+                .len()
+                .checked_add(1)
+                .ok_or_else(reference_invalid)?,
+        },
     )?;
     compare_reference(
         recognizer_actual,
@@ -581,6 +677,7 @@ mod tests {
             &[1, 2],
             &mut runtime_values,
             InferenceErrorKind::OutputInvalid,
+            &RuntimeOutputContract::Exact(vec![1, 2]),
         )
         .unwrap();
 
@@ -597,6 +694,7 @@ mod tests {
                 &[1],
                 &mut non_finite,
                 InferenceErrorKind::OutputInvalid,
+                &RuntimeOutputContract::Exact(vec![1]),
             )
             .is_err()
         );
@@ -608,9 +706,56 @@ mod tests {
                 &[-1],
                 &mut invalid_shape,
                 InferenceErrorKind::OutputInvalid,
+                &RuntimeOutputContract::Exact(vec![1]),
             )
             .is_err()
         );
         assert_eq!(invalid_shape, [0.0]);
+    }
+
+    #[test]
+    fn runtime_output_rejects_oversized_shapes_before_copy_and_wipes_the_ort_slice() {
+        let mut oversized_detector = [0.5];
+        assert!(
+            copy_and_zeroize_runtime_output(
+                &[1, 1, 641, 640],
+                &mut oversized_detector,
+                InferenceErrorKind::OutputInvalid,
+                &RuntimeOutputContract::Exact(vec![1, 1, 640, 640]),
+            )
+            .is_err()
+        );
+        assert_eq!(oversized_detector, [0.0]);
+
+        let mut excessive_time_steps = [0.75];
+        assert!(
+            copy_and_zeroize_runtime_output(
+                &[1, 321, 10],
+                &mut excessive_time_steps,
+                InferenceErrorKind::OutputInvalid,
+                &RuntimeOutputContract::Recognizer {
+                    batch: 1,
+                    maximum_time_steps: 320,
+                    class_count: 10,
+                },
+            )
+            .is_err()
+        );
+        assert_eq!(excessive_time_steps, [0.0]);
+    }
+
+    #[test]
+    fn runtime_output_rejects_element_count_mismatch_and_wipes_the_ort_slice() {
+        let mut runtime_values = [0.25, 0.75, 0.5];
+        assert!(
+            copy_and_zeroize_runtime_output(
+                &[1, 2],
+                &mut runtime_values,
+                InferenceErrorKind::OutputInvalid,
+                &RuntimeOutputContract::Exact(vec![1, 2]),
+            )
+            .is_err()
+        );
+        assert_eq!(runtime_values, [0.0, 0.0, 0.0]);
     }
 }

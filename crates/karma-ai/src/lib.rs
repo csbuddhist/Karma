@@ -569,7 +569,13 @@ mod ocr_contract_tests {
 
     #[test]
     fn ocr_text_debug_and_json_do_not_expose_content() {
-        let batch = OcrTextBatch::from_lines(vec!["sensitive fixture phrase".into()], 64).unwrap();
+        let batch = OcrTextBatch::from_zeroizing_lines(
+            vec![zeroize::Zeroizing::new(
+                "sensitive fixture phrase".to_owned(),
+            )],
+            64,
+        )
+        .unwrap();
         assert_eq!(
             format!("{batch:?}"),
             "OcrTextBatch { lines: 1, characters: 24 }"
@@ -581,7 +587,13 @@ mod ocr_contract_tests {
     #[test]
     fn ocr_text_enforces_the_character_limit() {
         assert_eq!(
-            OcrTextBatch::from_lines(vec!["four".into(), "five!".into()], 8),
+            OcrTextBatch::from_zeroizing_lines(
+                vec![
+                    zeroize::Zeroizing::new("four".to_owned()),
+                    zeroize::Zeroizing::new("five!".to_owned())
+                ],
+                8
+            ),
             Err(OcrTextError::CharacterLimitExceeded)
         );
     }

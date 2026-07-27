@@ -167,7 +167,7 @@ score >= 0.95                         → 立即处置
 - WGC 不可用时可降级到 DXGI Desktop Duplication，但必须记录降级事件。
 - 锁屏、UAC 安全桌面和受 DRM 保护内容不承诺可采集。
 
-当前仓库已实现 Windows 帧输入与图像推理切片：每个活动显示器使用独立 D3D11 设备、FreeThreaded WGC 会话、容量 1 最新帧邮箱和独立 ONNX Runtime CPU 会话；优先通过 D3D11 Video Processor 缩放到最长边 640，再映射 bounded staging texture。GPU 路径不可用时可使用受 16K 边长和 256 MiB 上限约束的 CPU 正确性降级，并立即零化临时像素。Agent 从 `KARMA_IMAGE_MODEL_MANIFEST` 读取离线模型清单，按每显示器最多 2 FPS 分类，只输出计数型健康信息，不输出分数或画面。OCR、连续帧处置状态机和应用关闭仍未接入。
+当前仓库已实现 Windows 帧输入、图像推理与 OCR 推理切片：每个活动显示器使用独立 D3D11 设备、FreeThreaded WGC 会话、容量 1 最新帧邮箱和独立 ONNX Runtime CPU 会话；优先通过 D3D11 Video Processor 缩放到最长边 640，再映射 bounded staging texture。GPU 路径不可用时可使用受 16K 边长和 256 MiB 上限约束的 CPU 正确性降级，并立即零化临时像素。Agent 从 `KARMA_IMAGE_MODEL_MANIFEST` 读取离线图像模型清单，并通过 `KARMA_OCR_LIGHTWEIGHT_MANIFEST`、可选的 `KARMA_OCR_ACCURATE_MANIFEST` 与 `KARMA_OCR_PROFILE` 选择已验证的 OCR 模型包。OCR 关键词规则来自编译进 Agent 的严格、有限、源码受控词库；启动时必须在捕获任何画面前完成解析和编译，每个显示器获得独立词库实例。运行时只输出稳定错误码和计数型健康信息，不输出规则、识别原文、分数或画面。连续帧处置状态机和应用关闭仍未接入。
 
 macOS 开发机上的测试和 `x86_64-pc-windows-msvc` 交叉编译只证明便携算法、Rust 类型约束和 Windows API 签名正确；GPU 驱动行为、实际帧颜色、资源释放及多屏性能必须按 [Windows 帧管线真机验收清单](docs/windows-frame-pipeline-acceptance.md) 与 [Windows ONNX 真机验收清单](docs/windows-onnx-acceptance.md) 在 Windows 10 22H2/Windows 11 上验证，未记录该证据前不视为运行时验收完成。
 

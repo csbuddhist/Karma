@@ -65,7 +65,8 @@ threshold ranges, and the exact resource ceilings.
 ```rust
 #[test]
 fn ocr_text_debug_and_json_do_not_expose_content() {
-    let batch = OcrTextBatch::from_lines(vec!["sensitive fixture phrase".into()], 64).unwrap();
+    // Constructed only by the crate-private zeroizing OCR decoder boundary.
+    let batch = decode_sensitive_fixture();
     assert_eq!(format!("{batch:?}"), "OcrTextBatch { lines: 1, characters: 24 }");
     fn assert_not_serialize<T>() {}
     assert_not_serialize::<OcrTextBatch>();
@@ -76,7 +77,7 @@ Use a compile-fail doctest to prove `serde_json::to_string(&batch)` does not com
 
 - [ ] **Step 2: Run RED**
 
-Run: `cargo test -p karma-ai ocr`  
+Run: `cargo test -p karma-ai ocr`
 Expected: compilation fails because the OCR modules and exports do not exist.
 
 - [ ] **Step 3: Implement strict types and validation**
@@ -98,7 +99,7 @@ pub trait OcrEngine {
 
 - [ ] **Step 4: Verify GREEN**
 
-Run: `cargo fmt --all && cargo test -p karma-ai ocr && cargo clippy -p karma-ai --all-targets -- -D warnings`  
+Run: `cargo fmt --all && cargo test -p karma-ai ocr && cargo clippy -p karma-ai --all-targets -- -D warnings`
 Expected: all new and existing `karma-ai` tests pass.
 
 - [ ] **Step 5: Commit**
@@ -130,7 +131,7 @@ For a 640×360 frame assert the detector tensor is `[1, 3, 384, 640]`.
 
 - [ ] **Step 2: Run detector RED**
 
-Run: `cargo test -p karma-ai ocr_tensor::tests::detector`  
+Run: `cargo test -p karma-ai ocr_tensor::tests::detector`
 Expected: compilation fails because `DetectorTensorBuilder` is missing.
 
 - [ ] **Step 3: Implement detector tensor ownership**
@@ -153,7 +154,7 @@ degenerate transforms. Batches contain at most eight crops and use zeroizing ten
 
 - [ ] **Step 6: Verify and commit**
 
-Run: `cargo fmt --all && cargo test -p karma-ai ocr_tensor && cargo test -p karma-ai ocr_geometry && cargo clippy -p karma-ai --all-targets -- -D warnings`  
+Run: `cargo fmt --all && cargo test -p karma-ai ocr_tensor && cargo test -p karma-ai ocr_geometry && cargo clippy -p karma-ai --all-targets -- -D warnings`
 Expected: preprocessing, geometry, limits, and redaction tests pass.
 
 ```bash
@@ -189,7 +190,7 @@ assert!(!format!("{decoded:?}").contains("敏感"));
 
 - [ ] **Step 2: Run RED**
 
-Run: `cargo test -p karma-ai ctc`  
+Run: `cargo test -p karma-ai ctc`
 Expected: compilation fails because decoder types do not exist.
 
 - [ ] **Step 3: Implement numerically stable decoding**
@@ -201,7 +202,7 @@ outside this module.
 
 - [ ] **Step 4: Verify and commit**
 
-Run: `cargo fmt --all && cargo test -p karma-ai ctc && cargo clippy -p karma-ai --all-targets -- -D warnings`  
+Run: `cargo fmt --all && cargo test -p karma-ai ctc && cargo clippy -p karma-ai --all-targets -- -D warnings`
 Expected: all decoder boundary and privacy tests pass.
 
 ```bash
@@ -232,7 +233,7 @@ absolute path.
 
 - [ ] **Step 2: Run RED**
 
-Run: `cargo test -p karma-onnx ocr_model`  
+Run: `cargo test -p karma-onnx ocr_model`
 Expected: compilation fails because `VerifiedOcrBundle` does not exist.
 
 - [ ] **Step 3: Implement one-pass verification**
@@ -243,7 +244,7 @@ reopen an asset path when creating sessions.
 
 - [ ] **Step 4: Verify and commit**
 
-Run: `cargo fmt --all && cargo test -p karma-onnx ocr_model && cargo clippy -p karma-onnx --all-targets -- -D warnings`  
+Run: `cargo fmt --all && cargo test -p karma-onnx ocr_model && cargo clippy -p karma-onnx --all-targets -- -D warnings`
 Expected: all bundle verification and path-replacement tests pass.
 
 ```bash
@@ -286,7 +287,7 @@ Add `tools/ocr-export/make_test_fixtures.py` that emits:
 - detector: dynamic `[1,3,H,W]` input and `[1,1,H,W]` probability map;
 - recognizer: dynamic `[N,3,48,W]` input and fixed-class CTC logits.
 
-Run: `python3 tools/ocr-export/make_test_fixtures.py`  
+Run: `python3 tools/ocr-export/make_test_fixtures.py`
 Expected: both checked-in fixtures are below 50 KiB and contain no production model weights.
 
 - [ ] **Step 4: Write session contract and end-to-end RED tests**
@@ -304,7 +305,7 @@ Record stable error kinds and counters without runtime error strings.
 
 - [ ] **Step 6: Verify and commit**
 
-Run: `cargo fmt --all && cargo test -p karma-onnx && cargo clippy -p karma-onnx --all-targets -- -D warnings`  
+Run: `cargo fmt --all && cargo test -p karma-onnx && cargo clippy -p karma-onnx --all-targets -- -D warnings`
 Expected: bundle, DB, ONNX, privacy, and existing image-classifier tests pass.
 
 ```bash
@@ -333,7 +334,7 @@ git commit -m "feat: run PP-OCR pipelines with ONNX"
 
 - [ ] **Step 1: Add an export-tool contract test**
 
-Run: `python3 -m unittest discover -s tools/ocr-export/tests -v`  
+Run: `python3 -m unittest discover -s tools/ocr-export/tests -v`
 Expected RED: tests fail until URL/revision/hash pinning, safe extraction, subprocess checking, and
 manifest hashing are implemented.
 
@@ -362,7 +363,7 @@ pass. If downloads require the user's proxy, run with
 
 - [ ] **Step 4: Verify repository hygiene and commit**
 
-Run: `git status --short && git check-ignore .local-models/pp-ocrv5-mobile/detector.onnx`  
+Run: `git status --short && git check-ignore .local-models/pp-ocrv5-mobile/detector.onnx`
 Expected: generated weights are ignored and only tooling/metadata are staged.
 
 ```bash
@@ -393,7 +394,7 @@ when 10/10 succeed, no resource limit occurs, reference summary matches, and sor
 
 - [ ] **Step 2: Run RED**
 
-Run: `cargo test -p karma-agent-windows ocr_profile`  
+Run: `cargo test -p karma-agent-windows ocr_profile`
 Expected: compilation fails because profile selection is missing.
 
 - [ ] **Step 3: Implement benchmark and cache contract**
@@ -405,7 +406,7 @@ summary categories.
 
 - [ ] **Step 4: Verify and commit**
 
-Run: `cargo fmt --all && cargo test -p karma-agent-windows ocr_profile && cargo clippy -p karma-agent-windows --all-targets -- -D warnings`  
+Run: `cargo fmt --all && cargo test -p karma-agent-windows ocr_profile && cargo clippy -p karma-agent-windows --all-targets -- -D warnings`
 Expected: all selection and cache tests pass.
 
 ```bash
@@ -435,7 +436,7 @@ success recovery, and separate state per consumer/monitor.
 
 - [ ] **Step 2: Run RED**
 
-Run: `cargo test -p karma-agent-windows inference_consumer`  
+Run: `cargo test -p karma-agent-windows inference_consumer`
 Expected: compilation fails because the combined consumer is missing.
 
 - [ ] **Step 3: Implement combined consumption**

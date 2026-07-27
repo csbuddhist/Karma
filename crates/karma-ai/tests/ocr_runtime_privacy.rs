@@ -1,4 +1,4 @@
-use karma_ai::{DetectionMap, DetectionMapError, OcrTextBatch, WordPack, WordRule};
+use karma_ai::{CtcDecoder, CtcDictionary, DetectionMap, DetectionMapError, WordPack, WordRule};
 use karma_domain::OcrRisk;
 use zeroize::Zeroizing;
 
@@ -65,7 +65,9 @@ fn word_pack_classifies_a_private_text_batch_without_public_line_refs() {
         OcrRisk::Keyword,
     )])
     .unwrap();
-    let batch = OcrTextBatch::from_lines(vec!["fixture match".into()], 64).unwrap();
+    let dictionary = CtcDictionary::parse("fixture match", 1).unwrap();
+    let decoder = CtcDecoder::new(dictionary, 0.5, 64, 64).unwrap();
+    let batch = decoder.decode_batch(&[8.0, -8.0], &[1, 1, 2]).unwrap();
 
     let summary = pack.classify_batch(&batch);
 

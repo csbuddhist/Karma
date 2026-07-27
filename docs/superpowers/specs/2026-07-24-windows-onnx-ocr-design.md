@@ -1,9 +1,9 @@
 # Karma Windows ONNX OCR 设计规格
 
-日期：2026-07-24  
-状态：已完成口头设计，待书面审阅  
-目标平台：Windows 10 22H2、Windows 11  
-OCR 系列：PP-OCRv5  
+日期：2026-07-24
+状态：已完成口头设计，待书面审阅
+目标平台：Windows 10 22H2、Windows 11
+OCR 系列：PP-OCRv5
 
 ## 1. 目标与完成边界
 

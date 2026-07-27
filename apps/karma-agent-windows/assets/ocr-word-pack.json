@@ -1,0 +1,59 @@
+{
+  "format_version": 1,
+  "rules": [
+    {
+      "category": "explicit_term",
+      "pattern": "色情",
+      "kind": "literal",
+      "risk": "high_risk_phrase"
+    },
+    {
+      "category": "explicit_term",
+      "pattern": "裸體",
+      "kind": "literal",
+      "risk": "high_risk_phrase"
+    },
+    {
+      "category": "explicit_term",
+      "pattern": "\\b(?:porn|xxx)\\b",
+      "kind": "regex",
+      "risk": "high_risk_phrase"
+    },
+    {
+      "category": "adult_service",
+      "pattern": "成人服务",
+      "kind": "literal",
+      "risk": "keyword"
+    },
+    {
+      "category": "adult_service",
+      "pattern": "成人服務",
+      "kind": "literal",
+      "risk": "keyword"
+    },
+    {
+      "category": "adult_service",
+      "pattern": "\\b(?:adult|escort)\\s+service\\b",
+      "kind": "regex",
+      "risk": "keyword"
+    },
+    {
+      "category": "medical_education",
+      "pattern": "性教育",
+      "kind": "exemption",
+      "risk": "none"
+    },
+    {
+      "category": "medical_education",
+      "pattern": "性健康教育",
+      "kind": "exemption",
+      "risk": "none"
+    },
+    {
+      "category": "medical_education",
+      "pattern": "sexual health education",
+      "kind": "exemption",
+      "risk": "none"
+    }
+  ]
+}

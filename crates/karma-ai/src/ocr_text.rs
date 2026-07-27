@@ -8,7 +8,8 @@ use zeroize::Zeroizing;
 /// ```compile_fail
 /// use karma_ai::OcrTextBatch;
 ///
-/// let batch = OcrTextBatch::from_lines(vec!["sensitive text".into()], 64).unwrap();
+/// fn decoded_batch() -> OcrTextBatch { loop {} }
+/// let batch = decoded_batch();
 /// let _ = serde_json::to_string(&batch);
 /// ```
 #[derive(Clone, PartialEq, Eq)]
@@ -24,7 +25,10 @@ pub enum OcrTextError {
 }
 
 impl OcrTextBatch {
-    pub fn from_lines(lines: Vec<String>, maximum_characters: usize) -> Result<Self, OcrTextError> {
+    pub(crate) fn from_zeroizing_lines(
+        lines: Vec<Zeroizing<String>>,
+        maximum_characters: usize,
+    ) -> Result<Self, OcrTextError> {
         let characters = lines.iter().try_fold(0_usize, |total, line| {
             total
                 .checked_add(line.chars().count())
@@ -32,10 +36,7 @@ impl OcrTextBatch {
                 .ok_or(OcrTextError::CharacterLimitExceeded)
         })?;
 
-        Ok(Self {
-            lines: lines.into_iter().map(Zeroizing::new).collect(),
-            characters,
-        })
+        Ok(Self { lines, characters })
     }
 
     pub fn line_count(&self) -> usize {
@@ -59,5 +60,21 @@ impl fmt::Debug for OcrTextBatch {
             .field("lines", &self.line_count())
             .field("characters", &self.character_count())
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn crate_private_constructor_keeps_zeroizing_line_ownership() {
+        let batch = OcrTextBatch::from_zeroizing_lines(
+            vec![Zeroizing::new("sensitive fixture".to_owned())],
+            64,
+        )
+        .unwrap();
+
+        assert_eq!(batch.line_refs().collect::<Vec<_>>(), ["sensitive fixture"]);
     }
 }

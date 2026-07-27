@@ -67,7 +67,7 @@ paths, and missing `manifest.json`.
 
 - [ ] **Step 2: Run RED**
 
-Run: `cargo test -p karma-model-delivery manifest`  
+Run: `cargo test -p karma-model-delivery manifest`
 Expected: crate/types do not exist.
 
 - [ ] **Step 3: Implement verify-then-parse**
@@ -86,7 +86,7 @@ material.
 
 - [ ] **Step 5: Verify and commit**
 
-Run: `cargo fmt --all && cargo test -p karma-model-delivery manifest && cargo clippy -p karma-model-delivery --all-targets -- -D warnings`  
+Run: `cargo fmt --all && cargo test -p karma-model-delivery manifest && cargo clippy -p karma-model-delivery --all-targets -- -D warnings`
 Expected: signature and strict-schema tests pass.
 
 ```bash
@@ -116,7 +116,7 @@ Also test a valid bundle.
 
 - [ ] **Step 2: Run RED**
 
-Run: `cargo test -p karma-model-delivery archive_security`  
+Run: `cargo test -p karma-model-delivery archive_security`
 Expected: archive/store modules are missing.
 
 - [ ] **Step 3: Implement streaming safe extraction**
@@ -135,7 +135,7 @@ contains `current`, `previous`, `pending`, and `failed_versions`, with
 
 - [ ] **Step 5: Verify and commit**
 
-Run: `cargo fmt --all && cargo test -p karma-model-delivery archive_security && cargo clippy -p karma-model-delivery --all-targets -- -D warnings`  
+Run: `cargo fmt --all && cargo test -p karma-model-delivery archive_security && cargo clippy -p karma-model-delivery --all-targets -- -D warnings`
 Expected: valid install/activate/rollback pass and every malicious archive is rejected.
 
 ```bash
@@ -165,7 +165,7 @@ backoff, restart after corrupt partial state, final archive hash, and byte count
 
 - [ ] **Step 2: Run RED**
 
-Run: `cargo test -p karma-model-delivery resume`  
+Run: `cargo test -p karma-model-delivery resume`
 Expected: transport/resume types are missing.
 
 - [ ] **Step 3: Implement the state machine**
@@ -177,7 +177,7 @@ signed length while streaming and verify SHA-256 before returning the archive ha
 
 - [ ] **Step 4: Verify and commit**
 
-Run: `cargo fmt --all && cargo test -p karma-model-delivery resume && cargo clippy -p karma-model-delivery --all-targets -- -D warnings`  
+Run: `cargo fmt --all && cargo test -p karma-model-delivery resume && cargo clippy -p karma-model-delivery --all-targets -- -D warnings`
 Expected: resume/restart/retry tests pass without real network access.
 
 ```bash
@@ -207,7 +207,7 @@ connect and 30-second receive timeouts, bounded streaming, and handle cleanup.
 
 - [ ] **Step 2: Run Windows RED**
 
-Run: `cargo test -p karma-agent-windows --target x86_64-pc-windows-msvc winhttp_proxy_server`  
+Run: `cargo test -p karma-agent-windows --target x86_64-pc-windows-msvc winhttp_proxy_server`
 Expected: cross-compilation or Windows CI fails because the adapter is missing.
 
 - [ ] **Step 3: Implement WinHTTP adapter**
@@ -267,7 +267,7 @@ suppression.
 
 - [ ] **Step 2: Run RED**
 
-Run: `cargo test -p karma-model-delivery coordinator`  
+Run: `cargo test -p karma-model-delivery coordinator`
 Expected: coordinator types are missing.
 
 - [ ] **Step 3: Implement deterministic coordination**
@@ -289,7 +289,7 @@ activated version.
 
 - [ ] **Step 4: Verify and commit**
 
-Run: `cargo fmt --all && cargo test -p karma-model-delivery && cargo clippy -p karma-model-delivery --all-targets -- -D warnings`  
+Run: `cargo fmt --all && cargo test -p karma-model-delivery && cargo clippy -p karma-model-delivery --all-targets -- -D warnings`
 Expected: all manifest, archive, resume, coordination, activation, and rollback tests pass.
 
 ```bash
@@ -324,7 +324,7 @@ before old worker disposal; and rollback reconstructing workers from previous bu
 
 - [ ] **Step 2: Run RED**
 
-Run: `cargo test -p karma-agent-windows model_delivery`  
+Run: `cargo test -p karma-agent-windows model_delivery`
 Expected: Agent controller is missing.
 
 - [ ] **Step 3: Embed the release public key safely**

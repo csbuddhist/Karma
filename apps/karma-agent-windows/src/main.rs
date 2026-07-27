@@ -41,6 +41,140 @@ enum OcrRuntimeConfigError {
 }
 
 #[cfg(any(windows, test))]
+const BUNDLED_WORD_PACK: &str = include_str!("../assets/ocr-word-pack.json");
+#[cfg(any(windows, test))]
+const WORD_PACK_FORMAT_VERSION: u16 = 1;
+#[cfg(any(windows, test))]
+const MAXIMUM_WORD_PACK_BYTES: usize = 64 * 1024;
+#[cfg(any(windows, test))]
+const MAXIMUM_WORD_PACK_RULES: usize = 128;
+#[cfg(any(windows, test))]
+const MAXIMUM_WORD_PACK_FIELD_CHARACTERS: usize = 256;
+#[cfg(any(windows, test))]
+const WORD_PACK_CATEGORIES: [&str; 3] = ["adult_service", "explicit_term", "medical_education"];
+
+#[cfg(any(windows, test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WordPackSourceError {
+    InvalidJson,
+    InvalidRules,
+}
+
+#[cfg(any(windows, test))]
+#[derive(Clone, Copy)]
+struct WordPackSource<'a> {
+    json: &'a str,
+}
+
+#[cfg(any(windows, test))]
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WordPackDocument {
+    format_version: u16,
+    rules: Vec<WordPackRule>,
+}
+
+#[cfg(any(windows, test))]
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WordPackRule {
+    category: String,
+    pattern: String,
+    kind: WordPackRuleKind,
+    risk: karma_domain::OcrRisk,
+}
+
+#[cfg(any(windows, test))]
+#[derive(Clone, Copy, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum WordPackRuleKind {
+    Literal,
+    Regex,
+    Exemption,
+}
+
+#[cfg(any(windows, test))]
+impl<'a> WordPackSource<'a> {
+    fn bundled() -> Result<WordPackSource<'static>, WordPackSourceError> {
+        WordPackSource::<'static>::validated(BUNDLED_WORD_PACK)
+    }
+
+    fn validated(json: &'a str) -> Result<Self, WordPackSourceError> {
+        Self::parse_and_compile(json)?;
+        Ok(Self { json })
+    }
+
+    fn compile(&self) -> Result<karma_ai::WordPack, WordPackSourceError> {
+        Self::parse_and_compile(self.json)
+    }
+
+    fn parse_and_compile(json: &str) -> Result<karma_ai::WordPack, WordPackSourceError> {
+        use karma_ai::{WordPack, WordRule};
+        use karma_domain::OcrRisk;
+
+        if json.len() > MAXIMUM_WORD_PACK_BYTES {
+            return Err(WordPackSourceError::InvalidRules);
+        }
+        let document: WordPackDocument =
+            serde_json::from_str(json).map_err(|_| WordPackSourceError::InvalidJson)?;
+        if document.format_version != WORD_PACK_FORMAT_VERSION
+            || document.rules.is_empty()
+            || document.rules.len() > MAXIMUM_WORD_PACK_RULES
+        {
+            return Err(WordPackSourceError::InvalidRules);
+        }
+        let mut present_categories = std::collections::BTreeSet::new();
+        let mut rules = Vec::with_capacity(document.rules.len());
+        for rule in document.rules {
+            if !WORD_PACK_CATEGORIES.contains(&rule.category.as_str())
+                || rule.category.chars().count() > MAXIMUM_WORD_PACK_FIELD_CHARACTERS
+                || rule.pattern.is_empty()
+                || rule.pattern.chars().count() > MAXIMUM_WORD_PACK_FIELD_CHARACTERS
+            {
+                return Err(WordPackSourceError::InvalidRules);
+            }
+            present_categories.insert(rule.category.clone());
+            rules.push(match (rule.category.as_str(), rule.kind, rule.risk) {
+                (
+                    "explicit_term",
+                    WordPackRuleKind::Literal | WordPackRuleKind::Regex,
+                    OcrRisk::HighRiskPhrase,
+                ) => {
+                    if matches!(rule.kind, WordPackRuleKind::Regex) {
+                        WordRule::regex(&rule.category, &rule.pattern, rule.risk)
+                    } else {
+                        WordRule::literal(&rule.category, &rule.pattern, rule.risk)
+                    }
+                }
+                (
+                    "adult_service",
+                    WordPackRuleKind::Literal | WordPackRuleKind::Regex,
+                    OcrRisk::Keyword,
+                ) => {
+                    if matches!(rule.kind, WordPackRuleKind::Regex) {
+                        WordRule::regex(&rule.category, &rule.pattern, rule.risk)
+                    } else {
+                        WordRule::literal(&rule.category, &rule.pattern, rule.risk)
+                    }
+                }
+                ("medical_education", WordPackRuleKind::Exemption, OcrRisk::None) => {
+                    WordRule::exemption(&rule.category, &rule.pattern)
+                }
+                _ => return Err(WordPackSourceError::InvalidRules),
+            });
+        }
+        if present_categories.len() != WORD_PACK_CATEGORIES.len()
+            || !WORD_PACK_CATEGORIES
+                .iter()
+                .all(|category| present_categories.contains(*category))
+        {
+            return Err(WordPackSourceError::InvalidRules);
+        }
+        WordPack::compile(rules).map_err(|_| WordPackSourceError::InvalidRules)
+    }
+}
+
+#[cfg(any(windows, test))]
 impl OcrRuntimeConfig {
     #[cfg(windows)]
     fn from_environment() -> Result<Self, OcrRuntimeConfigError> {
@@ -155,6 +289,14 @@ fn health_status_line(
     )
 }
 
+#[cfg(any(windows, test))]
+fn ocr_performance_warning(performance_budget_exceeded: bool) -> Option<&'static str> {
+    performance_budget_exceeded.then_some(
+        "status=warning component=ocr_profile profile=accurate \
+         reason=performance_budget_exceeded",
+    )
+}
+
 #[cfg(windows)]
 struct VerifiedOcrCandidateFactory<'a> {
     accurate: Option<&'a VerifiedOcrBundle>,
@@ -193,18 +335,30 @@ impl ocr_profile::OcrCandidateFactory for VerifiedOcrCandidateFactory<'_> {
 }
 
 #[cfg(windows)]
+struct SelectedOcrBundle<'a> {
+    bundle: &'a VerifiedOcrBundle,
+    performance_budget_exceeded: bool,
+}
+
+#[cfg(windows)]
 fn select_ocr_bundle<'a>(
     config: &OcrRuntimeConfig,
     lightweight: &'a VerifiedOcrBundle,
     accurate: Option<&'a VerifiedOcrBundle>,
     active_display_count: usize,
-) -> &'a VerifiedOcrBundle {
+) -> SelectedOcrBundle<'a> {
     if config.preference == ocr_profile::OcrProfilePreference::Lightweight {
-        return lightweight;
+        return SelectedOcrBundle {
+            bundle: lightweight,
+            performance_budget_exceeded: false,
+        };
     }
     let factory = VerifiedOcrCandidateFactory { accurate };
     let Some(accurate_bundle) = accurate else {
-        return lightweight;
+        return SelectedOcrBundle {
+            bundle: lightweight,
+            performance_budget_exceeded: false,
+        };
     };
     let key = ocr_profile::BenchmarkKey {
         profile: karma_ai::OcrModelProfile::Accurate,
@@ -230,9 +384,15 @@ fn select_ocr_bundle<'a>(
         &mut clock,
     ) {
         Ok(selection) if selection.profile == karma_ai::OcrModelProfile::Accurate => {
-            accurate_bundle
+            SelectedOcrBundle {
+                bundle: accurate_bundle,
+                performance_budget_exceeded: selection.performance_budget_exceeded,
+            }
         }
-        Ok(_) | Err(_) => lightweight,
+        Ok(_) | Err(_) => SelectedOcrBundle {
+            bundle: lightweight,
+            performance_budget_exceeded: false,
+        },
     }
 }
 
@@ -295,6 +455,7 @@ impl CaptureTargetFactory<MonitorSnapshot> for WindowsCaptureTargetFactory {
 fn run_windows(
     model: &VerifiedImageModel,
     ocr_bundle: Option<&VerifiedOcrBundle>,
+    word_pack_source: WordPackSource<'static>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let _runtime = WindowsRuntimeApartment::initialize_mta()?;
     let summary = StartupProbe::run(&WindowsMonitorInventory, &WindowsCaptureTargetFactory);
@@ -332,7 +493,9 @@ fn run_windows(
             let mut consumer = ScheduledInferenceConsumer::new(
                 model.create_classifier()?,
                 ocr_engine,
-                WordPack::compile(vec![]).expect("an empty word pack is valid"),
+                word_pack_source
+                    .compile()
+                    .map_err(|_| std::io::Error::other("word pack invalid"))?,
                 CountingOcrSummarySink::default(),
             );
             if !ocr_initialized {
@@ -438,6 +601,13 @@ fn run_windows(
 
 #[cfg(windows)]
 fn main() {
+    let word_pack_source = match WordPackSource::bundled() {
+        Ok(source) => source,
+        Err(_) => {
+            eprintln!("status=unavailable component=ocr_word_pack error=configuration_invalid");
+            std::process::exit(1);
+        }
+    };
     let model = match std::env::var_os("KARMA_IMAGE_MODEL_MANIFEST") {
         Some(path) => match VerifiedImageModel::load(path) {
             Ok(model) => model,
@@ -504,17 +674,29 @@ fn main() {
     });
     let result = start_after_ocr_preflight(
         ocr_bundle,
-        |bundle| {
-            bundle
+        |selection| {
+            selection
+                .bundle
                 .create_engine()
-                .map(|engine| drop(engine))
+                .map(drop)
                 .map_err(|error| error.kind())
         },
         |preflight| {
+            if let OcrPreflight::Ready(selection) = &preflight {
+                if let Some(warning) =
+                    ocr_performance_warning(selection.performance_budget_exceeded)
+                {
+                    eprintln!("{warning}");
+                }
+            }
             if let Some(error) = preflight.error() {
                 eprintln!("status=degraded component=ocr_inference error={error}");
             }
-            run_windows(&model, preflight.into_bundle())
+            run_windows(
+                &model,
+                preflight.into_bundle().map(|selection| selection.bundle),
+                word_pack_source,
+            )
         },
     );
     if result.is_err() {
@@ -534,10 +716,11 @@ mod tests {
     use std::path::PathBuf;
 
     use karma_ai::OcrModelProfile;
+    use karma_domain::OcrRisk;
 
     use super::{
-        OcrPreflight, OcrRuntimeConfig, OcrRuntimeConfigError, health_status_line,
-        start_after_ocr_preflight,
+        OcrPreflight, OcrRuntimeConfig, OcrRuntimeConfigError, WordPackSource, WordPackSourceError,
+        health_status_line, ocr_performance_warning, start_after_ocr_preflight,
     };
 
     #[test]
@@ -622,5 +805,85 @@ mod tests {
                 Err(OcrRuntimeConfigError::InvalidProfile)
             );
         }
+    }
+
+    #[test]
+    fn bundled_word_pack_is_nonempty_and_classifies_configured_categories() {
+        let source = WordPackSource::bundled().unwrap();
+        let pack = source.compile().unwrap();
+
+        let explicit = pack.classify(&["porn"]);
+        assert_eq!(explicit.risk, OcrRisk::HighRiskPhrase);
+        assert_eq!(explicit.categories, ["explicit_term"]);
+
+        let service = pack.classify(&["成人服務"]);
+        assert_eq!(service.risk, OcrRisk::Keyword);
+        assert_eq!(service.categories, ["adult_service"]);
+
+        let education = pack.classify(&["sexual health education"]);
+        assert_eq!(education.risk, OcrRisk::None);
+        assert_eq!(education.categories, ["medical_education"]);
+        assert!(education.exemption_context);
+    }
+
+    #[test]
+    fn invalid_word_pack_sources_fail_before_capture() {
+        for (source, expected) in [
+            ("{", WordPackSourceError::InvalidJson),
+            (
+                r#"{"format_version":1,"rules":[]}"#,
+                WordPackSourceError::InvalidRules,
+            ),
+            (
+                r#"{"format_version":1,"rules":[],"unexpected":true}"#,
+                WordPackSourceError::InvalidJson,
+            ),
+        ] {
+            let capture_started = std::cell::Cell::new(false);
+            let result = WordPackSource::validated(source).and_then(|word_pack| {
+                capture_started.set(true);
+                word_pack.compile()
+            });
+            assert!(matches!(result, Err(error) if error == expected));
+            assert!(!capture_started.get());
+        }
+    }
+
+    #[test]
+    fn word_pack_category_semantics_cannot_be_inverted() {
+        for source in [
+            r#"{"format_version":1,"rules":[
+                {"category":"explicit_term","pattern":"x","kind":"exemption","risk":"none"},
+                {"category":"adult_service","pattern":"x","kind":"literal","risk":"keyword"},
+                {"category":"medical_education","pattern":"x","kind":"exemption","risk":"none"}
+            ]}"#,
+            r#"{"format_version":1,"rules":[
+                {"category":"explicit_term","pattern":"x","kind":"literal","risk":"high_risk_phrase"},
+                {"category":"adult_service","pattern":"x","kind":"literal","risk":"high_risk_phrase"},
+                {"category":"medical_education","pattern":"x","kind":"exemption","risk":"none"}
+            ]}"#,
+            r#"{"format_version":1,"rules":[
+                {"category":"explicit_term","pattern":"x","kind":"literal","risk":"high_risk_phrase"},
+                {"category":"adult_service","pattern":"x","kind":"literal","risk":"keyword"},
+                {"category":"medical_education","pattern":"x","kind":"literal","risk":"keyword"}
+            ]}"#,
+        ] {
+            assert_eq!(
+                WordPackSource::validated(source).err(),
+                Some(WordPackSourceError::InvalidRules)
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_accurate_over_budget_has_a_stable_privacy_safe_warning() {
+        assert_eq!(
+            ocr_performance_warning(true),
+            Some(
+                "status=warning component=ocr_profile profile=accurate \
+                 reason=performance_budget_exceeded"
+            )
+        );
+        assert_eq!(ocr_performance_warning(false), None);
     }
 }
