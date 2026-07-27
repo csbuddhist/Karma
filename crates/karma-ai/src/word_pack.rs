@@ -4,6 +4,8 @@ use serde::Serialize;
 use thiserror::Error;
 use unicode_normalization::UnicodeNormalization;
 
+use crate::OcrTextBatch;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WordRuleKind {
     Literal,
@@ -165,6 +167,11 @@ impl WordPack {
             categories,
             exemption_context,
         }
+    }
+
+    /// Classifies a zeroizing OCR batch without exposing its private line references cross-crate.
+    pub fn classify_batch(&self, batch: &OcrTextBatch) -> OcrMatchSummary {
+        self.classify(&batch.line_refs().collect::<Vec<_>>())
     }
 }
 

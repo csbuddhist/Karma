@@ -6,13 +6,17 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+image = { version = "=0.25.5", default-features = false }
+imageproc = { version = "=0.25.0", default-features = false }
 karma-ai = { path = "../karma-ai" }
+karma-domain = { path = "../karma-domain" }
 ndarray = "0.16"
 ort = { version = "=2.0.0-rc.10", default-features = false, features = ["std", "ndarray", "download-binaries", "copy-dylibs"] }
+serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"
 thiserror.workspace = true
+zeroize = "1.8"
 
 [dev-dependencies]
-karma-domain = { path = "../karma-domain" }
 tempfile = "3"

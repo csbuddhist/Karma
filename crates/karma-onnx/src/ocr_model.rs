@@ -18,12 +18,9 @@ const MAX_OCR_REFERENCE_BYTES: usize = 256 * 1024 * 1024;
 /// Immutable OCR bundle bytes verified before any inference session is created.
 pub struct VerifiedOcrBundle {
     manifest: OcrBundleManifest,
-    #[allow(dead_code)] // Consumed by the Task 5 OCR session constructor.
     detector_bytes: Arc<[u8]>,
-    #[allow(dead_code)] // Consumed by the Task 5 OCR session constructor.
     recognizer_bytes: Arc<[u8]>,
     dictionary_bytes: Arc<[u8]>,
-    #[allow(dead_code)] // Consumed by the Task 5 OCR session constructor.
     dictionary: Arc<CtcDictionary>,
     reference_bytes: [Arc<[u8]>; 4],
     _license_bytes: Arc<[u8]>,
@@ -117,37 +114,34 @@ impl VerifiedOcrBundle {
         self.manifest.profile
     }
 
-    #[allow(dead_code)] // Consumed by the Task 5 OCR session constructor.
+    pub fn create_engine(&self) -> Result<crate::OnnxOcrEngine, InferenceError> {
+        crate::OnnxOcrEngine::from_bundle(self)
+    }
+
     pub(crate) fn detector_bytes(&self) -> &[u8] {
         &self.detector_bytes
     }
 
-    #[allow(dead_code)] // Consumed by the Task 5 OCR session constructor.
     pub(crate) fn recognizer_bytes(&self) -> &[u8] {
         &self.recognizer_bytes
     }
 
-    #[allow(dead_code)] // Consumed by the Task 5 OCR session constructor.
     pub(crate) fn dictionary(&self) -> &Arc<CtcDictionary> {
         &self.dictionary
     }
 
-    #[allow(dead_code)] // Consumed by the Task 5 reference verifier.
     pub(crate) fn reference_detector_input_bytes(&self) -> &[u8] {
         &self.reference_bytes[0]
     }
 
-    #[allow(dead_code)] // Consumed by the Task 5 reference verifier.
     pub(crate) fn reference_detector_output_bytes(&self) -> &[u8] {
         &self.reference_bytes[1]
     }
 
-    #[allow(dead_code)] // Consumed by the Task 5 reference verifier.
     pub(crate) fn reference_recognizer_input_bytes(&self) -> &[u8] {
         &self.reference_bytes[2]
     }
 
-    #[allow(dead_code)] // Consumed by the Task 5 reference verifier.
     pub(crate) fn reference_recognizer_output_bytes(&self) -> &[u8] {
         &self.reference_bytes[3]
     }

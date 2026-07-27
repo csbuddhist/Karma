@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 mod ctc;
+mod detection_map;
 mod frame;
 mod frame_pipeline;
 mod image_classifier;
@@ -19,6 +20,7 @@ mod scheduler;
 mod word_pack;
 
 pub use ctc::{CtcDecoder, CtcDictionary, CtcError, DecodedLine};
+pub use detection_map::{DetectionMap, DetectionMapError, DetectionMask};
 pub use frame::{BgraFrame, FrameDimensions, FrameError, PreparedFrame};
 pub use frame_pipeline::{FramePipeline, ScheduledFrame};
 pub use image_classifier::{

@@ -1,4 +1,4 @@
-use std::{collections::HashSet, fmt};
+use std::{collections::HashSet, fmt, sync::Arc};
 
 use thiserror::Error;
 use zeroize::Zeroizing;
@@ -92,7 +92,7 @@ impl fmt::Debug for CtcDictionary {
 
 /// A bounded greedy CTC decoder.
 pub struct CtcDecoder {
-    dictionary: CtcDictionary,
+    dictionary: Arc<CtcDictionary>,
     minimum_confidence: f32,
     maximum_line_characters: usize,
     maximum_total_characters: usize,
@@ -102,6 +102,21 @@ impl CtcDecoder {
     /// Builds a decoder with caps that cannot exceed the OCR runtime's fixed budgets.
     pub fn new(
         dictionary: CtcDictionary,
+        minimum_confidence: f32,
+        maximum_line_characters: usize,
+        maximum_total_characters: usize,
+    ) -> Result<Self, CtcError> {
+        Self::from_shared(
+            Arc::new(dictionary),
+            minimum_confidence,
+            maximum_line_characters,
+            maximum_total_characters,
+        )
+    }
+
+    /// Builds a decoder over an immutable dictionary shared by independent OCR engines.
+    pub fn from_shared(
+        dictionary: Arc<CtcDictionary>,
         minimum_confidence: f32,
         maximum_line_characters: usize,
         maximum_total_characters: usize,
