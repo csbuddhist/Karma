@@ -237,7 +237,7 @@ impl OcrBundleManifest {
         if self.detector.file_name != "detector.onnx" {
             return Err(OcrManifestError::InvalidAsset);
         }
-        validate_upstream_asset(&self.detector.upstream)?;
+        validate_upstream_asset(&self.detector.model_name, &self.detector.upstream)?;
         validate_asset(
             &self.recognizer.asset,
             AssetKind::OcrRecognizer,
@@ -247,7 +247,7 @@ impl OcrBundleManifest {
         if self.recognizer.file_name != "recognizer.onnx" {
             return Err(OcrManifestError::InvalidAsset);
         }
-        validate_upstream_asset(&self.recognizer.upstream)?;
+        validate_upstream_asset(&self.recognizer.model_name, &self.recognizer.upstream)?;
         self.validate_profile_models()?;
         self.validate_dictionary()?;
         if self.opset != OCR_OPSET {
@@ -399,8 +399,11 @@ fn is_lowercase_sha256(value: &str) -> bool {
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
-fn validate_upstream_asset(asset: &OcrUpstreamAsset) -> Result<(), OcrManifestError> {
-    if !is_official_upstream_url(&asset.download_url)
+fn validate_upstream_asset(
+    model_name: &str,
+    asset: &OcrUpstreamAsset,
+) -> Result<(), OcrManifestError> {
+    if !is_official_upstream_url(&asset.download_url, model_name)
         || asset.file_bytes == 0
         || !is_lowercase_sha256(&asset.sha256)
     {
@@ -409,10 +412,11 @@ fn validate_upstream_asset(asset: &OcrUpstreamAsset) -> Result<(), OcrManifestEr
     Ok(())
 }
 
-fn is_official_upstream_url(value: &str) -> bool {
+fn is_official_upstream_url(value: &str, model_name: &str) -> bool {
     let Ok(url) = Url::parse(value) else {
         return false;
     };
+    let expected_archive_name = format!("{model_name}_infer.tar");
     url.scheme() == "https"
         && url.host_str() == Some(OCR_UPSTREAM_MODEL_HOST)
         && url.port().is_none()
@@ -421,6 +425,7 @@ fn is_official_upstream_url(value: &str) -> bool {
         && url.query().is_none()
         && url.fragment().is_none()
         && url.path().len() > 1
+        && url.path().rsplit('/').next() == Some(expected_archive_name.as_str())
 }
 
 fn has_valid_export_toolchain(toolchain: &OcrExportToolchain) -> bool {

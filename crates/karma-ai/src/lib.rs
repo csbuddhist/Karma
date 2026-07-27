@@ -329,6 +329,9 @@ mod ocr_contract_tests {
     fn ocr_manifest_binds_each_profile_to_its_official_model_pair() {
         let mut manifest = valid_manifest();
         manifest.detector.model_name = OCR_ACCURATE_DETECTOR_MODEL.into();
+        manifest.detector.upstream.download_url = format!(
+            "https://{OCR_UPSTREAM_MODEL_HOST}/ocr/{OCR_ACCURATE_DETECTOR_MODEL}_infer.tar"
+        );
         assert_eq!(
             manifest.validate(),
             Err(OcrManifestError::ModelProfileMismatch)
@@ -338,6 +341,12 @@ mod ocr_contract_tests {
         manifest.profile = OcrModelProfile::Accurate;
         manifest.detector.model_name = OCR_ACCURATE_DETECTOR_MODEL.into();
         manifest.recognizer.model_name = OCR_ACCURATE_RECOGNIZER_MODEL.into();
+        manifest.detector.upstream.download_url = format!(
+            "https://{OCR_UPSTREAM_MODEL_HOST}/ocr/{OCR_ACCURATE_DETECTOR_MODEL}_infer.tar"
+        );
+        manifest.recognizer.upstream.download_url = format!(
+            "https://{OCR_UPSTREAM_MODEL_HOST}/ocr/{OCR_ACCURATE_RECOGNIZER_MODEL}_infer.tar"
+        );
         assert_eq!(manifest.validate(), Ok(()));
     }
 
@@ -438,6 +447,35 @@ mod ocr_contract_tests {
 
         let mut manifest = valid_manifest();
         manifest.recognizer.upstream.sha256 = "A".repeat(64);
+        assert_eq!(
+            manifest.validate(),
+            Err(OcrManifestError::InvalidUpstreamAsset)
+        );
+    }
+
+    #[test]
+    fn ocr_manifest_rejects_upstream_archives_that_do_not_match_the_declared_model() {
+        let mut manifest = valid_manifest();
+        manifest.detector.upstream.download_url = format!(
+            "https://{OCR_UPSTREAM_MODEL_HOST}/ocr/{OCR_LIGHTWEIGHT_RECOGNIZER_MODEL}_infer.tar"
+        );
+        assert_eq!(
+            manifest.validate(),
+            Err(OcrManifestError::InvalidUpstreamAsset)
+        );
+
+        let mut manifest = valid_manifest();
+        manifest.recognizer.upstream.download_url = format!(
+            "https://{OCR_UPSTREAM_MODEL_HOST}/ocr/{OCR_LIGHTWEIGHT_DETECTOR_MODEL}_infer.tar"
+        );
+        assert_eq!(
+            manifest.validate(),
+            Err(OcrManifestError::InvalidUpstreamAsset)
+        );
+
+        let mut manifest = valid_manifest();
+        manifest.detector.upstream.download_url =
+            format!("https://{OCR_UPSTREAM_MODEL_HOST}/ocr/unrelated_infer.tar");
         assert_eq!(
             manifest.validate(),
             Err(OcrManifestError::InvalidUpstreamAsset)
