@@ -5,12 +5,15 @@ use thiserror::Error;
 #[serde(rename_all = "snake_case")]
 pub enum AssetKind {
     ImageClassifier,
+    OcrBundle,
     OcrDetector,
     OcrRecognizer,
+    OcrDictionary,
     WordPack,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AssetManifest {
     pub kind: AssetKind,
     pub version: String,
