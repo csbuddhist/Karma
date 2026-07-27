@@ -1,5 +1,6 @@
 use karma_ai::{DetectionMap, DetectionMapError, OcrTextBatch, WordPack, WordRule};
 use karma_domain::OcrRisk;
+use zeroize::Zeroizing;
 
 #[test]
 fn detection_map_is_redacted_and_exposes_only_threshold_decisions() {
@@ -15,6 +16,15 @@ fn detection_map_is_redacted_and_exposes_only_threshold_decisions() {
     assert_eq!(mask.is_active(0, 1), Some(true));
     assert_eq!(mask.is_active(1, 1), Some(true));
     assert_eq!(mask.is_active(2, 0), None);
+}
+
+#[test]
+fn detection_map_accepts_zeroizing_session_storage_without_unwrapping_it() {
+    let values = Zeroizing::new(vec![0.2, 0.8]);
+
+    let map = DetectionMap::from_zeroizing_values(2, 1, values).unwrap();
+
+    assert_eq!(map.dimensions(), [2, 1]);
 }
 
 #[test]

@@ -50,33 +50,45 @@ def detector() -> onnx.ModelProto:
     )
 
 
-def recognizer() -> onnx.ModelProto:
+def recognizer(
+    output_type: int = TensorProto.FLOAT, dynamic_time: bool = True
+) -> onnx.ModelProto:
     input_value = helper.make_tensor_value_info(
         "x", TensorProto.FLOAT, ["batch", 3, 48, "width"]
     )
     output_value = helper.make_tensor_value_info(
-        "softmax_0.tmp_0", TensorProto.FLOAT, ["batch", 2, 3]
+        "softmax_0.tmp_0",
+        output_type,
+        ["batch", "time" if dynamic_time else 2, 3],
     )
+    dtype = np.float32 if output_type == TensorProto.FLOAT else np.int64
     template = numpy_helper.from_array(
-        np.asarray([[[0.0, 10.0, 0.0], [10.0, 0.0, 0.0]]], dtype=np.float32),
+        np.asarray([[[0, 10, 0]]], dtype=dtype),
         "fixture_logits",
     )
     batch_index = numpy_helper.from_array(np.asarray(0, dtype=np.int64), "batch_index")
+    width_index = numpy_helper.from_array(np.asarray(3, dtype=np.int64), "width_index")
     unsqueeze_axis = numpy_helper.from_array(
         np.asarray([0], dtype=np.int64), "unsqueeze_axis"
     )
-    trailing_shape = numpy_helper.from_array(
-        np.asarray([2, 3], dtype=np.int64), "trailing_shape"
-    )
+    time_divisor = numpy_helper.from_array(np.asarray(4, dtype=np.int64), "time_divisor")
+    minimum_time = numpy_helper.from_array(np.asarray(1, dtype=np.int64), "minimum_time")
+    class_shape = numpy_helper.from_array(np.asarray([3], dtype=np.int64), "class_shape")
     nodes = [
         helper.make_node("Shape", ["x"], ["input_shape"]),
         helper.make_node("Gather", ["input_shape", "batch_index"], ["batch_size"]),
+        helper.make_node("Gather", ["input_shape", "width_index"], ["input_width"]),
+        helper.make_node("Div", ["input_width", "time_divisor"], ["scaled_time"]),
+        helper.make_node("Max", ["scaled_time", "minimum_time"], ["time_size"]),
         helper.make_node(
             "Unsqueeze", ["batch_size", "unsqueeze_axis"], ["batch_vector"]
         ),
         helper.make_node(
+            "Unsqueeze", ["time_size", "unsqueeze_axis"], ["time_vector"]
+        ),
+        helper.make_node(
             "Concat",
-            ["batch_vector", "trailing_shape"],
+            ["batch_vector", "time_vector", "class_shape"],
             ["output_shape"],
             axis=0,
         ),
@@ -90,7 +102,15 @@ def recognizer() -> onnx.ModelProto:
             "karma_dynamic_ocr_recognizer",
             [input_value],
             [output_value],
-            [template, batch_index, unsqueeze_axis, trailing_shape],
+            [
+                template,
+                batch_index,
+                width_index,
+                unsqueeze_axis,
+                time_divisor,
+                minimum_time,
+                class_shape,
+            ],
         )
     )
 
@@ -109,6 +129,14 @@ def write(name: str, value: onnx.ModelProto) -> None:
 def main() -> None:
     write("ocr_detector.onnx", detector())
     write("ocr_recognizer.onnx", recognizer())
+    write(
+        "ocr_recognizer_static_time.onnx",
+        recognizer(dynamic_time=False),
+    )
+    write(
+        "ocr_recognizer_non_f32.onnx",
+        recognizer(output_type=TensorProto.INT64),
+    )
 
 
 if __name__ == "__main__":

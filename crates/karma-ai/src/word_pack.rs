@@ -3,6 +3,7 @@ use regex::{Regex, RegexBuilder};
 use serde::Serialize;
 use thiserror::Error;
 use unicode_normalization::UnicodeNormalization;
+use zeroize::Zeroizing;
 
 use crate::OcrTextBatch;
 
@@ -30,7 +31,7 @@ pub struct OcrMatchSummary {
 enum CompiledRule {
     Literal {
         category: String,
-        value: String,
+        value: Zeroizing<String>,
         risk: OcrRisk,
     },
     Regex {
@@ -40,7 +41,7 @@ enum CompiledRule {
     },
     Exemption {
         category: String,
-        value: String,
+        value: Zeroizing<String>,
     },
 }
 
@@ -83,8 +84,8 @@ impl WordRule {
     }
 }
 
-fn normalize(value: &str) -> String {
-    value.nfkc().flat_map(char::to_lowercase).collect()
+fn normalize(value: &str) -> Zeroizing<String> {
+    Zeroizing::new(value.nfkc().flat_map(char::to_lowercase).collect())
 }
 
 fn risk_rank(value: OcrRisk) -> u8 {
@@ -139,15 +140,18 @@ impl WordPack {
                         category,
                         value,
                         risk,
-                    } => (normalized.contains(value), category, *risk, false),
+                    } => (normalized.contains(value.as_str()), category, *risk, false),
                     CompiledRule::Regex {
                         category,
                         value,
                         risk,
-                    } => (value.is_match(&normalized), category, *risk, false),
-                    CompiledRule::Exemption { category, value } => {
-                        (normalized.contains(value), category, OcrRisk::None, true)
-                    }
+                    } => (value.is_match(normalized.as_str()), category, *risk, false),
+                    CompiledRule::Exemption { category, value } => (
+                        normalized.contains(value.as_str()),
+                        category,
+                        OcrRisk::None,
+                        true,
+                    ),
                 };
 
                 if matched {
@@ -178,6 +182,29 @@ impl WordPack {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zeroize::Zeroizing;
+
+    fn assert_zeroizing_string(_: &Zeroizing<String>) {}
+
+    #[test]
+    fn normalization_and_stored_literal_values_use_zeroizing_strings() {
+        let normalized = normalize("ＳＥＮＳＩＴＩＶＥ");
+        assert_zeroizing_string(&normalized);
+
+        let pack = WordPack::compile(vec![
+            WordRule::literal("literal", "ＳＥＮＳＩＴＩＶＥ", OcrRisk::Keyword),
+            WordRule::exemption("exemption", "ＣＯＮＴＥＸＴ"),
+        ])
+        .unwrap();
+        for rule in &pack.rules {
+            match rule {
+                CompiledRule::Literal { value, .. } | CompiledRule::Exemption { value, .. } => {
+                    assert_zeroizing_string(value);
+                }
+                CompiledRule::Regex { .. } => unreachable!(),
+            }
+        }
+    }
 
     #[test]
     fn literal_matching_normalizes_width_and_case() {

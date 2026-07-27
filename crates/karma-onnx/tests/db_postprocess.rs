@@ -154,9 +154,30 @@ fn orders_regions_stably_and_enforces_the_sixty_four_box_limit() {
         .unwrap();
 
     assert_eq!(boxes.len(), 64);
-    for pair in boxes.windows(2) {
-        let left = pair[0].points()[0];
-        let right = pair[1].points()[0];
-        assert!(left[1] <= right[1] || left[0] <= right[0]);
+    for (index, quadrilateral) in boxes.iter().enumerate() {
+        let center = quadrilateral
+            .points()
+            .into_iter()
+            .fold([0.0, 0.0], |[x, y], point| {
+                [x + point[0] / 4.0, y + point[1] / 4.0]
+            });
+        let expected_row = index / 10;
+        let expected_column = index % 10;
+        let expected = [
+            8.5 + expected_column as f32 * 28.0,
+            8.5 + expected_row as f32 * 28.0,
+        ];
+        assert!(
+            (center[0] - expected[0]).abs() < 1.0e-3,
+            "box {index} has x center {}, expected {}",
+            center[0],
+            expected[0]
+        );
+        assert!(
+            (center[1] - expected[1]).abs() < 1.0e-3,
+            "box {index} has y center {}, expected {}",
+            center[1],
+            expected[1]
+        );
     }
 }

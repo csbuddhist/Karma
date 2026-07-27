@@ -35,7 +35,7 @@ impl Bundle {
         let detector_input = vec![0.0; 3 * 32 * 32];
         let detector_output = vec![0.0; 32 * 32];
         let recognizer_input = vec![0.0; 3 * 48 * 8];
-        let recognizer_output = vec![0.0, 10.0, 0.0, 10.0, 0.0, 0.0];
+        let recognizer_output = vec![0.0, 10.0, 0.0, 0.0, 10.0, 0.0];
         let detector_input_bytes = tensor_bytes(&[1, 3, 32, 32], &detector_input);
         let detector_output_bytes = output_json(&[1, 1, 32, 32], &detector_output);
         let recognizer_input_bytes = tensor_bytes(&[1, 3, 48, 8], &recognizer_input);
@@ -133,6 +133,13 @@ impl Bundle {
             asset(AssetKind::OcrDictionary, "fixture-dictionary-1", &bytes);
         self.manifest.dictionary.file_bytes = bytes.len() as u64;
         self.manifest.dictionary.entries = entries.into();
+    }
+
+    fn replace_recognizer_model(&mut self, fixture_name: &str) {
+        let recognizer = fixture_bytes(fixture_name);
+        write(self.directory.path().join("recognizer.onnx"), &recognizer);
+        self.manifest.recognizer.asset.sha256 = format!("{:x}", Sha256::digest(&recognizer));
+        self.manifest.recognizer.file_bytes = recognizer.len() as u64;
     }
 }
 
@@ -442,6 +449,23 @@ fn rejects_names_class_counts_and_reference_mismatches_before_inference() {
             .kind(),
         InferenceErrorKind::OcrReferenceInvalid
     );
+}
+
+#[test]
+fn rejects_static_time_and_non_f32_recognizer_outputs_before_inference() {
+    for fixture_name in [
+        "ocr_recognizer_static_time.onnx",
+        "ocr_recognizer_non_f32.onnx",
+    ] {
+        let mut fixture = Bundle::fixture();
+        fixture.replace_recognizer_model(fixture_name);
+
+        assert_eq!(
+            fixture.load().create_engine().unwrap_err().kind(),
+            InferenceErrorKind::ModelContractMismatch,
+            "{fixture_name}"
+        );
+    }
 }
 
 #[test]

@@ -13,7 +13,7 @@ use ort::{
     value::TensorRef,
 };
 use serde::Deserialize;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::{
     DbPostProcessor, InferenceError, InferenceErrorKind, OcrInferenceHealth, VerifiedOcrBundle,
@@ -282,12 +282,7 @@ fn validate_recognizer_session(
         .tensor_shape()
         .ok_or_else(contract_mismatch)?;
     let class_count = i64::try_from(class_count).map_err(|_| contract_mismatch())?;
-    if **input_shape != [-1, 3, 48, -1]
-        || output_shape.len() != 3
-        || output_shape[0] != -1
-        || output_shape[1] <= 0
-        || output_shape[2] != class_count
-    {
+    if **input_shape != [-1, 3, 48, -1] || **output_shape != [-1, -1, class_count] {
         return Err(contract_mismatch());
     }
     Ok(())
@@ -331,7 +326,7 @@ fn run_detector(
     if output.shape != [1, 1, shape[2], shape[3]] {
         return Err(InferenceError::new(InferenceErrorKind::OutputInvalid));
     }
-    DetectionMap::from_values(shape[3], shape[2], output.values.to_vec())
+    DetectionMap::from_zeroizing_values(shape[3], shape[2], output.values)
         .map_err(|_| InferenceError::new(InferenceErrorKind::OutputInvalid))
 }
 
@@ -374,27 +369,36 @@ fn run_session(
     let view =
         ArrayViewD::from_shape(IxDyn(shape), values).map_err(|_| InferenceError::new(run_error))?;
     let input = TensorRef::from_array_view(view).map_err(|_| InferenceError::new(run_error))?;
-    let outputs = session
+    let mut outputs = session
         .run(ort::inputs![input_name => input])
         .map_err(|_| InferenceError::new(run_error))?;
     let output = outputs
-        .get(output_name)
+        .get_mut(output_name)
         .ok_or_else(|| InferenceError::new(output_error))?;
     let (runtime_shape, runtime_values) = output
-        .try_extract_tensor::<f32>()
+        .try_extract_tensor_mut::<f32>()
         .map_err(|_| InferenceError::new(output_error))?;
+    copy_and_zeroize_runtime_output(runtime_shape, runtime_values, output_error)
+}
+
+/// ORT's mutable tensor view is exclusively borrowed from `SessionOutputs`.
+/// Copying into zeroizing ownership and wiping that view happen before any fallible validation.
+fn copy_and_zeroize_runtime_output(
+    runtime_shape: &[i64],
+    runtime_values: &mut [f32],
+    output_error: InferenceErrorKind,
+) -> Result<SessionOutput, InferenceError> {
+    let values = Zeroizing::new(runtime_values.to_vec());
+    runtime_values.zeroize();
     let shape = runtime_shape
         .iter()
         .map(|dimension| usize::try_from(*dimension))
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| InferenceError::new(output_error))?;
-    if runtime_values.iter().any(|value| !value.is_finite()) {
+    if values.iter().any(|value| !value.is_finite()) {
         return Err(InferenceError::new(output_error));
     }
-    Ok(SessionOutput {
-        shape,
-        values: Zeroizing::new(runtime_values.to_vec()),
-    })
+    Ok(SessionOutput { shape, values })
 }
 
 fn verify_references(
@@ -433,10 +437,10 @@ fn verify_references(
     if detector_actual.shape != [1, 1, *detector_height, *detector_width] {
         return Err(reference_invalid());
     }
-    let probability_map = DetectionMap::from_values(
+    let probability_map = DetectionMap::from_zeroizing_values(
         *detector_width,
         *detector_height,
-        detector_actual.values.to_vec(),
+        detector_actual.values.clone(),
     )
     .map_err(|_| reference_invalid())?;
     drop(probability_map);
@@ -558,5 +562,51 @@ fn risk_rank(risk: OcrRisk) -> u8 {
         OcrRisk::None => 0,
         OcrRisk::Keyword => 1,
         OcrRisk::HighRiskPhrase => 2,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_output_copy_wipes_the_ort_slice_on_success() {
+        let mut runtime_values = [0.25, 0.75];
+
+        let output = copy_and_zeroize_runtime_output(
+            &[1, 2],
+            &mut runtime_values,
+            InferenceErrorKind::OutputInvalid,
+        )
+        .unwrap();
+
+        assert_eq!(output.shape, [1, 2]);
+        assert_eq!(&*output.values, &[0.25, 0.75]);
+        assert_eq!(runtime_values, [0.0, 0.0]);
+    }
+
+    #[test]
+    fn runtime_output_copy_wipes_the_ort_slice_before_validation_errors() {
+        let mut non_finite = [f32::NAN];
+        assert!(
+            copy_and_zeroize_runtime_output(
+                &[1],
+                &mut non_finite,
+                InferenceErrorKind::OutputInvalid,
+            )
+            .is_err()
+        );
+        assert_eq!(non_finite, [0.0]);
+
+        let mut invalid_shape = [0.5];
+        assert!(
+            copy_and_zeroize_runtime_output(
+                &[-1],
+                &mut invalid_shape,
+                InferenceErrorKind::OutputInvalid,
+            )
+            .is_err()
+        );
+        assert_eq!(invalid_shape, [0.0]);
     }
 }

@@ -41,6 +41,14 @@ impl DetectionMap {
         height: usize,
         values: Vec<f32>,
     ) -> Result<Self, DetectionMapError> {
+        Self::from_zeroizing_values(width, height, Zeroizing::new(values))
+    }
+
+    pub fn from_zeroizing_values(
+        width: usize,
+        height: usize,
+        values: Zeroizing<Vec<f32>>,
+    ) -> Result<Self, DetectionMapError> {
         let expected = width
             .checked_mul(height)
             .filter(|count| *count > 0)
@@ -57,7 +65,7 @@ impl DetectionMap {
         Ok(Self {
             width,
             height,
-            values: Zeroizing::new(values),
+            values,
         })
     }
 
