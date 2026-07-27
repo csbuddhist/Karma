@@ -1,0 +1,157 @@
+{
+  "asset": {
+    "kind": "ocr_bundle",
+    "license": "Apache-2.0",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "version": "pp-ocrv5-v3.5.0-lightweight"
+  },
+  "detector": {
+    "asset": {
+      "kind": "ocr_detector",
+      "license": "Apache-2.0",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "version": "pp-ocrv5-v3.5.0-lightweight"
+    },
+    "file_bytes": 1,
+    "file_name": "detector.onnx",
+    "model_name": "PP-OCRv5_mobile_det",
+    "upstream": {
+      "download_url": "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv5_mobile_det_infer.tar",
+      "file_bytes": 4935680,
+      "sha256": "50446e5d01ac2a73d5319c89513281f6578414c888c602f9af13f93feefffc58"
+    }
+  },
+  "detector_contract": {
+    "channels": 3,
+    "color_order": "rgb",
+    "dimension_multiple": 32,
+    "element_type": "f32",
+    "input_name": "x",
+    "layout": "nchw",
+    "maximum_height": 640,
+    "maximum_width": 640,
+    "mean": [
+      0.485,
+      0.456,
+      0.406
+    ],
+    "minimum_height": 32,
+    "minimum_width": 32,
+    "output_name": "fetch_name_0",
+    "scale": 0.00392156862745098,
+    "std": [
+      0.229,
+      0.224,
+      0.225
+    ]
+  },
+  "dictionary": {
+    "asset": {
+      "kind": "ocr_dictionary",
+      "license": "Apache-2.0",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "version": "pp-ocrv5-v3.5.0-lightweight"
+    },
+    "blank_index": 0,
+    "entries": [
+      "example"
+    ],
+    "file_bytes": 1,
+    "file_name": "dictionary.txt",
+    "languages": [
+      "english",
+      "chinese_simplified",
+      "chinese_traditional"
+    ]
+  },
+  "export_toolchain": {
+    "onnx_runtime_version": "1.22.0",
+    "onnx_version": "1.17.0",
+    "paddle2onnx_version": "2.1.0",
+    "paddlepaddle_version": "3.0.0"
+  },
+  "format_version": 1,
+  "minimum_runtime_version": "1.22",
+  "opset": 18,
+  "profile": "lightweight",
+  "recognizer": {
+    "asset": {
+      "kind": "ocr_recognizer",
+      "license": "Apache-2.0",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "version": "pp-ocrv5-v3.5.0-lightweight"
+    },
+    "file_bytes": 1,
+    "file_name": "recognizer.onnx",
+    "model_name": "PP-OCRv5_mobile_rec",
+    "upstream": {
+      "download_url": "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv5_mobile_rec_infer.tar",
+      "file_bytes": 16834560,
+      "sha256": "566b9512b34e34a9f0db54d87b51fa5a0b9ed2cf1ab7e49728cc0b8b5a64f414"
+    }
+  },
+  "recognizer_contract": {
+    "channels": 3,
+    "color_order": "rgb",
+    "dimension_multiple": 1,
+    "element_type": "f32",
+    "input_name": "x",
+    "layout": "nchw",
+    "maximum_height": 48,
+    "maximum_width": 320,
+    "mean": [
+      0.5,
+      0.5,
+      0.5
+    ],
+    "minimum_height": 48,
+    "minimum_width": 1,
+    "output_name": "fetch_name_0",
+    "scale": 0.00392156862745098,
+    "std": [
+      0.5,
+      0.5,
+      0.5
+    ]
+  },
+  "reference_artifacts": {
+    "detector_input": {
+      "file_bytes": 1,
+      "path": "reference/detector-input.bin",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "detector_output": {
+      "file_bytes": 1,
+      "path": "reference/detector-output.json",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "recognizer_input": {
+      "file_bytes": 1,
+      "path": "reference/recognizer-input.bin",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "recognizer_output": {
+      "file_bytes": 1,
+      "path": "reference/recognizer-output.json",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  },
+  "resource_limits": {
+    "maximum_batch_size": 8,
+    "maximum_line_characters": 128,
+    "maximum_recognizer_width": 320,
+    "maximum_text_boxes": 64,
+    "maximum_total_characters": 4096,
+    "minimum_box_area_pixels": 48,
+    "minimum_box_side_pixels": 6,
+    "recognizer_height": 48
+  },
+  "source_repository": "https://github.com/PaddlePaddle/PaddleOCR",
+  "source_revision": "33cbdd9deb2e00f61e7966db70669b249c005a37",
+  "thresholds": {
+    "expansion": 1.5,
+    "probability": 0.3,
+    "recognition_confidence": 0.5,
+    "text_box": 0.6
+  }
+}

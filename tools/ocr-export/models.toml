@@ -1,0 +1,37 @@
+[provenance]
+repository = "https://github.com/PaddlePaddle/PaddleOCR"
+revision = "33cbdd9deb2e00f61e7966db70669b249c005a37"
+release = "v3.5.0"
+documentation_url = "https://github.com/PaddlePaddle/PaddleOCR/blob/33cbdd9deb2e00f61e7966db70669b249c005a37/docs/version3.x/pipeline_usage/OCR.en.md"
+
+[profiles.lightweight]
+detector = "PP-OCRv5_mobile_det"
+recognizer = "PP-OCRv5_mobile_rec"
+
+[profiles.accurate]
+detector = "PP-OCRv5_server_det"
+recognizer = "PP-OCRv5_server_rec"
+
+[models.PP-OCRv5_mobile_det]
+role = "detector"
+url = "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv5_mobile_det_infer.tar"
+file_bytes = 4935680
+sha256 = "50446e5d01ac2a73d5319c89513281f6578414c888c602f9af13f93feefffc58"
+
+[models.PP-OCRv5_mobile_rec]
+role = "recognizer"
+url = "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv5_mobile_rec_infer.tar"
+file_bytes = 16834560
+sha256 = "566b9512b34e34a9f0db54d87b51fa5a0b9ed2cf1ab7e49728cc0b8b5a64f414"
+
+[models.PP-OCRv5_server_det]
+role = "detector"
+url = "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv5_server_det_infer.tar"
+file_bytes = 88340480
+sha256 = "22a33e0ba6a21425ea4192da03bf4395c9a0c67902bd924b7328fc859073045d"
+
+[models.PP-OCRv5_server_rec]
+role = "recognizer"
+url = "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv5_server_rec_infer.tar"
+file_bytes = 84869120
+sha256 = "d99be2ffd348943ab52876179168be4fb5b14f5f0812f2ae4c76d89ec2ea750a"
