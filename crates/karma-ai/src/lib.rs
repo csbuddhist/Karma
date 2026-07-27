@@ -31,13 +31,15 @@ pub use manifest::{AssetKind, AssetManifest, ManifestError};
 pub use observation::{ImageInference, ObservationAssembler, ObservationInput};
 pub use ocr_engine::OcrEngine;
 pub use ocr_manifest::{
-    MAX_OCR_DICTIONARY_BYTES, MAX_OCR_MODEL_BYTES, OCR_ACCURATE_DETECTOR_MODEL,
-    OCR_ACCURATE_RECOGNIZER_MODEL, OCR_LIGHTWEIGHT_DETECTOR_MODEL,
-    OCR_LIGHTWEIGHT_RECOGNIZER_MODEL, OCR_REFERENCE_DETECTOR_INPUT_PATH,
-    OCR_REFERENCE_DETECTOR_OUTPUT_PATH, OCR_REFERENCE_RECOGNIZER_INPUT_PATH,
-    OCR_REFERENCE_RECOGNIZER_OUTPUT_PATH, OcrBundleManifest, OcrDictionaryManifest, OcrLanguage,
-    OcrManifestError, OcrModelAsset, OcrModelProfile, OcrReferenceArtifact, OcrReferenceArtifacts,
-    OcrResourceLimits, OcrTensorContract, OcrTensorElementType, OcrThresholds,
+    MAX_OCR_DICTIONARY_BYTES, MAX_OCR_EXPORT_TOOL_VERSION_LENGTH, MAX_OCR_MODEL_BYTES,
+    OCR_ACCURATE_DETECTOR_MODEL, OCR_ACCURATE_RECOGNIZER_MODEL, OCR_LIGHTWEIGHT_DETECTOR_MODEL,
+    OCR_LIGHTWEIGHT_RECOGNIZER_MODEL, OCR_MANIFEST_FORMAT_VERSION,
+    OCR_REFERENCE_DETECTOR_INPUT_PATH, OCR_REFERENCE_DETECTOR_OUTPUT_PATH,
+    OCR_REFERENCE_RECOGNIZER_INPUT_PATH, OCR_REFERENCE_RECOGNIZER_OUTPUT_PATH,
+    OCR_SOURCE_REPOSITORY, OCR_UPSTREAM_MODEL_HOST, OcrBundleManifest, OcrDictionaryManifest,
+    OcrExportToolchain, OcrLanguage, OcrManifestError, OcrModelAsset, OcrModelProfile,
+    OcrReferenceArtifact, OcrReferenceArtifacts, OcrResourceLimits, OcrTensorContract,
+    OcrTensorElementType, OcrThresholds, OcrUpstreamAsset,
 };
 pub use ocr_text::{OcrTextBatch, OcrTextError};
 pub use preparation::{FramePreparationConfig, FramePreparer};
@@ -50,6 +52,7 @@ mod ocr_contract_tests {
 
     fn valid_manifest() -> OcrBundleManifest {
         OcrBundleManifest {
+            format_version: OCR_MANIFEST_FORMAT_VERSION,
             asset: AssetManifest {
                 kind: AssetKind::OcrBundle,
                 version: "pp-ocrv5-mobile-1".into(),
@@ -57,7 +60,7 @@ mod ocr_contract_tests {
                 sha256: "a".repeat(64),
             },
             profile: OcrModelProfile::Lightweight,
-            source_repository: "https://github.com/PaddlePaddle/PaddleOCR".into(),
+            source_repository: OCR_SOURCE_REPOSITORY.into(),
             source_revision: "0123456789abcdef0123456789abcdef01234567".into(),
             detector: OcrModelAsset {
                 asset: AssetManifest {
@@ -67,6 +70,13 @@ mod ocr_contract_tests {
                     sha256: "b".repeat(64),
                 },
                 model_name: OCR_LIGHTWEIGHT_DETECTOR_MODEL.into(),
+                upstream: OcrUpstreamAsset {
+                    download_url: format!(
+                        "https://{OCR_UPSTREAM_MODEL_HOST}/ocr/PP-OCRv5_mobile_det_infer.tar"
+                    ),
+                    file_bytes: 1_024,
+                    sha256: "2".repeat(64),
+                },
                 file_name: "detector.onnx".into(),
                 file_bytes: 1_024,
             },
@@ -78,6 +88,13 @@ mod ocr_contract_tests {
                     sha256: "c".repeat(64),
                 },
                 model_name: OCR_LIGHTWEIGHT_RECOGNIZER_MODEL.into(),
+                upstream: OcrUpstreamAsset {
+                    download_url: format!(
+                        "https://{OCR_UPSTREAM_MODEL_HOST}/ocr/PP-OCRv5_mobile_rec_infer.tar"
+                    ),
+                    file_bytes: 1_024,
+                    sha256: "3".repeat(64),
+                },
                 file_name: "recognizer.onnx".into(),
                 file_bytes: 1_024,
             },
@@ -168,6 +185,12 @@ mod ocr_contract_tests {
                     sha256: "1".repeat(64),
                 },
             },
+            export_toolchain: OcrExportToolchain {
+                paddlepaddle_version: "3.0.0".into(),
+                paddle2onnx_version: "1.2.11".into(),
+                onnx_version: "1.17.0".into(),
+                onnx_runtime_version: "1.22.0".into(),
+            },
             opset: 18,
             minimum_runtime_version: "1.22".into(),
         }
@@ -176,6 +199,20 @@ mod ocr_contract_tests {
     #[test]
     fn ocr_manifest_accepts_the_portable_contract() {
         assert_eq!(valid_manifest().validate(), Ok(()));
+    }
+
+    #[test]
+    fn ocr_contract_exports_provenance_constants() {
+        assert_eq!(MAX_OCR_EXPORT_TOOL_VERSION_LENGTH, 128);
+        assert_eq!(OCR_MANIFEST_FORMAT_VERSION, 1);
+        assert_eq!(
+            OCR_SOURCE_REPOSITORY,
+            "https://github.com/PaddlePaddle/PaddleOCR"
+        );
+        assert_eq!(
+            OCR_UPSTREAM_MODEL_HOST,
+            "paddle-model-ecology.bj.bcebos.com"
+        );
     }
 
     #[test]
@@ -332,6 +369,109 @@ mod ocr_contract_tests {
         assert_eq!(
             manifest.validate(),
             Err(OcrManifestError::InvalidReferenceArtifacts)
+        );
+    }
+
+    #[test]
+    fn ocr_manifest_rejects_wrong_format_version_or_source_repository() {
+        let mut manifest = valid_manifest();
+        manifest.format_version = 2;
+        assert_eq!(
+            manifest.validate(),
+            Err(OcrManifestError::InvalidFormatVersion)
+        );
+
+        let mut manifest = valid_manifest();
+        manifest.source_repository = "https://example.invalid/PaddleOCR".into();
+        assert_eq!(manifest.validate(), Err(OcrManifestError::InvalidSource));
+    }
+
+    #[test]
+    fn ocr_manifest_rejects_invalid_upstream_model_metadata() {
+        let mut manifest = valid_manifest();
+        manifest.detector.upstream.download_url =
+            format!("http://{OCR_UPSTREAM_MODEL_HOST}/ocr/PP-OCRv5_mobile_det_infer.tar");
+        assert_eq!(
+            manifest.validate(),
+            Err(OcrManifestError::InvalidUpstreamAsset)
+        );
+
+        let mut manifest = valid_manifest();
+        manifest.recognizer.upstream.download_url =
+            "https://example.invalid/PP-OCRv5_mobile_rec_infer.tar".into();
+        assert_eq!(
+            manifest.validate(),
+            Err(OcrManifestError::InvalidUpstreamAsset)
+        );
+
+        let mut manifest = valid_manifest();
+        manifest.detector.upstream.download_url =
+            format!("https://user@{OCR_UPSTREAM_MODEL_HOST}/ocr/PP-OCRv5_mobile_det_infer.tar");
+        assert_eq!(
+            manifest.validate(),
+            Err(OcrManifestError::InvalidUpstreamAsset)
+        );
+
+        let mut manifest = valid_manifest();
+        manifest.detector.upstream.download_url = format!(
+            "https://{OCR_UPSTREAM_MODEL_HOST}/ocr/PP-OCRv5_mobile_det_infer.tar?token=secret"
+        );
+        assert_eq!(
+            manifest.validate(),
+            Err(OcrManifestError::InvalidUpstreamAsset)
+        );
+
+        let mut manifest = valid_manifest();
+        manifest.recognizer.upstream.download_url =
+            format!("https://{OCR_UPSTREAM_MODEL_HOST}/ocr/PP-OCRv5_mobile_rec_infer.tar#fragment");
+        assert_eq!(
+            manifest.validate(),
+            Err(OcrManifestError::InvalidUpstreamAsset)
+        );
+
+        let mut manifest = valid_manifest();
+        manifest.detector.upstream.file_bytes = 0;
+        assert_eq!(
+            manifest.validate(),
+            Err(OcrManifestError::InvalidUpstreamAsset)
+        );
+
+        let mut manifest = valid_manifest();
+        manifest.recognizer.upstream.sha256 = "A".repeat(64);
+        assert_eq!(
+            manifest.validate(),
+            Err(OcrManifestError::InvalidUpstreamAsset)
+        );
+    }
+
+    #[test]
+    fn ocr_manifest_rejects_missing_or_invalid_export_tool_versions() {
+        let mut manifest = valid_manifest();
+        manifest.export_toolchain.paddlepaddle_version.clear();
+        assert_eq!(
+            manifest.validate(),
+            Err(OcrManifestError::InvalidExportToolchain)
+        );
+
+        let mut manifest = valid_manifest();
+        manifest.export_toolchain.paddle2onnx_version = "1.2.11 beta".into();
+        assert_eq!(
+            manifest.validate(),
+            Err(OcrManifestError::InvalidExportToolchain)
+        );
+
+        let mut manifest = valid_manifest();
+        manifest.export_toolchain.onnx_version = "1".repeat(129);
+        assert_eq!(
+            manifest.validate(),
+            Err(OcrManifestError::InvalidExportToolchain)
+        );
+
+        let mut manifest = valid_manifest();
+        manifest.export_toolchain.onnx_runtime_version = "1/22/0".into();
+        assert_eq!(
+            manifest.validate(),
+            Err(OcrManifestError::InvalidExportToolchain)
         );
     }
 

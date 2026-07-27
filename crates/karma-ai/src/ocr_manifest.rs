@@ -5,11 +5,16 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use url::Url;
 
 use crate::{AssetKind, AssetManifest, ColorOrder, ManifestError, TensorLayout};
 
 pub const MAX_OCR_MODEL_BYTES: u64 = 256 * 1024 * 1024;
 pub const MAX_OCR_DICTIONARY_BYTES: u64 = 4 * 1024 * 1024;
+pub const MAX_OCR_EXPORT_TOOL_VERSION_LENGTH: usize = 128;
+pub const OCR_MANIFEST_FORMAT_VERSION: u16 = 1;
+pub const OCR_SOURCE_REPOSITORY: &str = "https://github.com/PaddlePaddle/PaddleOCR";
+pub const OCR_UPSTREAM_MODEL_HOST: &str = "paddle-model-ecology.bj.bcebos.com";
 pub const OCR_LIGHTWEIGHT_DETECTOR_MODEL: &str = "PP-OCRv5_mobile_det";
 pub const OCR_LIGHTWEIGHT_RECOGNIZER_MODEL: &str = "PP-OCRv5_mobile_rec";
 pub const OCR_ACCURATE_DETECTOR_MODEL: &str = "PP-OCRv5_server_det";
@@ -53,8 +58,26 @@ pub enum OcrTensorElementType {
 pub struct OcrModelAsset {
     pub asset: AssetManifest,
     pub model_name: String,
+    pub upstream: OcrUpstreamAsset,
     pub file_name: String,
     pub file_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OcrUpstreamAsset {
+    pub download_url: String,
+    pub file_bytes: u64,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OcrExportToolchain {
+    pub paddlepaddle_version: String,
+    pub paddle2onnx_version: String,
+    pub onnx_version: String,
+    pub onnx_runtime_version: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -131,6 +154,7 @@ pub struct OcrResourceLimits {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OcrBundleManifest {
+    pub format_version: u16,
     pub asset: AssetManifest,
     pub profile: OcrModelProfile,
     pub source_repository: String,
@@ -143,12 +167,15 @@ pub struct OcrBundleManifest {
     pub thresholds: OcrThresholds,
     pub resource_limits: OcrResourceLimits,
     pub reference_artifacts: OcrReferenceArtifacts,
+    pub export_toolchain: OcrExportToolchain,
     pub opset: u16,
     pub minimum_runtime_version: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum OcrManifestError {
+    #[error("OCR manifest format version is invalid")]
+    InvalidFormatVersion,
     #[error("OCR bundle asset metadata is invalid")]
     InvalidAsset,
     #[error("OCR bundle license is invalid")]
@@ -161,6 +188,8 @@ pub enum OcrManifestError {
     InvalidRuntimeVersion,
     #[error("OCR model names do not match the selected profile")]
     ModelProfileMismatch,
+    #[error("OCR upstream model metadata is invalid")]
+    InvalidUpstreamAsset,
     #[error("OCR detector tensor contract is invalid")]
     InvalidDetectorContract,
     #[error("OCR recognizer tensor contract is invalid")]
@@ -173,6 +202,8 @@ pub enum OcrManifestError {
     InvalidResourceLimits,
     #[error("OCR reference artifact metadata is invalid")]
     InvalidReferenceArtifacts,
+    #[error("OCR export toolchain is invalid")]
+    InvalidExportToolchain,
 }
 
 impl Default for OcrThresholds {
@@ -188,9 +219,11 @@ impl Default for OcrThresholds {
 
 impl OcrBundleManifest {
     pub fn validate(&self) -> Result<(), OcrManifestError> {
+        if self.format_version != OCR_MANIFEST_FORMAT_VERSION {
+            return Err(OcrManifestError::InvalidFormatVersion);
+        }
         validate_asset(&self.asset, AssetKind::OcrBundle, None, None)?;
-        if self.source_repository.trim().is_empty()
-            || !self.source_repository.starts_with("https://")
+        if self.source_repository != OCR_SOURCE_REPOSITORY
             || !is_pinned_revision(&self.source_revision)
         {
             return Err(OcrManifestError::InvalidSource);
@@ -204,6 +237,7 @@ impl OcrBundleManifest {
         if self.detector.file_name != "detector.onnx" {
             return Err(OcrManifestError::InvalidAsset);
         }
+        validate_upstream_asset(&self.detector.upstream)?;
         validate_asset(
             &self.recognizer.asset,
             AssetKind::OcrRecognizer,
@@ -213,6 +247,7 @@ impl OcrBundleManifest {
         if self.recognizer.file_name != "recognizer.onnx" {
             return Err(OcrManifestError::InvalidAsset);
         }
+        validate_upstream_asset(&self.recognizer.upstream)?;
         self.validate_profile_models()?;
         self.validate_dictionary()?;
         if self.opset != OCR_OPSET {
@@ -234,6 +269,9 @@ impl OcrBundleManifest {
             return Err(OcrManifestError::InvalidResourceLimits);
         }
         self.validate_reference_artifacts()?;
+        if !has_valid_export_toolchain(&self.export_toolchain) {
+            return Err(OcrManifestError::InvalidExportToolchain);
+        }
         Ok(())
     }
 
@@ -359,6 +397,50 @@ fn is_lowercase_sha256(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+fn validate_upstream_asset(asset: &OcrUpstreamAsset) -> Result<(), OcrManifestError> {
+    if !is_official_upstream_url(&asset.download_url)
+        || asset.file_bytes == 0
+        || !is_lowercase_sha256(&asset.sha256)
+    {
+        return Err(OcrManifestError::InvalidUpstreamAsset);
+    }
+    Ok(())
+}
+
+fn is_official_upstream_url(value: &str) -> bool {
+    let Ok(url) = Url::parse(value) else {
+        return false;
+    };
+    url.scheme() == "https"
+        && url.host_str() == Some(OCR_UPSTREAM_MODEL_HOST)
+        && url.port().is_none()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none()
+        && url.path().len() > 1
+}
+
+fn has_valid_export_toolchain(toolchain: &OcrExportToolchain) -> bool {
+    [
+        &toolchain.paddlepaddle_version,
+        &toolchain.paddle2onnx_version,
+        &toolchain.onnx_version,
+        &toolchain.onnx_runtime_version,
+    ]
+    .into_iter()
+    .all(|version| is_version_like(version))
+}
+
+fn is_version_like(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_OCR_EXPORT_TOOL_VERSION_LENGTH
+        && value.bytes().any(|byte| byte.is_ascii_digit())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b'+'))
 }
 
 fn is_detector_contract_valid(contract: &OcrTensorContract) -> bool {
