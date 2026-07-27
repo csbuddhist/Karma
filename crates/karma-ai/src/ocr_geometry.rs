@@ -2,6 +2,11 @@ use std::cmp::Ordering;
 
 use crate::{FrameDimensions, OcrResourceLimits, OcrTensorError};
 
+/// Input points are measured in pixels. This is one ten-thousandth of a pixel, so it absorbs
+/// floating-point roundoff without excluding valid boxes above the 6-pixel/48-pixel limits.
+const PIXEL_COORDINATE_EPSILON: f32 = 1.0e-4;
+const SQUARE_PIXEL_EPSILON: f32 = PIXEL_COORDINATE_EPSILON * PIXEL_COORDINATE_EPSILON;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TextQuadrilateral {
     points: [[f32; 2]; 4],
@@ -27,6 +32,8 @@ impl TextQuadrilateral {
         let quadrilateral = Self { points };
         if quadrilateral.shortest_edge() < limits.minimum_box_side_pixels as f32
             || quadrilateral.area() < limits.minimum_box_area_pixels as f32
+            || !has_strict_consistent_winding(points)
+            || !has_valid_bilinear_jacobian(points)
         {
             return Err(OcrTensorError::InvalidGeometry);
         }
@@ -142,6 +149,53 @@ fn distance(left: [f32; 2], right: [f32; 2]) -> f32 {
     (right[0] - left[0]).hypot(right[1] - left[1])
 }
 
+fn has_strict_consistent_winding(points: [[f32; 2]; 4]) -> bool {
+    has_consistent_nonzero_sign((0..4).map(|index| {
+        let current = edge(points[index], points[(index + 1) % 4]);
+        let next = edge(points[(index + 1) % 4], points[(index + 2) % 4]);
+        cross(current, next)
+    }))
+}
+
+fn has_valid_bilinear_jacobian(points: [[f32; 2]; 4]) -> bool {
+    has_consistent_nonzero_sign(
+        [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)].map(|(u, v)| {
+            let derivative_u = [
+                (points[1][0] - points[0][0]) * (1.0 - v) + (points[2][0] - points[3][0]) * v,
+                (points[1][1] - points[0][1]) * (1.0 - v) + (points[2][1] - points[3][1]) * v,
+            ];
+            let derivative_v = [
+                (points[3][0] - points[0][0]) * (1.0 - u) + (points[2][0] - points[1][0]) * u,
+                (points[3][1] - points[0][1]) * (1.0 - u) + (points[2][1] - points[1][1]) * u,
+            ];
+            cross(derivative_u, derivative_v)
+        }),
+    )
+}
+
+fn has_consistent_nonzero_sign(values: impl IntoIterator<Item = f32>) -> bool {
+    let mut sign = None;
+    for value in values {
+        if !value.is_finite() || value.abs() <= SQUARE_PIXEL_EPSILON {
+            return false;
+        }
+        let current_sign = value.is_sign_positive();
+        if sign.is_some_and(|expected| expected != current_sign) {
+            return false;
+        }
+        sign = Some(current_sign);
+    }
+    sign.is_some()
+}
+
+fn edge(from: [f32; 2], to: [f32; 2]) -> [f32; 2] {
+    [to[0] - from[0], to[1] - from[1]]
+}
+
+fn cross(left: [f32; 2], right: [f32; 2]) -> f32 {
+    left[0] * right[1] - left[1] * right[0]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,6 +275,19 @@ mod tests {
             .unwrap_err(),
             OcrTensorError::InvalidGeometry
         );
+    }
+
+    #[test]
+    fn quadrilateral_rejects_folded_or_self_collapsing_transforms() {
+        for points in [
+            [[0.0, 0.0], [20.0, 0.0], [10.0, 10.0], [0.0, 20.0]],
+            [[0.0, 0.0], [20.0, 0.0], [20.0, 20.0], [10.0, 10.0]],
+        ] {
+            assert_eq!(
+                TextQuadrilateral::new(points, frame(), &limits()).unwrap_err(),
+                OcrTensorError::InvalidGeometry
+            );
+        }
     }
 
     #[test]
