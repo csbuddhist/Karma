@@ -475,6 +475,7 @@ struct BenchmarkFixture {
 }
 
 impl BenchmarkFixture {
+    #[cfg(test)]
     fn dimensions(&self) -> (u32, u32) {
         (
             self.frame.dimensions().width(),
@@ -482,6 +483,7 @@ impl BenchmarkFixture {
         )
     }
 
+    #[cfg(test)]
     fn strings(&self) -> &'static [&'static str] {
         APPROVED_BENCHMARK_STRINGS
     }
