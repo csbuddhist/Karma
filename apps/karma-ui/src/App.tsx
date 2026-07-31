@@ -272,6 +272,14 @@ export function App() {
       events.forEach((eventName) => window.removeEventListener(eventName, reset));
     };
   }, [authMode, sessionToken]);
+  useEffect(() => {
+    if (authMode !== "unlocked" || !sessionToken || dirty) return;
+    const refresh = () => void loadConsole(sessionToken)
+      .then(setState)
+      .catch(() => setState((current) => ({ ...current, serviceConnected: false, agentConnected: false, monitors: [] })));
+    const interval = window.setInterval(refresh, 5000);
+    return () => window.clearInterval(interval);
+  }, [authMode, sessionToken, dirty]);
   async function authenticated(token: string) { setSessionToken(token); setLoading(true); try { setState(await loadConsole(token)); setAuthMode("unlocked"); } finally { setLoading(false); } }
   function update(next: ConsoleState) { setState(next); setDirty(true); setSaveMessage(""); }
   async function save() { setSaving(true); try { await saveConsole(sessionToken, state); setDirty(false); setSaveMessage("设置已保存"); window.setTimeout(() => setSaveMessage(""), 2200); } finally { setSaving(false); } }
