@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 karma-ipc = { path = "../../crates/karma-ipc" }
+karma-disposition = { path = "../../crates/karma-disposition" }
 karma-service-core = { path = "../../crates/karma-service-core" }
 karma-windows-ipc = { path = "../../crates/karma-windows-ipc" }
 rand = "0.8"
@@ -22,5 +23,7 @@ windows = { version = "0.62.2", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Security_Authorization",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
 ] }
 windows-service = "0.8"

@@ -375,6 +375,14 @@ pub enum ServiceResult {
         revision: u64,
         policy: Value,
     },
+    DispositionRequired {
+        event_id: String,
+        target: ProcessIdentity,
+        grace_period_ms: u32,
+    },
+    DispositionCompleted {
+        report: DispositionReport,
+    },
     Acknowledged,
 }
 

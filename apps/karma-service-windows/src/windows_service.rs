@@ -40,6 +40,7 @@ use windows_service::{
     service_dispatcher,
 };
 use zeroize::Zeroizing;
+mod process_disposition;
 
 const SERVICE_NAME: &str = "KarmaService";
 const DATA_DIRECTORY: &str = "Karma";
@@ -135,7 +136,27 @@ fn serve(shutdown: Arc<AtomicBool>) -> Result<(), Box<dyn std::error::Error>> {
             }
         };
         let shutdown_requested = matches!(request.request, ServiceRequest::RequestShutdown { .. });
-        let response = core.handle(request, unix_time_ms());
+        let mut response = core.handle(request, unix_time_ms());
+        if let Ok(karma_ipc::ServiceResult::DispositionRequired {
+            event_id,
+            target,
+            grace_period_ms,
+        }) = &response.result
+        {
+            let report = process_disposition::execute(
+                event_id.clone(),
+                target,
+                Duration::from_millis(u64::from(*grace_period_ms)),
+            );
+            if core.record_disposition(&report, unix_time_ms()).is_ok() {
+                response.result = Ok(karma_ipc::ServiceResult::DispositionCompleted { report });
+            } else {
+                response = karma_ipc::ResponseEnvelope::failure(
+                    response.request_id,
+                    karma_ipc::ServiceFailure::new(karma_ipc::ServiceErrorCode::Internal),
+                );
+            }
+        }
         let authorized_shutdown = shutdown_requested && response.result.is_ok();
         pipe.send_response(&response)?;
         if authorized_shutdown {

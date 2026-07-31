@@ -28,6 +28,8 @@ const STATE_SCHEMA: u32 = 1;
 const MAX_STATE_BYTES: usize = 2 * 1024 * 1024;
 const SESSION_LIFETIME_MS: i64 = 15 * 60 * 1000;
 const AGENT_OFFLINE_AFTER_MS: i64 = 30 * 1000;
+const MAX_OBSERVATION_AGE_MS: i64 = 10 * 1000;
+const DISPOSITION_GRACE_MS: u32 = 2000;
 const MAX_FAILURES: u32 = 5;
 const FAILURE_COOLDOWN_MS: i64 = 30 * 1000;
 const MAX_REPLAY_ENTRIES: usize = 4096;
@@ -80,6 +82,7 @@ struct RuntimeState {
     failures: u32,
     blocked_until_ms: Option<i64>,
     last_heartbeat: Option<karma_ipc::AgentHeartbeat>,
+    pending_dispositions: HashMap<String, karma_ipc::ProcessIdentity>,
 }
 
 pub struct ServiceCore {
@@ -113,6 +116,7 @@ impl ServiceCore {
                 failures: 0,
                 blocked_until_ms: None,
                 last_heartbeat: None,
+                pending_dispositions: HashMap::new(),
             }),
         })
     }
@@ -139,6 +143,19 @@ impl ServiceCore {
             Ok(result) => ResponseEnvelope::success(request_id, result),
             Err(code) => failure(request_id, code),
         }
+    }
+
+    pub fn record_disposition(
+        &self,
+        report: &karma_ipc::DispositionReport,
+        now_ms: i64,
+    ) -> Result<(), ServiceErrorCode> {
+        let mut runtime = self
+            .runtime
+            .lock()
+            .map_err(|_| ServiceErrorCode::Internal)?;
+        record_disposition(&mut runtime, report, now_ms)?;
+        self.persist(&runtime.stored)
     }
 
     fn dispatch(
@@ -246,10 +263,53 @@ impl ServiceCore {
                     policy: runtime.stored.policy.clone(),
                 })
             }
-            ServiceRequest::AgentObservation { agent_token, .. }
-            | ServiceRequest::ReportDisposition { agent_token, .. } => {
+            ServiceRequest::AgentObservation {
+                agent_token,
+                observation,
+            } => {
                 self.authorize_agent(&agent_token)?;
-                Ok(ServiceResult::Acknowledged)
+                if now_ms.saturating_sub(observation.occurred_at_ms) > MAX_OBSERVATION_AGE_MS
+                    || observation.occurred_at_ms > now_ms.saturating_add(1000)
+                {
+                    return Ok(ServiceResult::Acknowledged);
+                }
+                let threshold = runtime
+                    .stored
+                    .policy
+                    .pointer("/recognition/immediateThreshold")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(95)
+                    .min(100) as u16
+                    * 10;
+                let protection_enabled = runtime
+                    .stored
+                    .policy
+                    .get("protectionEnabled")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true);
+                let Some(target) = observation.source else {
+                    return Ok(ServiceResult::Acknowledged);
+                };
+                if !protection_enabled || observation.risk_millis < threshold {
+                    return Ok(ServiceResult::Acknowledged);
+                }
+                runtime
+                    .pending_dispositions
+                    .insert(observation.event_id.clone(), target.clone());
+                Ok(ServiceResult::DispositionRequired {
+                    event_id: observation.event_id,
+                    target,
+                    grace_period_ms: DISPOSITION_GRACE_MS,
+                })
+            }
+            ServiceRequest::ReportDisposition {
+                agent_token,
+                report,
+            } => {
+                self.authorize_agent(&agent_token)?;
+                record_disposition(runtime, &report, now_ms)?;
+                self.persist(&runtime.stored)?;
+                Ok(ServiceResult::DispositionCompleted { report })
             }
             ServiceRequest::ListEvidence { session_token } => {
                 authorize(runtime, &session_token, now_ms)?;
@@ -388,6 +448,30 @@ fn audit(runtime: &mut RuntimeState, occurred_at_ms: i64, kind: &str, outcome: &
     }
 }
 
+fn record_disposition(
+    runtime: &mut RuntimeState,
+    report: &karma_ipc::DispositionReport,
+    now_ms: i64,
+) -> Result<(), ServiceErrorCode> {
+    let expected = runtime
+        .pending_dispositions
+        .get(&report.event_id)
+        .ok_or(ServiceErrorCode::InvalidRequest)?;
+    if expected.process_id != report.process_id || expected.started_at_ms != report.started_at_ms {
+        return Err(ServiceErrorCode::InvalidRequest);
+    }
+    runtime.pending_dispositions.remove(&report.event_id);
+    let outcome = match report.outcome {
+        karma_ipc::DispositionOutcome::ClosedGracefully => "closed_gracefully",
+        karma_ipc::DispositionOutcome::Terminated => "terminated",
+        karma_ipc::DispositionOutcome::IdentityChanged => "identity_changed",
+        karma_ipc::DispositionOutcome::AccessDenied => "access_denied",
+        karma_ipc::DispositionOutcome::SourceUncertain => "source_uncertain",
+    };
+    audit(runtime, now_ms, "application_disposition", outcome);
+    Ok(())
+}
+
 fn load_state(path: &Path) -> Result<StoredState, CoreError> {
     let metadata = fs::metadata(path).map_err(|_| CoreError::StorageUnavailable)?;
     if metadata.len() > MAX_STATE_BYTES as u64 {
@@ -427,7 +511,10 @@ fn failure(request_id: String, code: ServiceErrorCode) -> ResponseEnvelope {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use karma_ipc::{AgentHeartbeat, ClientKind, ServiceRequest};
+    use karma_ipc::{
+        AgentHeartbeat, AgentObservation, ClientKind, DispositionOutcome, DispositionReport,
+        ProcessIdentity, ServiceRequest,
+    };
 
     fn request(id: &str, nonce: &str, body: ServiceRequest) -> RequestEnvelope {
         RequestEnvelope::new(id, nonce, ClientKind::Ui, body)
@@ -554,5 +641,56 @@ mod tests {
             },
         );
         assert!(core.handle(allowed, 5).result.is_ok());
+    }
+
+    #[test]
+    fn only_recent_high_risk_observations_authorize_a_bound_disposition() {
+        let directory = tempfile::tempdir().unwrap();
+        let core = ServiceCore::open(
+            directory.path().join("state.json"),
+            "agent-secret".into(),
+            0,
+        )
+        .unwrap();
+        let source = ProcessIdentity {
+            process_id: 42,
+            started_at_ms: 77,
+            executable_name: r"C:\Browser\browser.exe".into(),
+            executable_sha256: None,
+        };
+        let observation = AgentObservation {
+            event_id: "event-1".into(),
+            agent_instance_id: "agent-1".into(),
+            occurred_at_ms: 100,
+            monitor_id: "monitor-1".into(),
+            risk_millis: 960,
+            reason_code: "image_immediate".into(),
+            source: Some(source.clone()),
+            evidence_pending: false,
+        };
+        let request = RequestEnvelope::new(
+            "1",
+            "n1",
+            ClientKind::Agent,
+            ServiceRequest::AgentObservation {
+                agent_token: "agent-secret".into(),
+                observation,
+            },
+        );
+        assert!(matches!(
+            success(core.handle(request, 101)),
+            ServiceResult::DispositionRequired { event_id, target, .. }
+                if event_id == "event-1" && target == source
+        ));
+        let mismatched = DispositionReport {
+            event_id: "event-1".into(),
+            process_id: 42,
+            started_at_ms: 78,
+            outcome: DispositionOutcome::Terminated,
+        };
+        assert_eq!(
+            core.record_disposition(&mismatched, 102),
+            Err(ServiceErrorCode::InvalidRequest)
+        );
     }
 }

@@ -1766,6 +1766,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "karma-disposition"
+version = "0.1.0"
+dependencies = [
+ "karma-ipc",
+]
+
+[[package]]
 name = "karma-domain"
 version = "0.1.0"
 dependencies = [
@@ -1830,6 +1837,7 @@ dependencies = [
 name = "karma-service-windows"
 version = "0.1.0"
 dependencies = [
+ "karma-disposition",
  "karma-ipc",
  "karma-service-core",
  "karma-windows-ipc",

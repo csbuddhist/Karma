@@ -4,6 +4,7 @@ members = [
     "apps/karma-service-windows",
     "apps/karma-ui/src-tauri",
     "crates/karma-ai",
+    "crates/karma-disposition",
     "crates/karma-domain",
     "crates/karma-ipc",
     "crates/karma-onnx",
