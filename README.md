@@ -6,6 +6,13 @@ Karma 是一套面向 macOS 和 Windows 的本地色情内容防护与数字健�
 
 > 本软件不能对拥有本机管理员、root、恢复环境或物理控制权的人承诺绝对不可卸载。强约束模式必须配合标准用户账户以及 MDM、WDAC/AppLocker 等设备管理能力。
 
+## Windows 可克隆测试包
+
+`main` 包含一个 **cloneable Windows test bundle**：
+[`release/windows-x64-test/`](release/windows-x64-test/)。在 Windows 10 22H2 或 Windows 11 x64 上，安装 Microsoft Visual C++ 2015–2022 x64 Redistributable 后，在该目录运行 `./Start-KarmaTest.ps1`。启动脚本会验证全部运行时和模型的 SHA-256，并只在当前进程设置模型路径；详细步骤见 [Windows 安装与测试指南](docs/windows-installation-guide.md)。
+
+该包是未签名的开发/测试软件，不是安装器，也尚未实现服务安装、自动关闭应用、反篡改、使用时段限制或完整家长控制功能。
+
 ## 设计原则
 
 - 本地优先：屏幕图像默认只在内存中处理，不上传、不保存原始画面。

@@ -70,89 +70,41 @@
 - 防病毒软件可能对新生成、未签名的程序执行额外扫描；
 - 不要为了运行测试而永久关闭安全软件。
 
-## 3. 获取当前测试包
+## 3. 从仓库获取并启动测试包
 
-在开发 Mac 上生成的文件位于：
+测试人员无需在 Windows 上构建 Rust、下载模型或设置环境变量。克隆仓库后，完整运行时和已验证模型位于 [`release/windows-x64-test/Start-KarmaTest.ps1`](../release/windows-x64-test/Start-KarmaTest.ps1)：
 
-```text
-/Users/wei/CodeProjects/Karma/target/karma-agent-windows-x64-runtime.zip
+```powershell
+git clone <远端仓库地址> Karma
+Set-Location .\Karma\release\windows-x64-test
 ```
 
-解压前的源目录是：
+先安装第 2.2 节所述 Microsoft Visual C++ Redistributable。然后执行：
 
-```text
-/Users/wei/CodeProjects/Karma/target/windows-x64-runtime/
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\Start-KarmaTest.ps1
 ```
 
-当前运行时 ZIP 包含：
+`Set-ExecutionPolicy` 只影响当前 PowerShell 进程，用于允许执行仓库内未签名脚本；它不会修改系统范围策略。启动脚本会先验证 `SHA256SUMS`、两个 JSON 模型清单和必要运行文件，验证失败时不会启动 Agent。可使用 `.\Start-KarmaTest.ps1 -OcrProfile lightweight` 显式选择轻量 OCR。
+
+测试包目录包含：
 
 ```text
-windows-x64-runtime/
+windows-x64-test\
 ├── karma-agent-windows.exe
-└── DirectML.dll
+├── DirectML.dll
+├── SHA256SUMS
+├── Start-KarmaTest.ps1
+├── Verify-KarmaTestBundle.ps1
+└── models\                         # Viddexa 图像模型和 PP-OCRv5 轻量模型
 ```
 
-它不包含生产模型。模型权重不会提交到 Git，必须按照第 5 节单独准备。
+不要直接从 `target/` 复制编译缓存或将其提交到 Git；`target/` 只是开发机本地构建目录。
 
-当前已生成 EXE 的 SHA-256 是：
+## 5. 测试包中的模型
 
-```text
-ac9c7edbe51365d5588cead9848e5fdf37ffd186627d49f391db0edde856fccf
-```
-
-每次重新构建后哈希都可能变化，应以交付测试包时同时提供的哈希为准。
-
-## 4. 在 Windows 上解压
-
-### 4.1 创建测试目录
-
-以 PowerShell 执行：
-
-```powershell
-$KarmaRoot = "C:\Karma-Test"
-New-Item -ItemType Directory -Force -Path $KarmaRoot | Out-Null
-```
-
-将 `karma-agent-windows-x64-runtime.zip` 复制到 Windows，然后解压：
-
-```powershell
-Expand-Archive `
-  -Path "$env:USERPROFILE\Downloads\karma-agent-windows-x64-runtime.zip" `
-  -DestinationPath $KarmaRoot `
-  -Force
-```
-
-ZIP 包保留了顶层目录，因此解压后的可执行文件通常位于：
-
-```text
-C:\Karma-Test\windows-x64-runtime\karma-agent-windows.exe
-```
-
-如果使用资源管理器解压，请确认 `karma-agent-windows.exe` 与 `DirectML.dll` 位于同一目录。
-
-### 4.2 校验 EXE
-
-```powershell
-$AgentExe = "C:\Karma-Test\windows-x64-runtime\karma-agent-windows.exe"
-Get-FileHash -Algorithm SHA256 $AgentExe
-```
-
-输出应与本次交付提供的 SHA-256 一致。哈希不一致时不要运行，应重新复制测试包。
-
-### 4.3 解除下载标记
-
-仅在哈希验证通过且确认测试包来源可信后执行：
-
-```powershell
-Unblock-File -Path $AgentExe
-Unblock-File -Path "C:\Karma-Test\windows-x64-runtime\DirectML.dll"
-```
-
-这只移除文件的 Internet Zone 标记，不会绕过 Windows Defender，也不会为文件增加数字签名。
-
-## 5. 准备模型
-
-Agent 启动时强制要求有效的图像模型。OCR 模型可以降级缺失，但完整 OCR 测试需要轻量 OCR 模型。
+克隆测试包已包含完整、已验证的图像模型和轻量 OCR 模型，正常测试不需要手工复制。`Start-KarmaTest.ps1` 会设置进程级环境变量并在启动前验证所有资产。以下目录结构和导出说明仅供重新构建测试包时使用。
 
 推荐目录结构：
 
@@ -184,7 +136,7 @@ C:\Karma-Test\
 
 ### 5.1 图像模型
 
-图像模型使用固定版本的 `viddexa/nsfw-detection-2-nano`。仓库不包含生产权重。
+图像模型使用固定版本的 `viddexa/nsfw-detection-2-nano`。测试包提交的是开发测试所需的已导出 ONNX 资产，不是生产发布模型。
 
 导出和验证方式见：
 
@@ -232,27 +184,7 @@ cargo run -p karma-onnx --example verify_ocr_bundle -- \
 
 ## 6. 启动当前开发测试版
 
-### 6.1 临时环境变量
-
-打开普通 PowerShell 窗口：
-
-```powershell
-$KarmaRoot = "C:\Karma-Test"
-$RuntimeDir = Join-Path $KarmaRoot "windows-x64-runtime"
-
-$env:KARMA_IMAGE_MODEL_MANIFEST = `
-  (Join-Path $KarmaRoot "models\image\viddexa-nano\manifest.json")
-
-$env:KARMA_OCR_LIGHTWEIGHT_MANIFEST = `
-  (Join-Path $KarmaRoot "models\ocr\pp-ocrv5-mobile\manifest.json")
-
-$env:KARMA_OCR_PROFILE = "lightweight"
-
-Set-Location $RuntimeDir
-.\karma-agent-windows.exe
-```
-
-这些变量只在当前 PowerShell 会话中有效，关闭窗口后自动消失。
+按第 3 节运行 `Start-KarmaTest.ps1`。它代替手工设置环境变量；这些变量只在启动脚本及其子进程中有效，关闭 Agent 后自动消失。
 
 ### 6.2 可选高精度模型
 

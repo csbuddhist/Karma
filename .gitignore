@@ -1,6 +1,7 @@
 .worktrees/
 target/
 tools/model-export/.venv/
+tools/model-export/.venv312/
 tools/model-export/__pycache__/
 tools/ocr-export/__pycache__/
 tools/ocr-export/tests/__pycache__/
