@@ -8,6 +8,7 @@ members = [
     "crates/karma-onnx",
     "crates/karma-policy",
     "crates/karma-windows",
+    "crates/karma-windows-ipc",
 ]
 resolver = "2"
 

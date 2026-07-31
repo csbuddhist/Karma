@@ -1831,6 +1831,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "karma-windows-ipc"
+version = "0.1.0"
+dependencies = [
+ "karma-ipc",
+ "serde",
+ "thiserror 2.0.19",
+ "windows 0.62.2",
+]
+
+[[package]]
 name = "keyboard-types"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
