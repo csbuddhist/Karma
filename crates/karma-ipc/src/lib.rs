@@ -92,15 +92,18 @@ pub enum ServiceRequest {
         evidence_id: String,
     },
     AgentHeartbeat {
+        agent_token: String,
         heartbeat: AgentHeartbeat,
     },
     AgentObservation {
+        agent_token: String,
         observation: AgentObservation,
     },
     GetAgentPolicy {
         agent_token: String,
     },
     ReportDisposition {
+        agent_token: String,
         report: DispositionReport,
     },
     RequestShutdown {
@@ -151,7 +154,10 @@ impl ServiceRequest {
             | Self::RequestShutdown { session_token } => {
                 validate_opaque(session_token, MAX_SESSION_TOKEN_CHARS)?;
             }
-            Self::GetAgentPolicy { agent_token } => {
+            Self::AgentHeartbeat { agent_token, .. }
+            | Self::AgentObservation { agent_token, .. }
+            | Self::GetAgentPolicy { agent_token }
+            | Self::ReportDisposition { agent_token, .. } => {
                 validate_opaque(agent_token, MAX_SESSION_TOKEN_CHARS)?;
             }
             _ => {}
@@ -160,9 +166,9 @@ impl ServiceRequest {
             Self::RevealEvidence { evidence_id, .. } | Self::DeleteEvidence { evidence_id, .. } => {
                 validate_identifier(evidence_id)?
             }
-            Self::AgentHeartbeat { heartbeat } => heartbeat.validate()?,
-            Self::AgentObservation { observation } => observation.validate()?,
-            Self::ReportDisposition { report } => report.validate()?,
+            Self::AgentHeartbeat { heartbeat, .. } => heartbeat.validate()?,
+            Self::AgentObservation { observation, .. } => observation.validate()?,
+            Self::ReportDisposition { report, .. } => report.validate()?,
             _ => {}
         }
         if let Self::PutPolicy { policy, .. } = self {
@@ -530,6 +536,7 @@ mod tests {
     fn client_roles_cannot_cross_privilege_boundaries() {
         let ui_heartbeat = request(
             ServiceRequest::AgentHeartbeat {
+                agent_token: "agent-token".into(),
                 heartbeat: AgentHeartbeat {
                     agent_instance_id: "agent-1".into(),
                     user_sid: "S-1-5-21-test".into(),
