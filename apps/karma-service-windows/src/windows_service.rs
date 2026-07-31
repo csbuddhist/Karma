@@ -40,6 +40,7 @@ use windows_service::{
     service_dispatcher,
 };
 use zeroize::Zeroizing;
+mod agent_watchdog;
 mod evidence_key;
 mod process_disposition;
 
@@ -140,46 +141,62 @@ fn serve(shutdown: Arc<AtomicBool>) -> Result<(), Box<dyn std::error::Error>> {
         unix_time_ms(),
     )?;
 
-    while !shutdown.load(Ordering::Acquire) {
-        let pipe = PipeServer::create()?;
-        let request = match pipe.accept_request() {
-            Ok(request) => request,
-            Err(error) => {
-                if shutdown.load(Ordering::Acquire) {
-                    break;
+    let install_directory = env::current_exe()
+        .map_err(|_| ServiceHostError::StorageUnavailable)?
+        .parent()
+        .map(PathBuf::from)
+        .ok_or(ServiceHostError::StorageUnavailable)?;
+    let watchdog = agent_watchdog::start(
+        install_directory,
+        agent_secret.to_string(),
+        Arc::clone(&shutdown),
+    );
+    let serve_result = (|| -> Result<(), Box<dyn std::error::Error>> {
+        while !shutdown.load(Ordering::Acquire) {
+            let pipe = PipeServer::create()?;
+            let request = match pipe.accept_request() {
+                Ok(request) => request,
+                Err(error) => {
+                    if shutdown.load(Ordering::Acquire) {
+                        break;
+                    }
+                    return Err(error.into());
                 }
-                return Err(error.into());
-            }
-        };
-        let shutdown_requested = matches!(request.request, ServiceRequest::RequestShutdown { .. });
-        let mut response = core.handle(request, unix_time_ms());
-        if let Ok(karma_ipc::ServiceResult::DispositionRequired {
-            event_id,
-            target,
-            grace_period_ms,
-        }) = &response.result
-        {
-            let report = process_disposition::execute(
-                event_id.clone(),
+            };
+            let shutdown_requested =
+                matches!(request.request, ServiceRequest::RequestShutdown { .. });
+            let mut response = core.handle(request, unix_time_ms());
+            if let Ok(karma_ipc::ServiceResult::DispositionRequired {
+                event_id,
                 target,
-                Duration::from_millis(u64::from(*grace_period_ms)),
-            );
-            if core.record_disposition(&report, unix_time_ms()).is_ok() {
-                response.result = Ok(karma_ipc::ServiceResult::DispositionCompleted { report });
-            } else {
-                response = karma_ipc::ResponseEnvelope::failure(
-                    response.request_id,
-                    karma_ipc::ServiceFailure::new(karma_ipc::ServiceErrorCode::Internal),
+                grace_period_ms,
+            }) = &response.result
+            {
+                let report = process_disposition::execute(
+                    event_id.clone(),
+                    target,
+                    Duration::from_millis(u64::from(*grace_period_ms)),
                 );
+                if core.record_disposition(&report, unix_time_ms()).is_ok() {
+                    response.result = Ok(karma_ipc::ServiceResult::DispositionCompleted { report });
+                } else {
+                    response = karma_ipc::ResponseEnvelope::failure(
+                        response.request_id,
+                        karma_ipc::ServiceFailure::new(karma_ipc::ServiceErrorCode::Internal),
+                    );
+                }
+            }
+            let authorized_shutdown = shutdown_requested && response.result.is_ok();
+            pipe.send_response(&response)?;
+            if authorized_shutdown {
+                shutdown.store(true, Ordering::Release);
             }
         }
-        let authorized_shutdown = shutdown_requested && response.result.is_ok();
-        pipe.send_response(&response)?;
-        if authorized_shutdown {
-            shutdown.store(true, Ordering::Release);
-        }
-    }
-    Ok(())
+        Ok(())
+    })();
+    shutdown.store(true, Ordering::Release);
+    let _ = watchdog.join();
+    serve_result
 }
 
 fn harden_path(path: &PathBuf) -> Result<(), ServiceHostError> {

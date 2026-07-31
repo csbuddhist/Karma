@@ -7,6 +7,8 @@ $checksumsPath = Join-Path $bundleRoot 'SHA256SUMS'
 $requiredPaths = @(
     'karma-agent-windows.exe',
     'karma-ui.exe',
+    'KarmaService.exe',
+    'KarmaControl.exe',
     'DirectML.dll',
     'models/image/viddexa-nano/manifest.json',
     'models/ocr/pp-ocrv5-mobile/manifest.json'

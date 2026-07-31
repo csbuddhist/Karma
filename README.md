@@ -9,9 +9,9 @@ Karma 是一套面向 macOS 和 Windows 的本地色情内容防护与数字健�
 ## Windows 可克隆测试包
 
 `main` 包含一个 **cloneable Windows test bundle**：
-[`release/windows-x64-test/`](release/windows-x64-test/)。在 Windows 10 22H2 或 Windows 11 x64 上，安装 Microsoft Visual C++ 2015–2022 x64 Redistributable 后，在该目录运行 `./Start-KarmaTest.ps1`。启动脚本会验证全部运行时和模型的 SHA-256，并只在当前进程设置模型路径；详细步骤见 [Windows 安装与测试指南](docs/windows-installation-guide.md)。
+[`release/windows-x64-test/`](release/windows-x64-test/)。在 Windows 10 22H2 或 Windows 11 x64 上，安装 Microsoft Visual C++ 2015–2022 x64 Redistributable 后，以管理员身份在该目录运行 `./Install-Karma.ps1 -StartConsole`；详细步骤见 [Windows 安装与测试指南](docs/windows-installation-guide.md)。
 
-该包是未签名的开发/测试软件，不是安装器，也尚未实现服务安装、自动关闭应用、反篡改、使用时段限制或完整家长控制功能。
+该包是未签名的开发/测试软件，已提供 PowerShell Service 安装与受密码保护的卸载流程，但不是正式签名安装器。连续帧风险到来源应用处置的连接、使用时段限制和完整管理员级反篡改仍未完成。
 
 ## 设计原则
 
@@ -174,9 +174,9 @@ score >= 0.95                         → 立即处置
 - WGC 不可用时可降级到 DXGI Desktop Duplication，但必须记录降级事件。
 - 锁屏、UAC 安全桌面和受 DRM 保护内容不承诺可采集。
 
-当前仓库已实现 Windows 帧输入、图像推理与 OCR 推理切片：每个活动显示器使用独立 D3D11 设备、FreeThreaded WGC 会话、容量 1 最新帧邮箱和独立 ONNX Runtime CPU 会话；优先通过 D3D11 Video Processor 缩放到最长边 640，再映射 bounded staging texture。GPU 路径不可用时可使用受 16K 边长和 256 MiB 上限约束的 CPU 正确性降级，并立即零化临时像素。Agent 从 `KARMA_IMAGE_MODEL_MANIFEST` 读取离线图像模型清单，并通过 `KARMA_OCR_LIGHTWEIGHT_MANIFEST`、可选的 `KARMA_OCR_ACCURATE_MANIFEST` 与 `KARMA_OCR_PROFILE` 选择已验证的 OCR 模型包。OCR 关键词规则来自编译进 Agent 的严格、有限、源码受控词库；启动时必须在捕获任何画面前完成解析和编译，每个显示器获得独立词库实例。运行时只输出稳定错误码和计数型健康信息，不输出规则、识别原文、分数或画面。连续帧处置状态机和应用关闭仍未接入。
+当前仓库已实现 Windows 帧输入、图像推理与 OCR 推理切片，以及 Windows Service、认证 IPC、策略持久化、Agent watchdog、健康心跳、身份绑定处置执行端和 DPAPI + AES-GCM 证据库。Agent 从已验证的本地清单加载图像与 OCR 模型，运行时不输出规则、识别原文、分数或画面。连续帧风险融合、来源窗口观察以及把命中帧提交给 Service 的连接仍未接入，因此现有分类器不会自动触发关闭或生成证据。
 
-管理界面首版位于 [`apps/karma-ui/`](apps/karma-ui/)：它提供管理员密码门禁、保护总览、显示器、图像/OCR、关键词、应用、时段、事件证据、审计和系统设置页面。当前界面能够安全保存本地配置，但尚未连接规划中的 Windows Service；实时状态、应用处置、审计和加密截图写入会明确显示为待接入，不以模拟数据冒充生产能力。
+管理界面位于 [`apps/karma-ui/`](apps/karma-ui/)：Windows 构建已通过本机命名管道连接 `KarmaService`，管理员密码、会话、实时 Agent/显示器状态、策略 revision 和证据查看均由 Service 掌控；非 Windows 开发构建仍使用隔离的本地后端。
 
 macOS 开发机上的测试和 `x86_64-pc-windows-msvc` 交叉编译只证明便携算法、Rust 类型约束和 Windows API 签名正确；GPU 驱动行为、实际帧颜色、资源释放及多屏性能必须按 [Windows 帧管线真机验收清单](docs/windows-frame-pipeline-acceptance.md) 与 [Windows ONNX 真机验收清单](docs/windows-onnx-acceptance.md) 在 Windows 10 22H2/Windows 11 上验证，未记录该证据前不视为运行时验收完成。
 

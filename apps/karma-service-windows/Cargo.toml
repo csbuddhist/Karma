@@ -9,6 +9,10 @@ license.workspace = true
 name = "KarmaService"
 path = "src/main.rs"
 
+[[bin]]
+name = "KarmaControl"
+path = "src/control.rs"
+
 [dependencies]
 karma-ipc = { path = "../../crates/karma-ipc" }
 karma-disposition = { path = "../../crates/karma-disposition" }
@@ -24,6 +28,7 @@ windows = { version = "0.62.2", features = [
     "Win32_Security",
     "Win32_Security_Authorization",
     "Win32_Security_Cryptography",
+    "Win32_System_RemoteDesktop",
     "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",
 ] }

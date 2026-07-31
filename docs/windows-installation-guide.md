@@ -1,15 +1,12 @@
 # Karma Windows 安装与测试指南
 
-本文档同时说明两种安装场景：
+本文档说明当前未签名 Windows x64 开发测试版的安装、验证和卸载。当前包已经包含 Windows Service、管理 GUI、会话 Agent、本地模型、认证命名管道、策略持久化、Agent watchdog、身份绑定进程处置执行端和加密证据库。
 
-1. **当前开发测试版**：已经可以在 Windows 10 22H2 和 Windows 11 x64 上运行，用于验证多显示器屏幕采集、图像推理、OCR 和色情关键词识别。
-2. **未来正式版**：规划使用签名安装器、Windows Service、管理界面和受密码保护的卸载流程。该部分是产品目标，不代表仓库当前已经实现。
-
-> 当前版本不是可用于家庭正式部署的完整家长控制产品。它尚未实现窗口来源归属、风险融合、自动关闭应用、上网时间限制、密码管理、服务自恢复、防普通用户终止和正式卸载保护。
+> 当前版本仍不是可用于家庭正式部署的完整产品。分类流水线尚未接入连续帧风险融合、来源窗口观察和命中截图提交，应用时段限制及网络过滤也未完成。没有 ELAM、PPL 或签名内核驱动时，本项目不能保证拥有 Windows 管理员权限的用户绝对无法终止或篡改它。
 
 ## 1. 当前可测试范围
 
-当前 Windows Agent 已实现：
+当前端到端基础设施已实现：
 
 - 枚举并同时监控所有活动显示器；
 - 为每个显示器建立独立的 Windows Graphics Capture 和 D3D11 处理管线；
@@ -19,6 +16,12 @@
 - 独立维护每个显示器的图像和 OCR 健康状态；
 - OCR 模型不可用时保留屏幕采集和图像推理；
 - 仅输出计数、延迟和稳定错误代码，不输出截图、OCR 原文、命中词或分类分数。
+- 自动启动的 `KarmaService`、SCM 崩溃恢复和活动控制台 Agent watchdog；
+- GUI 与 Service 的密码认证、状态、策略和证据 IPC；
+- Service 侧 Argon2id 密码、会话、限速、nonce 防重放和策略 revision；
+- Agent 多屏健康心跳与策略快照；
+- PID 创建时间和完整路径二次核验后的进程处置执行端；
+- DPAPI 保护主密钥、AES-256-GCM 加密证据和密码二次验证查看。
 
 当前版本不会：
 
@@ -26,11 +29,11 @@
 - 判断色情内容属于哪个窗口或进程；
 - 执行连续帧风险融合和处置阈值；
 - 限制上网时段或阻止应用启动；
-- 安装 Windows Service；
-- 设置家长密码或阻止管理员结束进程；
-- 自动随 Windows 启动；
-- 提供图形化管理界面；
-- 提供正式 MSI 或安装 EXE。
+- 将当前分类结果送入连续帧风险状态机并自动触发来源进程处置；
+- 从 Agent 提交命中帧到加密证据库；
+- 执行应用时段限制或网络过滤；
+- 同时管理多个已登录但非活动的 Windows 会话；
+- 提供正式签名的 MSI 或安装 EXE。
 
 ## 2. 系统要求
 
@@ -62,7 +65,7 @@
 
 ### 2.3 权限
 
-当前测试版应由普通交互式用户或管理员在已登录的桌面中启动。运行屏幕采集测试不要求安装内核驱动，也不要求关闭 Windows Defender。
+安装 Service 需要管理员权限；屏幕采集 Agent 由 Service 在活动交互桌面中以该登录用户身份启动。测试不要求安装内核驱动，也不要求关闭 Windows Defender。
 
 首次运行时：
 
@@ -79,18 +82,14 @@ git clone <远端仓库地址> Karma
 Set-Location .\Karma\release\windows-x64-test
 ```
 
-先安装第 2.2 节所述 Microsoft Visual C++ Redistributable。然后执行：
+先安装第 2.2 节所述 Microsoft Visual C++ Redistributable。然后以管理员身份执行：
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
-.\Start-KarmaConsole.ps1
+.\Install-Karma.ps1 -StartConsole
 ```
 
-控制台首次启动会要求创建至少 10 个字符的管理员密码。要同时测试屏幕采集与识别，请另开一个 PowerShell 窗口执行：
-
-```powershell
-.\Start-KarmaTest.ps1
-```
+控制台首次启动会要求创建至少 10 个字符的管理员密码。Service 会自动在活动控制台会话启动 Agent，不需要另开窗口运行 `Start-KarmaTest.ps1`。
 
 `Set-ExecutionPolicy` 只影响当前 PowerShell 进程，用于允许执行仓库内未签名脚本；它不会修改系统范围策略。启动脚本会先验证 `SHA256SUMS`、两个 JSON 模型清单和必要运行文件，验证失败时不会启动 Agent。可使用 `.\Start-KarmaTest.ps1 -OcrProfile lightweight` 显式选择轻量 OCR。
 
@@ -100,8 +99,12 @@ Set-ExecutionPolicy -Scope Process Bypass
 windows-x64-test\
 ├── karma-agent-windows.exe
 ├── karma-ui.exe
+├── KarmaService.exe
+├── KarmaControl.exe
 ├── DirectML.dll
 ├── SHA256SUMS
+├── Install-Karma.ps1
+├── Uninstall-Karma.ps1
 ├── Start-KarmaConsole.ps1
 ├── Start-KarmaTest.ps1
 ├── Verify-KarmaTestBundle.ps1
@@ -190,9 +193,9 @@ cargo run -p karma-onnx --example verify_ocr_bundle -- \
 
 首次真机测试建议使用 `lightweight`，待轻量路径通过后再测试 `auto` 和 `accurate`。
 
-## 6. 启动当前开发测试版
+## 6. 独立 Agent 诊断模式
 
-按第 3 节运行 `Start-KarmaTest.ps1`。它代替手工设置环境变量；这些变量只在启动脚本及其子进程中有效，关闭 Agent 后自动消失。
+正常安装不需要执行本节。只有排查模型或采集故障时才单独运行 `Start-KarmaTest.ps1`；此模式不会获得 Service 注入的 Agent 密钥，因此 GUI 不会显示 Agent 已连接。
 
 ### 6.2 可选高精度模型
 
@@ -217,7 +220,7 @@ accurate
 
 ### 6.3 停止
 
-在运行 Agent 的控制台中按 `Ctrl+C`。当前版本不是 Windows Service，不会自动重启。
+在独立诊断 Agent 的控制台中按 `Ctrl+C`。通过 Service 启动的 Agent 被结束后，watchdog 会重新启动它。
 
 如果控制台已经关闭但进程仍在运行，可在测试阶段使用：
 
@@ -226,7 +229,7 @@ Get-Process karma-agent-windows -ErrorAction SilentlyContinue
 Stop-Process -Name karma-agent-windows
 ```
 
-当前开发测试版没有防终止能力，这是预期行为。
+该命令只适合独立诊断。安装模式下 Service 会重新拉起活动会话 Agent；拥有 Windows 管理员权限的用户仍可通过更高权限手段绕过用户态保护。
 
 ## 7. 正常日志与状态判断
 
@@ -425,24 +428,19 @@ OCR 失败不会阻止图像推理。检查整个 OCR 模型目录及 `reference
 
 ## 10. 当前测试版卸载
 
-当前版本没有安装器、服务、驱动、计划任务或注册表安装项。卸载步骤：
+以管理员身份打开 PowerShell并执行：
 
 ```powershell
-Stop-Process -Name karma-agent-windows -ErrorAction SilentlyContinue
-
-Remove-Item Env:KARMA_IMAGE_MODEL_MANIFEST -ErrorAction SilentlyContinue
-Remove-Item Env:KARMA_OCR_LIGHTWEIGHT_MANIFEST -ErrorAction SilentlyContinue
-Remove-Item Env:KARMA_OCR_ACCURATE_MANIFEST -ErrorAction SilentlyContinue
-Remove-Item Env:KARMA_OCR_PROFILE -ErrorAction SilentlyContinue
+C:\Program Files\Karma\Uninstall-Karma.ps1
 ```
 
-关闭设置过临时环境变量的 PowerShell 窗口后，可删除：
+脚本要求输入 Karma 管理员密码，认证通过后才请求 Service 正常关闭并删除服务与程序目录。默认保留：
 
 ```text
-C:\Karma-Test
+C:\ProgramData\Karma
 ```
 
-如果曾使用 `[Environment]::SetEnvironmentVariable` 写入用户或系统环境变量，应使用相同作用域将其删除。本文档的推荐命令只创建进程级临时变量。
+如确认不需要策略、审计记录、DPAPI 密钥和加密证据，可执行 `Uninstall-Karma.ps1 -PurgeData`。此操作不可恢复。
 
 ## 11. 在 Mac 上重新生成 Windows EXE
 
@@ -498,7 +496,7 @@ cp -L target/x86_64-pc-windows-msvc/release/DirectML.dll \
   target/windows-x64-runtime/
 ```
 
-## 12. 未来正式安装器方案（尚未实现）
+## 12. 未来正式签名安装器方案（尚未实现）
 
 本节描述目标产品安装体验，不是当前可执行步骤。
 
@@ -571,7 +569,7 @@ C:\ProgramData\Karma\
 - 根据家长选择保留或删除审计记录；
 - 生成不含敏感内容的卸载结果。
 
-当前仓库尚未实现这些正式安装、升级和卸载能力。
+当前仓库已实现开发测试用 PowerShell 安装和密码授权卸载，但尚未实现签名 MSI/安装 EXE、原子升级与回滚。
 
 ## 13. 发布前必须完成的工作
 
@@ -581,8 +579,7 @@ C:\ProgramData\Karma\
 - 显示器内容到窗口、PID 和应用发布者的可靠归属；
 - 遮罩、正常关闭和受控终止来源应用；
 - 上网时段和应用运行限制；
-- 家长密码、恢复码和受认证 IPC；
-- Windows Service、故障恢复和看门狗；
+- 恢复码、密钥轮换和 IPC Windows 客户端身份校验强化；
 - 安装器、代码签名、模型签名和更新签名；
 - Windows 10/11 单屏、双屏、三屏真机验收；
 - 准确率、误报率、性能、资源释放和稳定性验证；

@@ -1,17 +1,34 @@
-# Karma Windows x64 test bundle
+# Karma Windows x64 测试包
 
-This directory is a cloneable Windows test bundle for the current Karma Agent. It is unsigned development/test software, not an installer and not a complete family-control product.
+这是未签名的开发测试包，不是正式发布版。它包含 `KarmaService.exe`、`KarmaControl.exe`、管理 GUI、会话 Agent、本地 ONNX/OCR 模型及 PowerShell 安装脚本。
 
-## Run on Windows
+## 推荐测试方式
 
-1. Install the Microsoft Visual C++ 2015--2022 Redistributable for x64.
-2. Clone this repository and open PowerShell in this directory.
-3. If Windows blocks the unsigned local script, use `Set-ExecutionPolicy -Scope Process Bypass` for the current PowerShell process only.
-4. Run `./Start-KarmaConsole.ps1` to open the password-protected administration UI.
-5. Run `./Start-KarmaTest.ps1` in another PowerShell window to start the screen-monitoring Agent.
+1. 安装 Microsoft Visual C++ 2015–2022 Redistributable x64。
+2. 以管理员身份打开 PowerShell，进入本目录。
+3. 对当前 PowerShell 执行 `Set-ExecutionPolicy -Scope Process Bypass`。
+4. 执行 `.\Install-Karma.ps1 -StartConsole`。
+5. GUI 首次打开时创建至少 10 个字符的管理员密码。
 
-The launcher validates every shipped executable, DLL, and model asset before it starts the Agent. It sets model configuration only in the launched process. You may select OCR behavior with `./Start-KarmaTest.ps1 -OcrProfile lightweight`.
+安装脚本把测试包复制到 `C:\Program Files\Karma`，注册自动启动的 `KarmaService`，配置 SCM 崩溃恢复并启动服务。Service 会在当前活动控制台会话启动 Agent；Agent 退出后 watchdog 会重新启动它。GUI、Agent 和 Service 通过仅限本机的版本化命名管道通信。
 
-## Test scope and limitations
+卸载时以管理员身份执行：
 
-This bundle includes the Windows x64 administration UI, Agent, DirectML runtime DLL, Viddexa image model, and PP-OCRv5 mobile OCR assets. The UI can authenticate an administrator and edit local settings, but it is not yet connected to the Agent through the planned Windows Service. It is unsigned and intended only for controlled functional testing. It does not install a Windows service, automatically close applications, resist tampering, enforce schedules, store encrypted event images, or provide a production installer.
+```powershell
+C:\Program Files\Karma\Uninstall-Karma.ps1
+```
+
+脚本会安全提示输入 Karma 管理员密码，通过 `KarmaControl.exe` 请求 Service 授权关闭，然后删除服务和程序。默认保留 `C:\ProgramData\Karma`；使用 `-PurgeData` 才会删除策略、审计记录、DPAPI 密钥和加密证据。
+
+## 独立诊断方式
+
+- `.\Start-KarmaConsole.ps1`：只启动 GUI；未安装 Service 时无法登录或保存服务策略。
+- `.\Start-KarmaTest.ps1`：只以前台方式运行 Agent，不会取得 Service 注入的 Agent 密钥，因此 GUI 会保持 Agent 未连接。
+- `KarmaService.exe --console`：只适合管理员诊断；正常安装必须由 SCM 启动。
+
+## 已知限制
+
+- 所有 EXE 和脚本均未签名，SmartScreen 会显示未知发布者。
+- 已实现 Service、认证 IPC、心跳、策略、身份绑定处置执行端、DPAPI + AES-GCM 证据库和 Agent watchdog；现有分类流水线尚未接入连续帧风险融合、来源窗口观察和命中截图提交，因此不会自动关闭应用或产生证据。
+- 应用时段限制、网络过滤和多用户同时登录会话尚未完成；watchdog 当前跟随活动控制台会话。
+- 这是用户态家长控制。管理员仍可接管文件、服务配置或脱机修改系统；没有 ELAM/PPL/内核驱动时，不能诚实承诺对 Windows 管理员绝对不可终止。
