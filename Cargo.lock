@@ -1738,11 +1738,17 @@ version = "0.1.0"
 dependencies = [
  "karma-ai",
  "karma-domain",
+ "karma-ipc",
  "karma-onnx",
  "karma-windows",
+ "karma-windows-ipc",
+ "rand 0.8.7",
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror 2.0.19",
+ "windows 0.62.2",
+ "zeroize",
 ]
 
 [[package]]

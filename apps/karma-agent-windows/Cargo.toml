@@ -10,8 +10,21 @@ karma-ai = { path = "../../crates/karma-ai" }
 karma-onnx = { path = "../../crates/karma-onnx" }
 karma-windows = { path = "../../crates/karma-windows" }
 karma-domain = { path = "../../crates/karma-domain" }
+karma-ipc = { path = "../../crates/karma-ipc" }
+karma-windows-ipc = { path = "../../crates/karma-windows-ipc" }
+rand = "0.8"
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
+zeroize = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 tempfile = "3"

@@ -2,6 +2,8 @@
 mod inference_consumer;
 #[cfg(any(windows, test))]
 mod ocr_profile;
+#[cfg(windows)]
+mod service_client;
 #[cfg(any(windows, test))]
 mod startup;
 
@@ -21,6 +23,8 @@ use karma_windows::{
     WindowsAdapterError, WindowsFrameProcessor, WindowsFrameWorker, WindowsRuntimeApartment,
     enumerate_active_monitors,
 };
+#[cfg(windows)]
+use service_client::AgentServiceClient;
 #[cfg(windows)]
 use startup::{CaptureTargetFactory, MonitorInventory, StartupProbe};
 
@@ -467,6 +471,7 @@ fn run_windows(
     let mut workers = Vec::new();
     let mut image_health = Vec::<InferenceHealthHandle>::new();
     let mut ocr_health = Vec::<InferenceHealthHandle>::new();
+    let mut active_monitors = Vec::<MonitorSnapshot>::new();
     for monitor in enumerate_active_monitors()? {
         let result: Result<_, Box<dyn std::error::Error>> = (|| {
             // Each monitor owns a separate immediate context because D3D11
@@ -511,6 +516,7 @@ fn run_windows(
                 workers.push(worker);
                 image_health.push(image_monitor_health);
                 ocr_health.push(ocr_monitor_health);
+                active_monitors.push(monitor);
             }
             Err(error) => eprintln!(
                 "status=degraded component=frame_pipeline monitor={} error={}",
@@ -523,6 +529,13 @@ fn run_windows(
     }
 
     let mut health_tick = 0u8;
+    let service_client = match AgentServiceClient::from_environment() {
+        Ok(client) => client,
+        Err(error) => {
+            eprintln!("status=degraded component=service_ipc error={error}");
+            None
+        }
+    };
     loop {
         let active = workers.iter().any(|worker| {
             matches!(
@@ -536,6 +549,26 @@ fn run_windows(
         std::thread::sleep(std::time::Duration::from_secs(1));
         health_tick = health_tick.saturating_add(1);
         if health_tick == 10 {
+            if let Some(client) = &service_client {
+                let monitors = active_monitors
+                    .iter()
+                    .zip(&workers)
+                    .zip(image_health.iter().zip(&ocr_health))
+                    .enumerate()
+                    .map(|(index, ((monitor, worker), (image, ocr)))| {
+                        service_client::monitor_health(monitor, index, worker.report(), image, ocr)
+                    })
+                    .collect();
+                match client.publish_health(monitors) {
+                    Ok(snapshot) => println!(
+                        "status=running component=service_ipc policy_revision={} protection_enabled={}",
+                        snapshot.revision, snapshot.protection_enabled
+                    ),
+                    Err(error) => {
+                        eprintln!("status=degraded component=service_ipc error={error}")
+                    }
+                }
+            }
             let (inferences, failures, latency_micros, unavailable_monitors) =
                 image_health.iter().fold(
                     (0u64, 0u64, 0u64, 0u64),
