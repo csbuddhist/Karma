@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use thiserror::Error;
+use zeroize::Zeroize;
 
 pub const PROTOCOL_VERSION: u16 = 1;
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
@@ -309,6 +310,12 @@ impl EvidenceSubmission {
             return Err(ProtocolError::InvalidField);
         }
         Ok(())
+    }
+}
+
+impl Drop for EvidenceSubmission {
+    fn drop(&mut self) {
+        self.bytes_base64.zeroize();
     }
 }
 

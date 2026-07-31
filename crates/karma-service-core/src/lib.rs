@@ -327,6 +327,29 @@ impl ServiceCore {
                 evidence,
             } => {
                 self.authorize_agent(&agent_token)?;
+                let evidence_enabled = runtime
+                    .stored
+                    .policy
+                    .pointer("/recognition/evidenceEnabled")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let protection_enabled = runtime
+                    .stored
+                    .policy
+                    .get("protectionEnabled")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true);
+                let threshold = runtime
+                    .stored
+                    .policy
+                    .pointer("/recognition/immediateThreshold")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(95)
+                    .min(100) as u16
+                    * 10;
+                if !protection_enabled || !evidence_enabled || evidence.risk_millis < threshold {
+                    return Err(ServiceErrorCode::InvalidRequest);
+                }
                 if runtime
                     .stored
                     .evidence
@@ -346,13 +369,13 @@ impl ServiceCore {
                     .store(&evidence.evidence_id, &mut plaintext)
                     .map_err(|_| ServiceErrorCode::StorageUnavailable)?;
                 runtime.stored.evidence.push(StoredEvidence {
-                    id: evidence.evidence_id,
+                    id: evidence.evidence_id.clone(),
                     captured_at_ms: evidence.captured_at_ms,
-                    monitor_name: evidence.monitor_name,
-                    application_name: evidence.application_name,
-                    reason_code: evidence.reason_code,
+                    monitor_name: evidence.monitor_name.clone(),
+                    application_name: evidence.application_name.clone(),
+                    reason_code: evidence.reason_code.clone(),
                     risk_millis: evidence.risk_millis,
-                    media_type: evidence.media_type,
+                    media_type: evidence.media_type.clone(),
                 });
                 audit(runtime, now_ms, "evidence_stored", "success");
                 self.persist(&runtime.stored)?;
@@ -823,6 +846,27 @@ mod tests {
             ServiceResult::Session { session_token, .. } => session_token,
             _ => panic!("unexpected response"),
         };
+        assert!(matches!(
+            success(core.handle(
+                request(
+                    "policy",
+                    "policy-nonce",
+                    ServiceRequest::PutPolicy {
+                        session_token: session.clone(),
+                        expected_revision: 0,
+                        policy: json!({
+                            "protectionEnabled": true,
+                            "recognition": {
+                                "evidenceEnabled": true,
+                                "immediateThreshold": 95
+                            }
+                        }),
+                    },
+                ),
+                1,
+            )),
+            ServiceResult::PolicySaved { revision: 1 }
+        ));
         let image = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3];
         let submission = EvidenceSubmission {
             evidence_id: "evidence-1".into(),
@@ -834,6 +878,22 @@ mod tests {
             media_type: "image/png".into(),
             bytes_base64: BASE64.encode(image),
         };
+        let mut below_threshold = submission.clone();
+        below_threshold.evidence_id = "evidence-low".into();
+        below_threshold.risk_millis = 949;
+        let rejected = RequestEnvelope::new(
+            "low",
+            "low-nonce",
+            ClientKind::Agent,
+            ServiceRequest::SubmitEvidence {
+                agent_token: "agent-secret".into(),
+                evidence: below_threshold,
+            },
+        );
+        assert_eq!(
+            core.handle(rejected, 2).result.unwrap_err().code,
+            ServiceErrorCode::InvalidRequest
+        );
         let submit = RequestEnvelope::new(
             "2",
             "n2",

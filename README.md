@@ -174,7 +174,7 @@ score >= 0.95                         → 立即处置
 - WGC 不可用时可降级到 DXGI Desktop Duplication，但必须记录降级事件。
 - 锁屏、UAC 安全桌面和受 DRM 保护内容不承诺可采集。
 
-当前仓库已实现 Windows 帧输入、图像推理与 OCR 推理切片，以及 Windows Service、认证 IPC、策略持久化、Agent watchdog、健康心跳、身份绑定处置执行端和 DPAPI + AES-GCM 证据库。Agent 从已验证的本地清单加载图像与 OCR 模型，运行时不输出规则、识别原文、分数或画面。连续帧风险融合、来源窗口观察以及把命中帧提交给 Service 的连接仍未接入，因此现有分类器不会自动触发关闭或生成证据。
+当前仓库已实现 Windows 帧输入、图像推理与 OCR 推理切片，以及 Windows Service、认证 IPC、策略持久化、Agent watchdog、健康心跳、身份绑定处置执行端和 DPAPI + AES-GCM 证据库。启用“保存事件证据”后，只有达到立即处置阈值的图像推理帧才会在 Agent 中编码并提交给 Service 加密保存，Service 会再次校验策略与阈值。Agent 从已验证的本地清单加载图像与 OCR 模型，运行时不输出规则、识别原文、分数或画面。连续帧风险融合和来源窗口观察仍未接入，因此现有分类器尚不会自动关闭来源应用。
 
 管理界面位于 [`apps/karma-ui/`](apps/karma-ui/)：Windows 构建已通过本机命名管道连接 `KarmaService`，管理员密码、会话、实时 Agent/显示器状态、策略 revision 和证据查看均由 Service 掌控；非 Windows 开发构建仍使用隔离的本地后端。
 

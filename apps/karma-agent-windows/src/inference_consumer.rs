@@ -3,10 +3,25 @@ use std::{
     time::Instant,
 };
 
-use karma_ai::{FrameWork, ImageClassifier, OcrEngine, OcrMatchSummary, PreparedFrame, WordPack};
+use karma_ai::{
+    FrameWork, ImageClassifier, ImageInference, OcrEngine, OcrMatchSummary, PreparedFrame, WordPack,
+};
 use karma_onnx::InferenceHealth;
 
 const CONSECUTIVE_FAILURE_LIMIT: u8 = 3;
+
+pub fn should_capture_evidence(
+    enabled: bool,
+    threshold_millis: u16,
+    score_millis: u16,
+    captured_at_ms: i64,
+    last_evidence_at_ms: i64,
+    cooldown_ms: i64,
+) -> bool {
+    enabled
+        && score_millis >= threshold_millis
+        && captured_at_ms.saturating_sub(last_evidence_at_ms) >= cooldown_ms
+}
 
 #[derive(Clone, Default)]
 pub struct InferenceHealthHandle {
@@ -55,6 +70,8 @@ fn record_result<E>(health: &InferenceHealthHandle, started: Instant, result: Re
 /// Implementations must not retain sensitive OCR-derived data beyond their intended purpose.
 pub trait OcrSummarySink {
     fn consume(&mut self, summary: OcrMatchSummary);
+
+    fn consume_image(&mut self, _frame: &PreparedFrame, _inference: &ImageInference) {}
 }
 
 /// The default runtime sink deliberately retains only a delivery count.
@@ -122,7 +139,9 @@ where
     pub fn consume(&mut self, frame: PreparedFrame, work: FrameWork) {
         if work.run_image {
             let started = Instant::now();
-            let result = self.image_classifier.classify(&frame).map(|_| ());
+            let result = self.image_classifier.classify(&frame).map(|inference| {
+                self.sink.consume_image(&frame, &inference);
+            });
             record_result(&self.image_health, started, result);
         }
 
@@ -299,6 +318,16 @@ mod tests {
             assert_eq!(value.image_classifier().calls, expected_image);
             assert_eq!(value.ocr_engine().calls, expected_ocr);
         }
+    }
+
+    #[test]
+    fn evidence_gate_requires_enablement_threshold_and_cooldown() {
+        use super::should_capture_evidence;
+
+        assert!(!should_capture_evidence(false, 950, 990, 10_000, 0, 5_000));
+        assert!(!should_capture_evidence(true, 950, 949, 10_000, 0, 5_000));
+        assert!(!should_capture_evidence(true, 950, 950, 4_999, 0, 5_000));
+        assert!(should_capture_evidence(true, 950, 950, 5_000, 0, 5_000));
     }
 
     #[test]

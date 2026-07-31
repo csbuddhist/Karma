@@ -8,9 +8,7 @@ mod service_client;
 mod startup;
 
 #[cfg(windows)]
-use inference_consumer::{
-    CountingOcrSummarySink, InferenceHealthHandle, ScheduledInferenceConsumer,
-};
+use inference_consumer::{InferenceHealthHandle, ScheduledInferenceConsumer};
 #[cfg(windows)]
 use karma_ai::{OcrEngine, OcrMatchSummary, PreparedFrame, WordPack};
 #[cfg(windows)]
@@ -24,7 +22,7 @@ use karma_windows::{
     enumerate_active_monitors,
 };
 #[cfg(windows)]
-use service_client::AgentServiceClient;
+use service_client::{AgentInferenceSink, AgentServiceClient, EvidencePolicyHandle};
 #[cfg(windows)]
 use startup::{CaptureTargetFactory, MonitorInventory, StartupProbe};
 
@@ -468,11 +466,25 @@ fn run_windows(
         summary.status, summary.monitor_count, summary.wgc_ready_count, summary.wgc_failed_count
     );
 
+    let service_client = match AgentServiceClient::from_environment() {
+        Ok(client) => client.map(std::sync::Arc::new),
+        Err(error) => {
+            eprintln!("status=degraded component=service_ipc error={error}");
+            None
+        }
+    };
+    let evidence_policy = EvidencePolicyHandle::default();
+    if let Some(client) = &service_client {
+        if let Ok(snapshot) = client.fetch_policy() {
+            evidence_policy.update(&snapshot.policy);
+        }
+    }
+
     let mut workers = Vec::new();
     let mut image_health = Vec::<InferenceHealthHandle>::new();
     let mut ocr_health = Vec::<InferenceHealthHandle>::new();
     let mut active_monitors = Vec::<MonitorSnapshot>::new();
-    for monitor in enumerate_active_monitors()? {
+    for (monitor_index, monitor) in enumerate_active_monitors()?.into_iter().enumerate() {
         let result: Result<_, Box<dyn std::error::Error>> = (|| {
             // Each monitor owns a separate immediate context because D3D11
             // immediate contexts must not be used concurrently by workers.
@@ -501,7 +513,11 @@ fn run_windows(
                 word_pack_source
                     .compile()
                     .map_err(|_| std::io::Error::other("word pack invalid"))?,
-                CountingOcrSummarySink::default(),
+                AgentInferenceSink::new(
+                    service_client.clone(),
+                    evidence_policy.clone(),
+                    format!("显示器 {}", monitor_index.saturating_add(1)),
+                ),
             );
             if !ocr_initialized {
                 consumer.mark_ocr_unavailable();
@@ -529,13 +545,6 @@ fn run_windows(
     }
 
     let mut health_tick = 0u8;
-    let service_client = match AgentServiceClient::from_environment() {
-        Ok(client) => client,
-        Err(error) => {
-            eprintln!("status=degraded component=service_ipc error={error}");
-            None
-        }
-    };
     loop {
         let active = workers.iter().any(|worker| {
             matches!(
@@ -560,10 +569,13 @@ fn run_windows(
                     })
                     .collect();
                 match client.publish_health(monitors) {
-                    Ok(snapshot) => println!(
-                        "status=running component=service_ipc policy_revision={} protection_enabled={}",
-                        snapshot.revision, snapshot.protection_enabled
-                    ),
+                    Ok(snapshot) => {
+                        evidence_policy.update(&snapshot.policy);
+                        println!(
+                            "status=running component=service_ipc policy_revision={} protection_enabled={}",
+                            snapshot.revision, snapshot.protection_enabled
+                        )
+                    }
                     Err(error) => {
                         eprintln!("status=degraded component=service_ipc error={error}")
                     }

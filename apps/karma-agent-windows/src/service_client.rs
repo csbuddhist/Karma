@@ -1,13 +1,21 @@
 use std::{
     env,
     mem::size_of,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc, RwLock,
+        atomic::{AtomicU64, Ordering},
+        mpsc::{SyncSender, sync_channel},
+    },
+    thread,
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use image::{ExtendedColorType, codecs::jpeg::JpegEncoder};
+use karma_ai::{ImageInference, OcrMatchSummary, PreparedFrame};
 use karma_ipc::{
-    AgentHeartbeat, ClientKind, ComponentState, MonitorHealth, RequestEnvelope, ServiceRequest,
-    ServiceResult,
+    AgentHeartbeat, ClientKind, ComponentState, EvidenceSubmission, MonitorHealth, RequestEnvelope,
+    ServiceRequest, ServiceResult,
 };
 use karma_windows::{FrameWorkerReport, FrameWorkerStatus, MonitorSnapshot};
 use karma_windows_ipc::send_request;
@@ -25,10 +33,14 @@ use windows::{
     },
     core::PWSTR,
 };
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
+
+use crate::inference_consumer::{OcrSummarySink, should_capture_evidence};
 
 const AGENT_TOKEN_ENV: &str = "KARMA_AGENT_TOKEN";
 const IPC_TIMEOUT_MS: u32 = 1500;
+const EVIDENCE_COOLDOWN_MS: i64 = 5000;
+const JPEG_QUALITY: u8 = 80;
 
 #[derive(Debug, Error)]
 pub enum AgentServiceError {
@@ -52,8 +64,141 @@ pub struct AgentServiceClient {
 pub struct PolicySnapshot {
     pub revision: u64,
     pub protection_enabled: bool,
-    #[allow(dead_code)]
     pub policy: Value,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct EvidencePolicy {
+    enabled: bool,
+    threshold_millis: u16,
+}
+
+impl Default for EvidencePolicy {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            threshold_millis: 950,
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct EvidencePolicyHandle(Arc<RwLock<EvidencePolicy>>);
+
+impl EvidencePolicyHandle {
+    pub fn update(&self, policy: &Value) {
+        let protection_enabled = policy
+            .get("protectionEnabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        let recognition = policy.get("recognition");
+        let evidence_enabled = recognition
+            .and_then(|value| value.get("evidenceEnabled"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let threshold = recognition
+            .and_then(|value| value.get("immediateThreshold"))
+            .and_then(Value::as_u64)
+            .unwrap_or(95)
+            .min(100) as u16
+            * 10;
+        *self
+            .0
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = EvidencePolicy {
+            enabled: protection_enabled && evidence_enabled,
+            threshold_millis: threshold,
+        };
+    }
+
+    fn snapshot(&self) -> EvidencePolicy {
+        *self
+            .0
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+pub struct AgentInferenceSink {
+    evidence_sender: Option<SyncSender<EvidenceFrame>>,
+    evidence_policy: EvidencePolicyHandle,
+    monitor_name: String,
+    last_evidence_at_ms: i64,
+    ocr_summaries: u64,
+}
+
+struct EvidenceFrame {
+    evidence_id: String,
+    captured_at_ms: i64,
+    monitor_name: String,
+    risk_millis: u16,
+    width: u32,
+    height: u32,
+    bgra: Zeroizing<Vec<u8>>,
+}
+
+impl AgentInferenceSink {
+    pub fn new(
+        client: Option<Arc<AgentServiceClient>>,
+        evidence_policy: EvidencePolicyHandle,
+        monitor_name: String,
+    ) -> Self {
+        let evidence_sender = client.map(|client| {
+            let (sender, receiver) = sync_channel::<EvidenceFrame>(1);
+            thread::Builder::new()
+                .name("karma-evidence-submit".into())
+                .spawn(move || {
+                    while let Ok(frame) = receiver.recv() {
+                        let _ = client.submit_evidence(frame);
+                    }
+                })
+                .expect("failed to start evidence submitter");
+            sender
+        });
+        Self {
+            evidence_sender,
+            evidence_policy,
+            monitor_name,
+            last_evidence_at_ms: i64::MIN,
+            ocr_summaries: 0,
+        }
+    }
+}
+
+impl OcrSummarySink for AgentInferenceSink {
+    fn consume(&mut self, _summary: OcrMatchSummary) {
+        self.ocr_summaries = self.ocr_summaries.saturating_add(1);
+    }
+
+    fn consume_image(&mut self, frame: &PreparedFrame, inference: &ImageInference) {
+        let policy = self.evidence_policy.snapshot();
+        if !should_capture_evidence(
+            policy.enabled,
+            policy.threshold_millis,
+            inference.score_millis,
+            frame.captured_at_ms(),
+            self.last_evidence_at_ms,
+            EVIDENCE_COOLDOWN_MS,
+        ) {
+            return;
+        }
+        let Some(sender) = &self.evidence_sender else {
+            return;
+        };
+        let dimensions = frame.dimensions();
+        let evidence = EvidenceFrame {
+            evidence_id: format!("evidence-{}", random_opaque()),
+            captured_at_ms: frame.captured_at_ms(),
+            monitor_name: self.monitor_name.clone(),
+            risk_millis: inference.score_millis,
+            width: dimensions.width(),
+            height: dimensions.height(),
+            bgra: Zeroizing::new(frame.pixels().to_vec()),
+        };
+        if sender.try_send(evidence).is_ok() {
+            self.last_evidence_at_ms = frame.captured_at_ms();
+        }
+    }
 }
 
 impl AgentServiceClient {
@@ -95,6 +240,10 @@ impl AgentServiceClient {
             ServiceResult::Acknowledged => {}
             _ => return Err(AgentServiceError::InvalidResponse),
         }
+        self.fetch_policy()
+    }
+
+    pub fn fetch_policy(&self) -> Result<PolicySnapshot, AgentServiceError> {
         match self.request(ServiceRequest::GetAgentPolicy {
             agent_token: self.token.to_string(),
         })? {
@@ -106,6 +255,48 @@ impl AgentServiceClient {
                     .unwrap_or(true),
                 policy,
             }),
+            _ => Err(AgentServiceError::InvalidResponse),
+        }
+    }
+
+    fn submit_evidence(&self, mut frame: EvidenceFrame) -> Result<(), AgentServiceError> {
+        let pixel_count = usize::try_from(frame.width)
+            .ok()
+            .and_then(|width| {
+                usize::try_from(frame.height)
+                    .ok()
+                    .and_then(|height| width.checked_mul(height))
+            })
+            .ok_or(AgentServiceError::InvalidResponse)?;
+        if frame.bgra.len() != pixel_count.saturating_mul(4) {
+            return Err(AgentServiceError::InvalidResponse);
+        }
+        let mut rgb = Zeroizing::new(Vec::with_capacity(pixel_count.saturating_mul(3)));
+        for pixel in frame.bgra.chunks_exact(4) {
+            rgb.extend_from_slice(&[pixel[2], pixel[1], pixel[0]]);
+        }
+        frame.bgra.zeroize();
+        let mut jpeg = Zeroizing::new(Vec::new());
+        JpegEncoder::new_with_quality(&mut *jpeg, JPEG_QUALITY)
+            .encode(&rgb, frame.width, frame.height, ExtendedColorType::Rgb8)
+            .map_err(|_| AgentServiceError::InvalidResponse)?;
+        rgb.zeroize();
+        let submission = EvidenceSubmission {
+            evidence_id: frame.evidence_id,
+            captured_at_ms: frame.captured_at_ms,
+            monitor_name: frame.monitor_name,
+            application_name: "来源应用待归属".into(),
+            reason_code: "image_immediate".into(),
+            risk_millis: frame.risk_millis,
+            media_type: "image/jpeg".into(),
+            bytes_base64: BASE64.encode(&*jpeg),
+        };
+        jpeg.zeroize();
+        match self.request(ServiceRequest::SubmitEvidence {
+            agent_token: self.token.to_string(),
+            evidence: submission,
+        })? {
+            ServiceResult::Acknowledged => Ok(()),
             _ => Err(AgentServiceError::InvalidResponse),
         }
     }

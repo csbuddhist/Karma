@@ -12,6 +12,8 @@ karma-windows = { path = "../../crates/karma-windows" }
 karma-domain = { path = "../../crates/karma-domain" }
 karma-ipc = { path = "../../crates/karma-ipc" }
 karma-windows-ipc = { path = "../../crates/karma-windows-ipc" }
+base64 = "0.22"
+image = { version = "0.25.5", default-features = false, features = ["jpeg"] }
 rand = "0.8"
 serde.workspace = true
 serde_json.workspace = true
