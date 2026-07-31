@@ -1768,6 +1768,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "karma-ipc"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "zeroize",
+]
+
+[[package]]
 name = "karma-onnx"
 version = "0.1.0"
 dependencies = [
