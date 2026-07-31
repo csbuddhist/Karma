@@ -6,6 +6,7 @@ $bundleRoot = [System.IO.Path]::GetFullPath($PSScriptRoot)
 $checksumsPath = Join-Path $bundleRoot 'SHA256SUMS'
 $requiredPaths = @(
     'karma-agent-windows.exe',
+    'karma-ui.exe',
     'DirectML.dll',
     'models/image/viddexa-nano/manifest.json',
     'models/ocr/pp-ocrv5-mobile/manifest.json'

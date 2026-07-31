@@ -1,0 +1,35 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Karma Family Protection",
+  "version": "0.1.0",
+  "identifier": "com.karma.family-protection",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data: blob:; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost"
+    },
+    "windows": [
+      {
+        "title": "Karma 家庭保护",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 940,
+        "minHeight": 680,
+        "resizable": true,
+        "fullscreen": false,
+        "center": true
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "Utility",
+    "shortDescription": "Karma family protection administration console"
+  }
+}

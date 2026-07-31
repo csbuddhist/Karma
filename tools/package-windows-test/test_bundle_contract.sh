@@ -14,6 +14,8 @@ for artifact in model.onnx manifest.json reference-output.json LICENSE; do
 done
 
 test -f "$bundle_dir/karma-agent-windows.exe"
+test -f "$bundle_dir/karma-ui.exe"
+test -f "$bundle_dir/Start-KarmaConsole.ps1"
 test -f "$bundle_dir/DirectML.dll"
 test -f "$bundle_dir/SHA256SUMS"
 for artifact in manifest.json detector.onnx recognizer.onnx dictionary.txt LICENSE NOTICE.md; do

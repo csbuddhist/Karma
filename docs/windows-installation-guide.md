@@ -72,7 +72,7 @@
 
 ## 3. 从仓库获取并启动测试包
 
-测试人员无需在 Windows 上构建 Rust、下载模型或设置环境变量。克隆仓库后，完整运行时和已验证模型位于 [`release/windows-x64-test/Start-KarmaTest.ps1`](../release/windows-x64-test/Start-KarmaTest.ps1)：
+测试人员无需在 Windows 上构建 Rust、下载模型或设置环境变量。克隆仓库后，图形管理界面入口位于 [`release/windows-x64-test/Start-KarmaConsole.ps1`](../release/windows-x64-test/Start-KarmaConsole.ps1)，Agent 测试入口位于 [`release/windows-x64-test/Start-KarmaTest.ps1`](../release/windows-x64-test/Start-KarmaTest.ps1)：
 
 ```powershell
 git clone <远端仓库地址> Karma
@@ -83,6 +83,12 @@ Set-Location .\Karma\release\windows-x64-test
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
+.\Start-KarmaConsole.ps1
+```
+
+控制台首次启动会要求创建至少 10 个字符的管理员密码。要同时测试屏幕采集与识别，请另开一个 PowerShell 窗口执行：
+
+```powershell
 .\Start-KarmaTest.ps1
 ```
 
@@ -93,8 +99,10 @@ Set-ExecutionPolicy -Scope Process Bypass
 ```text
 windows-x64-test\
 ├── karma-agent-windows.exe
+├── karma-ui.exe
 ├── DirectML.dll
 ├── SHA256SUMS
+├── Start-KarmaConsole.ps1
 ├── Start-KarmaTest.ps1
 ├── Verify-KarmaTestBundle.ps1
 └── models\                         # Viddexa 图像模型和 PP-OCRv5 轻量模型

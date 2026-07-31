@@ -9,3 +9,9 @@ tools/ocr-export/tests/__pycache__/
 .local-models/
 .DS_Store
 target/
+.playwright-cli/
+apps/karma-ui/node_modules/
+apps/karma-ui/dist/
+apps/karma-ui/src-tauri/gen/
+apps/karma-ui/src-tauri/icons/android/
+apps/karma-ui/src-tauri/icons/ios/

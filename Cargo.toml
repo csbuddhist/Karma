@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "apps/karma-agent-windows",
+    "apps/karma-ui/src-tauri",
     "crates/karma-ai",
     "crates/karma-domain",
     "crates/karma-onnx",
