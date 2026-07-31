@@ -6,4 +6,5 @@ tools/ocr-export/__pycache__/
 tools/ocr-export/tests/__pycache__/
 .venv-ocr-export/
 .local-models/
+.DS_Store
 target/
