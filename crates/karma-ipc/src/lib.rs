@@ -99,6 +99,10 @@ pub enum ServiceRequest {
         agent_token: String,
         observation: AgentObservation,
     },
+    SubmitEvidence {
+        agent_token: String,
+        evidence: EvidenceSubmission,
+    },
     GetAgentPolicy {
         agent_token: String,
     },
@@ -126,6 +130,7 @@ impl ServiceRequest {
             | Self::DeleteEvidence { .. } => client == ClientKind::Ui,
             Self::AgentHeartbeat { .. }
             | Self::AgentObservation { .. }
+            | Self::SubmitEvidence { .. }
             | Self::GetAgentPolicy { .. }
             | Self::ReportDisposition { .. } => client == ClientKind::Agent,
             Self::RequestShutdown { .. } => client == ClientKind::Installer,
@@ -156,6 +161,7 @@ impl ServiceRequest {
             }
             Self::AgentHeartbeat { agent_token, .. }
             | Self::AgentObservation { agent_token, .. }
+            | Self::SubmitEvidence { agent_token, .. }
             | Self::GetAgentPolicy { agent_token }
             | Self::ReportDisposition { agent_token, .. } => {
                 validate_opaque(agent_token, MAX_SESSION_TOKEN_CHARS)?;
@@ -168,6 +174,7 @@ impl ServiceRequest {
             }
             Self::AgentHeartbeat { heartbeat, .. } => heartbeat.validate()?,
             Self::AgentObservation { observation, .. } => observation.validate()?,
+            Self::SubmitEvidence { evidence, .. } => evidence.validate()?,
             Self::ReportDisposition { report, .. } => report.validate()?,
             _ => {}
         }
@@ -274,6 +281,35 @@ pub struct ProcessIdentity {
     pub started_at_ms: i64,
     pub executable_name: String,
     pub executable_sha256: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EvidenceSubmission {
+    pub evidence_id: String,
+    pub captured_at_ms: i64,
+    pub monitor_name: String,
+    pub application_name: String,
+    pub reason_code: String,
+    pub risk_millis: u16,
+    pub media_type: String,
+    pub bytes_base64: String,
+}
+
+impl EvidenceSubmission {
+    fn validate(&self) -> Result<(), ProtocolError> {
+        validate_identifier(&self.evidence_id)?;
+        if self.monitor_name.chars().count() > 128
+            || self.application_name.chars().count() > 260
+            || self.reason_code.len() > 64
+            || self.risk_millis > 1000
+            || !matches!(self.media_type.as_str(), "image/jpeg" | "image/png")
+            || self.bytes_base64.len() > MAX_FRAME_BYTES * 3 / 4
+        {
+            return Err(ProtocolError::InvalidField);
+        }
+        Ok(())
+    }
 }
 
 impl ProcessIdentity {

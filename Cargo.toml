@@ -6,6 +6,7 @@ members = [
     "crates/karma-ai",
     "crates/karma-disposition",
     "crates/karma-domain",
+    "crates/karma-evidence",
     "crates/karma-ipc",
     "crates/karma-onnx",
     "crates/karma-policy",

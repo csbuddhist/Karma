@@ -7,6 +7,8 @@ license.workspace = true
 
 [dependencies]
 argon2 = { version = "0.5", features = ["std"] }
+base64 = "0.22"
+karma-evidence = { path = "../karma-evidence" }
 karma-ipc = { path = "../karma-ipc" }
 rand = "0.8"
 serde.workspace = true

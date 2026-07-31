@@ -13,9 +13,11 @@ use argon2::{
     Argon2, PasswordHash, PasswordHasher, PasswordVerifier,
     password_hash::{SaltString, rand_core::OsRng as PasswordOsRng},
 };
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use karma_evidence::EvidenceVault;
 use karma_ipc::{
-    BootstrapStatus, RequestEnvelope, ResponseEnvelope, ServiceErrorCode, ServiceFailure,
-    ServiceRequest, ServiceResult, ServiceStatus,
+    BootstrapStatus, EvidenceMetadata, RequestEnvelope, ResponseEnvelope, ServiceErrorCode,
+    ServiceFailure, ServiceRequest, ServiceResult, ServiceStatus,
 };
 use rand::{RngCore, rngs::OsRng};
 use serde::{Deserialize, Serialize};
@@ -51,6 +53,7 @@ struct StoredState {
     policy_revision: u64,
     policy: Value,
     audit: Vec<AuditRecord>,
+    evidence: Vec<StoredEvidence>,
 }
 
 impl Default for StoredState {
@@ -61,6 +64,7 @@ impl Default for StoredState {
             policy_revision: 0,
             policy: json!({}),
             audit: Vec::new(),
+            evidence: Vec::new(),
         }
     }
 }
@@ -71,6 +75,18 @@ struct AuditRecord {
     occurred_at_ms: i64,
     kind: String,
     outcome: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredEvidence {
+    id: String,
+    captured_at_ms: i64,
+    monitor_name: String,
+    application_name: String,
+    reason_code: String,
+    risk_millis: u16,
+    media_type: String,
 }
 
 #[derive(Debug)]
@@ -89,6 +105,7 @@ pub struct ServiceCore {
     state_path: PathBuf,
     started_at_ms: i64,
     agent_token: Zeroizing<String>,
+    evidence_vault: EvidenceVault,
     runtime: Mutex<RuntimeState>,
 }
 
@@ -96,6 +113,8 @@ impl ServiceCore {
     pub fn open(
         state_path: impl Into<PathBuf>,
         agent_token: String,
+        evidence_directory: impl Into<PathBuf>,
+        evidence_key: [u8; 32],
         started_at_ms: i64,
     ) -> Result<Self, CoreError> {
         let state_path = state_path.into();
@@ -108,6 +127,7 @@ impl ServiceCore {
             state_path,
             started_at_ms,
             agent_token: Zeroizing::new(agent_token),
+            evidence_vault: EvidenceVault::new(evidence_directory, evidence_key),
             runtime: Mutex::new(RuntimeState {
                 stored,
                 sessions: HashMap::new(),
@@ -220,7 +240,7 @@ impl ServiceCore {
                     monitors: heartbeat
                         .map(|heartbeat| heartbeat.monitors.clone())
                         .unwrap_or_default(),
-                    evidence_count: 0,
+                    evidence_count: runtime.stored.evidence.len() as u64,
                     audit_count: runtime.stored.audit.len() as u64,
                 }))
             }
@@ -302,6 +322,42 @@ impl ServiceCore {
                     grace_period_ms: DISPOSITION_GRACE_MS,
                 })
             }
+            ServiceRequest::SubmitEvidence {
+                agent_token,
+                evidence,
+            } => {
+                self.authorize_agent(&agent_token)?;
+                if runtime
+                    .stored
+                    .evidence
+                    .iter()
+                    .any(|item| item.id == evidence.evidence_id)
+                {
+                    return Err(ServiceErrorCode::InvalidRequest);
+                }
+                let mut plaintext = BASE64
+                    .decode(&evidence.bytes_base64)
+                    .map_err(|_| ServiceErrorCode::InvalidRequest)?;
+                if let Err(error) = validate_image(&evidence.media_type, &plaintext) {
+                    plaintext.zeroize();
+                    return Err(error);
+                }
+                self.evidence_vault
+                    .store(&evidence.evidence_id, &mut plaintext)
+                    .map_err(|_| ServiceErrorCode::StorageUnavailable)?;
+                runtime.stored.evidence.push(StoredEvidence {
+                    id: evidence.evidence_id,
+                    captured_at_ms: evidence.captured_at_ms,
+                    monitor_name: evidence.monitor_name,
+                    application_name: evidence.application_name,
+                    reason_code: evidence.reason_code,
+                    risk_millis: evidence.risk_millis,
+                    media_type: evidence.media_type,
+                });
+                audit(runtime, now_ms, "evidence_stored", "success");
+                self.persist(&runtime.stored)?;
+                Ok(ServiceResult::Acknowledged)
+            }
             ServiceRequest::ReportDisposition {
                 agent_token,
                 report,
@@ -313,20 +369,63 @@ impl ServiceCore {
             }
             ServiceRequest::ListEvidence { session_token } => {
                 authorize(runtime, &session_token, now_ms)?;
-                Ok(ServiceResult::EvidenceList { items: vec![] })
+                Ok(ServiceResult::EvidenceList {
+                    items: runtime
+                        .stored
+                        .evidence
+                        .iter()
+                        .map(|item| EvidenceMetadata {
+                            id: item.id.clone(),
+                            captured_at_ms: item.captured_at_ms,
+                            monitor_name: item.monitor_name.clone(),
+                            application_name: item.application_name.clone(),
+                            reason_code: item.reason_code.clone(),
+                            risk_millis: item.risk_millis,
+                            original_available: self.evidence_vault.exists(&item.id),
+                        })
+                        .collect(),
+                })
             }
             ServiceRequest::RevealEvidence {
                 session_token,
                 password,
-                ..
+                evidence_id,
             } => {
                 authorize(runtime, &session_token, now_ms)?;
                 self.authenticate(runtime, password, now_ms)?;
-                Err(ServiceErrorCode::EvidenceUnavailable)
+                let item = runtime
+                    .stored
+                    .evidence
+                    .iter()
+                    .find(|item| item.id == evidence_id)
+                    .ok_or(ServiceErrorCode::EvidenceUnavailable)?;
+                let bytes = self
+                    .evidence_vault
+                    .reveal(&evidence_id)
+                    .map_err(|_| ServiceErrorCode::EvidenceUnavailable)?;
+                Ok(ServiceResult::EvidenceImage {
+                    media_type: item.media_type.clone(),
+                    bytes_base64: BASE64.encode(&*bytes),
+                })
             }
-            ServiceRequest::DeleteEvidence { session_token, .. } => {
+            ServiceRequest::DeleteEvidence {
+                session_token,
+                evidence_id,
+            } => {
                 authorize(runtime, &session_token, now_ms)?;
-                Err(ServiceErrorCode::EvidenceUnavailable)
+                let index = runtime
+                    .stored
+                    .evidence
+                    .iter()
+                    .position(|item| item.id == evidence_id)
+                    .ok_or(ServiceErrorCode::EvidenceUnavailable)?;
+                self.evidence_vault
+                    .delete(&evidence_id)
+                    .map_err(|_| ServiceErrorCode::EvidenceUnavailable)?;
+                runtime.stored.evidence.remove(index);
+                audit(runtime, now_ms, "evidence_deleted", "success");
+                self.persist(&runtime.stored)?;
+                Ok(ServiceResult::Acknowledged)
             }
             ServiceRequest::RequestShutdown { session_token } => {
                 authorize(runtime, &session_token, now_ms)?;
@@ -399,6 +498,19 @@ fn authorize(runtime: &mut RuntimeState, token: &str, now_ms: i64) -> Result<(),
         .ok_or(ServiceErrorCode::AuthenticationRequired)?;
     *expires_at = now_ms.saturating_add(SESSION_LIFETIME_MS);
     Ok(())
+}
+
+fn validate_image(media_type: &str, bytes: &[u8]) -> Result<(), ServiceErrorCode> {
+    let valid = match media_type {
+        "image/jpeg" => bytes.starts_with(&[0xff, 0xd8, 0xff]),
+        "image/png" => bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]),
+        _ => false,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(ServiceErrorCode::InvalidRequest)
+    }
 }
 
 fn new_session(runtime: &mut RuntimeState, now_ms: i64) -> ServiceResult {
@@ -513,7 +625,7 @@ mod tests {
     use super::*;
     use karma_ipc::{
         AgentHeartbeat, AgentObservation, ClientKind, DispositionOutcome, DispositionReport,
-        ProcessIdentity, ServiceRequest,
+        EvidenceSubmission, ProcessIdentity, ServiceRequest,
     };
 
     fn request(id: &str, nonce: &str, body: ServiceRequest) -> RequestEnvelope {
@@ -524,11 +636,21 @@ mod tests {
         response.result.expect("request should succeed")
     }
 
+    fn open_core(directory: &Path, started_at_ms: i64) -> ServiceCore {
+        ServiceCore::open(
+            directory.join("service.json"),
+            "agent-secret".into(),
+            directory.join("evidence"),
+            [7; 32],
+            started_at_ms,
+        )
+        .unwrap()
+    }
+
     #[test]
     fn enrollment_authentication_policy_and_restart_round_trip() {
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("service.json");
-        let core = ServiceCore::open(&path, "agent-secret".into(), 100).unwrap();
+        let core = open_core(directory.path(), 100);
         assert!(matches!(
             success(core.handle(request("1", "n1", ServiceRequest::GetBootstrap), 100)),
             ServiceResult::Bootstrap(BootstrapStatus::SetupRequired)
@@ -562,7 +684,7 @@ mod tests {
             ServiceResult::PolicySaved { revision: 1 }
         ));
         drop(core);
-        let reopened = ServiceCore::open(&path, "agent-secret".into(), 200).unwrap();
+        let reopened = open_core(directory.path(), 200);
         let session = match success(reopened.handle(
             request(
                 "4",
@@ -597,12 +719,7 @@ mod tests {
     #[test]
     fn nonce_replay_session_expiry_and_agent_auth_are_enforced() {
         let directory = tempfile::tempdir().unwrap();
-        let core = ServiceCore::open(
-            directory.path().join("state.json"),
-            "agent-secret".into(),
-            0,
-        )
-        .unwrap();
+        let core = open_core(directory.path(), 0);
         let first = core.handle(request("1", "same", ServiceRequest::GetBootstrap), 0);
         assert!(first.result.is_ok());
         let replay = core.handle(request("2", "same", ServiceRequest::GetBootstrap), 0);
@@ -646,12 +763,7 @@ mod tests {
     #[test]
     fn only_recent_high_risk_observations_authorize_a_bound_disposition() {
         let directory = tempfile::tempdir().unwrap();
-        let core = ServiceCore::open(
-            directory.path().join("state.json"),
-            "agent-secret".into(),
-            0,
-        )
-        .unwrap();
+        let core = open_core(directory.path(), 0);
         let source = ProcessIdentity {
             process_id: 42,
             started_at_ms: 77,
@@ -692,5 +804,92 @@ mod tests {
             core.record_disposition(&mismatched, 102),
             Err(ServiceErrorCode::InvalidRequest)
         );
+    }
+
+    #[test]
+    fn evidence_is_encrypted_listed_and_requires_password_to_reveal() {
+        let directory = tempfile::tempdir().unwrap();
+        let core = open_core(directory.path(), 0);
+        let session = match success(core.handle(
+            request(
+                "1",
+                "n1",
+                ServiceRequest::EnrollAdministrator {
+                    password: "long-test-password".into(),
+                },
+            ),
+            1,
+        )) {
+            ServiceResult::Session { session_token, .. } => session_token,
+            _ => panic!("unexpected response"),
+        };
+        let image = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3];
+        let submission = EvidenceSubmission {
+            evidence_id: "evidence-1".into(),
+            captured_at_ms: 2,
+            monitor_name: "显示器 1".into(),
+            application_name: "browser.exe".into(),
+            reason_code: "image_immediate".into(),
+            risk_millis: 980,
+            media_type: "image/png".into(),
+            bytes_base64: BASE64.encode(image),
+        };
+        let submit = RequestEnvelope::new(
+            "2",
+            "n2",
+            ClientKind::Agent,
+            ServiceRequest::SubmitEvidence {
+                agent_token: "agent-secret".into(),
+                evidence: submission,
+            },
+        );
+        assert!(matches!(
+            success(core.handle(submit, 2)),
+            ServiceResult::Acknowledged
+        ));
+        let encrypted = fs::read(directory.path().join("evidence/evidence-1.kme")).unwrap();
+        assert!(!encrypted.windows(image.len()).any(|window| window == image));
+        assert!(matches!(
+            success(core.handle(
+                request("3", "n3", ServiceRequest::ListEvidence { session_token: session.clone() }),
+                3,
+            )),
+            ServiceResult::EvidenceList { items } if items.len() == 1 && items[0].original_available
+        ));
+        assert_eq!(
+            core.handle(
+                request(
+                    "4",
+                    "n4",
+                    ServiceRequest::RevealEvidence {
+                        session_token: session.clone(),
+                        password: "wrong-password".into(),
+                        evidence_id: "evidence-1".into(),
+                    }
+                ),
+                4,
+            )
+            .result
+            .unwrap_err()
+            .code,
+            ServiceErrorCode::AuthenticationFailed
+        );
+        match success(core.handle(
+            request(
+                "5",
+                "n5",
+                ServiceRequest::RevealEvidence {
+                    session_token: session,
+                    password: "long-test-password".into(),
+                    evidence_id: "evidence-1".into(),
+                },
+            ),
+            5,
+        )) {
+            ServiceResult::EvidenceImage { bytes_base64, .. } => {
+                assert_eq!(BASE64.decode(bytes_base64).unwrap(), image);
+            }
+            _ => panic!("unexpected response"),
+        }
     }
 }

@@ -40,12 +40,15 @@ use windows_service::{
     service_dispatcher,
 };
 use zeroize::Zeroizing;
+mod evidence_key;
 mod process_disposition;
 
 const SERVICE_NAME: &str = "KarmaService";
 const DATA_DIRECTORY: &str = "Karma";
 const STATE_FILE: &str = "service-state.json";
 const AGENT_SECRET_FILE: &str = "agent.secret";
+const EVIDENCE_KEY_FILE: &str = "evidence.key.dpapi";
+const EVIDENCE_DIRECTORY: &str = "evidence";
 const SERVICE_DATA_SDDL: PCWSTR = w!("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)");
 
 #[derive(Debug, Error)]
@@ -117,12 +120,25 @@ fn serve(shutdown: Arc<AtomicBool>) -> Result<(), Box<dyn std::error::Error>> {
     harden_path(&directory)?;
     let secret_path = directory.join(AGENT_SECRET_FILE);
     let state_path = directory.join(STATE_FILE);
+    let evidence_key_path = directory.join(EVIDENCE_KEY_FILE);
+    let evidence_directory = directory.join(EVIDENCE_DIRECTORY);
     let agent_secret = load_or_create_agent_secret(&secret_path)?;
     harden_path(&secret_path)?;
     if state_path.exists() {
         harden_path(&state_path)?;
     }
-    let core = ServiceCore::open(state_path, agent_secret.to_string(), unix_time_ms())?;
+    fs::create_dir_all(&evidence_directory).map_err(|_| ServiceHostError::StorageUnavailable)?;
+    harden_path(&evidence_directory)?;
+    let evidence_key = evidence_key::load_or_create(&evidence_key_path)
+        .map_err(|_| ServiceHostError::StorageUnavailable)?;
+    harden_path(&evidence_key_path)?;
+    let core = ServiceCore::open(
+        state_path,
+        agent_secret.to_string(),
+        evidence_directory,
+        evidence_key,
+        unix_time_ms(),
+    )?;
 
     while !shutdown.load(Ordering::Acquire) {
         let pipe = PipeServer::create()?;

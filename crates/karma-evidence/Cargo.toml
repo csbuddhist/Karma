@@ -1,0 +1,15 @@
+[package]
+name = "karma-evidence"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+aes-gcm = "0.10"
+rand = "0.8"
+thiserror.workspace = true
+zeroize = "1"
+
+[dev-dependencies]
+tempfile = "3"
