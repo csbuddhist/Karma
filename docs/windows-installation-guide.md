@@ -89,7 +89,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\Install-Karma.ps1 -StartConsole
 ```
 
-控制台首次启动会要求创建至少 10 个字符的管理员密码。Service 会自动在活动控制台会话启动 Agent，不需要另开窗口运行 `Start-KarmaTest.ps1`。
+控制台首次成功连接 Service 后会要求创建至少 10 个字符的管理员密码。若 Service 不可用，GUI 会显示连接错误和重试按钮，不会把未知认证状态误显示成密码解锁页。Service 会自动在活动控制台会话启动 Agent，不需要另开窗口运行 `Start-KarmaTest.ps1`。
 
 `Set-ExecutionPolicy` 只影响当前 PowerShell 进程，用于允许执行仓库内未签名脚本；它不会修改系统范围策略。启动脚本会先验证 `SHA256SUMS`、两个 JSON 模型清单和必要运行文件，验证失败时不会启动 Agent。可使用 `.\Start-KarmaTest.ps1 -OcrProfile lightweight` 显式选择轻量 OCR。
 

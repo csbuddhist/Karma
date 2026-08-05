@@ -155,6 +155,27 @@ function PasswordGate({ mode, onAuthenticated }: { mode: Exclude<AuthMode, "unlo
   );
 }
 
+function ServiceConnectionError({ detail, onRetry }: { detail: string; onRetry: () => void }) {
+  return (
+    <main className="auth-shell">
+      <section className="auth-card connection-error-card">
+        <div className="brand-lockup">
+          <div className="brand-mark"><Shield /></div>
+          <div><strong>KARMA</strong><span>家庭保护控制台</span></div>
+        </div>
+        <div className="connection-error-icon"><WifiOff /></div>
+        <div className="auth-copy">
+          <span className="eyebrow">连接错误</span>
+          <h1>无法连接保护服务</h1>
+          <p>控制台尚未读取真实的密码设置状态。请确认 KarmaService 正在运行，然后重试连接。</p>
+        </div>
+        <div className="form-error"><CircleAlert size={16} /><span>{detail}</span></div>
+        <button className="primary-button auth-submit" type="button" onClick={onRetry}>重新连接<ChevronRight size={18} /></button>
+      </section>
+    </main>
+  );
+}
+
 function Overview({ state }: { state: ConsoleState }) {
   const healthyMonitors = state.monitors.filter((monitor) => monitor.state === "healthy").length;
   return (
@@ -256,8 +277,20 @@ export function App() {
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState("");
+  const [startupError, setStartupError] = useState("");
 
-  useEffect(() => { authStatus().then((status) => setAuthMode(status)).finally(() => setLoading(false)); }, []);
+  async function refreshAuthStatus() {
+    setLoading(true);
+    setStartupError("");
+    try {
+      setAuthMode(await authStatus());
+    } catch (reason) {
+      setStartupError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setLoading(false);
+    }
+  }
+  useEffect(() => { void refreshAuthStatus(); }, []);
   useEffect(() => {
     if (authMode !== "unlocked" || !sessionToken) return;
     let timeout = window.setTimeout(() => void signOut(), 15 * 60 * 1000);
@@ -298,6 +331,7 @@ export function App() {
   }, [page, state, sessionToken]);
 
   if (loading) return <div className="loading-screen"><div className="brand-mark"><Shield /></div><span>正在打开安全控制台…</span></div>;
+  if (startupError) return <ServiceConnectionError detail={startupError} onRetry={() => void refreshAuthStatus()} />;
   if (authMode !== "unlocked") return <PasswordGate mode={authMode} onAuthenticated={authenticated} />;
   return <div className="app-shell"><aside className="sidebar"><div className="brand-lockup sidebar-brand"><div className="brand-mark"><Shield /></div><div><strong>KARMA</strong><span>家庭保护</span></div></div><nav>{navItems.map((item) => { const Icon = item.icon; return <button className={page === item.key ? "active" : ""} key={item.key} onClick={() => setPage(item.key)}><Icon size={19} /><span>{item.label}</span>{item.key === "evidence" && state.evidence.length > 0 && <b>{state.evidence.length}</b>}</button>; })}</nav><div className="sidebar-foot"><div className="mini-health"><span className={state.serviceConnected ? "online" : "offline"} /><div><strong>{state.serviceConnected ? "保护服务在线" : "服务尚未连接"}</strong><small>{state.agentConnected ? "Agent 正常运行" : "仅控制台模式"}</small></div></div><button onClick={signOut}><LogOut size={18} />锁定控制台</button></div></aside><main className="main"><header><div><span className="eyebrow">KARMA CONTROL</span><h1>{pageMeta[page].title}</h1><p>{pageMeta[page].subtitle}</p></div><div className="header-actions">{saveMessage && <span className="saved-message"><Check size={15} />{saveMessage}</span>}<button className="secondary-button" onClick={signOut}><Lock size={16} />锁定</button><button className="primary-button" disabled={!dirty || saving} onClick={save}><Save size={17} />{saving ? "保存中…" : "保存设置"}</button></div></header><div className="page-content">{content}</div></main></div>;
 }

@@ -176,7 +176,7 @@ score >= 0.95                         → 立即处置
 
 当前仓库已实现 Windows 帧输入、图像推理与 OCR 推理切片，以及 Windows Service、认证 IPC、策略持久化、Agent watchdog、健康心跳、身份绑定处置执行端和 DPAPI + AES-GCM 证据库。启用“保存事件证据”后，只有达到立即处置阈值的图像推理帧才会在 Agent 中编码并提交给 Service 加密保存，Service 会再次校验策略与阈值。Agent 从已验证的本地清单加载图像与 OCR 模型，运行时不输出规则、识别原文、分数或画面。连续帧风险融合和来源窗口观察仍未接入，因此现有分类器尚不会自动关闭来源应用。
 
-管理界面位于 [`apps/karma-ui/`](apps/karma-ui/)：Windows 构建已通过本机命名管道连接 `KarmaService`，管理员密码、会话、实时 Agent/显示器状态、策略 revision 和证据查看均由 Service 掌控；非 Windows 开发构建仍使用隔离的本地后端。
+管理界面位于 [`apps/karma-ui/`](apps/karma-ui/)：Windows 构建已通过支持并发客户端的本机命名管道连接 `KarmaService`，管理员密码、会话、实时 Agent/显示器状态、策略 revision 和证据查看均由 Service 掌控；连接失败时 GUI 会显示明确的 Service 连接错误，不会再把未知认证状态误显示为密码解锁页。非 Windows 开发构建仍使用隔离的本地后端。
 
 macOS 开发机上的测试和 `x86_64-pc-windows-msvc` 交叉编译只证明便携算法、Rust 类型约束和 Windows API 签名正确；GPU 驱动行为、实际帧颜色、资源释放及多屏性能必须按 [Windows 帧管线真机验收清单](docs/windows-frame-pipeline-acceptance.md) 与 [Windows ONNX 真机验收清单](docs/windows-onnx-acceptance.md) 在 Windows 10 22H2/Windows 11 上验证，未记录该证据前不视为运行时验收完成。
 

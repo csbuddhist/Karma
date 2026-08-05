@@ -7,8 +7,9 @@ use std::{
     path::PathBuf,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
+    thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -50,6 +51,7 @@ const STATE_FILE: &str = "service-state.json";
 const AGENT_SECRET_FILE: &str = "agent.secret";
 const EVIDENCE_KEY_FILE: &str = "evidence.key.dpapi";
 const EVIDENCE_DIRECTORY: &str = "evidence";
+const MAX_CONCURRENT_CONNECTIONS: usize = 8;
 const SERVICE_DATA_SDDL: PCWSTR = w!("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)");
 
 #[derive(Debug, Error)]
@@ -58,6 +60,14 @@ enum ServiceHostError {
     ProgramDataUnavailable,
     #[error("service data storage is unavailable")]
     StorageUnavailable,
+}
+
+struct ConnectionSlot(Arc<AtomicUsize>);
+
+impl Drop for ConnectionSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 define_windows_service!(ffi_service_main, service_main);
@@ -133,13 +143,13 @@ fn serve(shutdown: Arc<AtomicBool>) -> Result<(), Box<dyn std::error::Error>> {
     let evidence_key = evidence_key::load_or_create(&evidence_key_path)
         .map_err(|_| ServiceHostError::StorageUnavailable)?;
     harden_path(&evidence_key_path)?;
-    let core = ServiceCore::open(
+    let core = Arc::new(ServiceCore::open(
         state_path,
         agent_secret.to_string(),
         evidence_directory,
         evidence_key,
         unix_time_ms(),
-    )?;
+    )?);
 
     let install_directory = env::current_exe()
         .map_err(|_| ServiceHostError::StorageUnavailable)?
@@ -151,52 +161,83 @@ fn serve(shutdown: Arc<AtomicBool>) -> Result<(), Box<dyn std::error::Error>> {
         agent_secret.to_string(),
         Arc::clone(&shutdown),
     );
+    let active_connections = Arc::new(AtomicUsize::new(0));
     let serve_result = (|| -> Result<(), Box<dyn std::error::Error>> {
         while !shutdown.load(Ordering::Acquire) {
             let pipe = PipeServer::create()?;
-            let request = match pipe.accept_request() {
-                Ok(request) => request,
+            match pipe.accept() {
+                Ok(()) => {}
                 Err(error) => {
                     if shutdown.load(Ordering::Acquire) {
                         break;
                     }
                     return Err(error.into());
                 }
-            };
-            let shutdown_requested =
-                matches!(request.request, ServiceRequest::RequestShutdown { .. });
-            let mut response = core.handle(request, unix_time_ms());
-            if let Ok(karma_ipc::ServiceResult::DispositionRequired {
-                event_id,
-                target,
-                grace_period_ms,
-            }) = &response.result
+            }
+            if active_connections
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                    (count < MAX_CONCURRENT_CONNECTIONS).then_some(count + 1)
+                })
+                .is_err()
             {
-                let report = process_disposition::execute(
-                    event_id.clone(),
-                    target,
-                    Duration::from_millis(u64::from(*grace_period_ms)),
-                );
-                if core.record_disposition(&report, unix_time_ms()).is_ok() {
-                    response.result = Ok(karma_ipc::ServiceResult::DispositionCompleted { report });
-                } else {
-                    response = karma_ipc::ResponseEnvelope::failure(
-                        response.request_id,
-                        karma_ipc::ServiceFailure::new(karma_ipc::ServiceErrorCode::Internal),
-                    );
-                }
+                continue;
             }
-            let authorized_shutdown = shutdown_requested && response.result.is_ok();
-            pipe.send_response(&response)?;
-            if authorized_shutdown {
-                shutdown.store(true, Ordering::Release);
-            }
+            let connection_core = Arc::clone(&core);
+            let connection_shutdown = Arc::clone(&shutdown);
+            let connection_slot = ConnectionSlot(Arc::clone(&active_connections));
+            thread::Builder::new()
+                .name("karma-pipe-connection".into())
+                .spawn(move || {
+                    let _connection_slot = connection_slot;
+                    if let Err(error) =
+                        handle_connection(pipe, &connection_core, &connection_shutdown)
+                    {
+                        eprintln!("KarmaService IPC connection failed: {error}");
+                    }
+                })?;
         }
         Ok(())
     })();
     shutdown.store(true, Ordering::Release);
     let _ = watchdog.join();
     serve_result
+}
+
+fn handle_connection(
+    pipe: PipeServer,
+    core: &ServiceCore,
+    shutdown: &AtomicBool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let request = pipe.read_request()?;
+    let shutdown_requested = matches!(request.request, ServiceRequest::RequestShutdown { .. });
+    let mut response = core.handle(request, unix_time_ms());
+    if let Ok(karma_ipc::ServiceResult::DispositionRequired {
+        event_id,
+        target,
+        grace_period_ms,
+    }) = &response.result
+    {
+        let report = process_disposition::execute(
+            event_id.clone(),
+            target,
+            Duration::from_millis(u64::from(*grace_period_ms)),
+        );
+        if core.record_disposition(&report, unix_time_ms()).is_ok() {
+            response.result = Ok(karma_ipc::ServiceResult::DispositionCompleted { report });
+        } else {
+            response = karma_ipc::ResponseEnvelope::failure(
+                response.request_id,
+                karma_ipc::ServiceFailure::new(karma_ipc::ServiceErrorCode::Internal),
+            );
+        }
+    }
+    let authorized_shutdown = shutdown_requested && response.result.is_ok();
+    pipe.send_response(&response)?;
+    if authorized_shutdown {
+        shutdown.store(true, Ordering::Release);
+        wake_pipe_server();
+    }
+    Ok(())
 }
 
 fn harden_path(path: &PathBuf) -> Result<(), ServiceHostError> {

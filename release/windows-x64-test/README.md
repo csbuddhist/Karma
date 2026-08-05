@@ -10,7 +10,7 @@
 4. 执行 `.\Install-Karma.ps1 -StartConsole`。
 5. GUI 首次打开时创建至少 10 个字符的管理员密码。
 
-安装脚本把测试包复制到 `C:\Program Files\Karma`，注册自动启动的 `KarmaService`，配置 SCM 崩溃恢复并启动服务。Service 会在当前活动控制台会话启动 Agent；Agent 退出后 watchdog 会重新启动它。GUI、Agent 和 Service 通过仅限本机的版本化命名管道通信。
+安装脚本把测试包复制到 `C:\Program Files\Karma`，注册自动启动的 `KarmaService`，配置 SCM 崩溃恢复并启动服务。Service 会在当前活动控制台会话启动 Agent；Agent 退出后 watchdog 会重新启动它。GUI、Agent 和 Service 通过仅限本机、支持并发客户端的版本化命名管道通信。GUI 无法连接 Service 时会明确显示连接错误，不会假定管理员密码已经设置。
 
 卸载时以管理员身份执行：
 

@@ -2,8 +2,8 @@ use karma_ipc::{MAX_FRAME_BYTES, RequestEnvelope, ResponseEnvelope, decode_frame
 use windows::{
     Win32::{
         Foundation::{
-            CloseHandle, ERROR_PIPE_CONNECTED, ERROR_SEM_TIMEOUT, HANDLE, HLOCAL,
-            INVALID_HANDLE_VALUE, LocalFree,
+            CloseHandle, ERROR_PIPE_CONNECTED, ERROR_SEM_TIMEOUT, GENERIC_READ, GENERIC_WRITE,
+            HANDLE, HLOCAL, INVALID_HANDLE_VALUE, LocalFree,
         },
         Security::{
             Authorization::{
@@ -11,10 +11,7 @@ use windows::{
             },
             PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES,
         },
-        Storage::FileSystem::{
-            CreateFileW, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_MODE, OPEN_EXISTING,
-            PIPE_ACCESS_DUPLEX,
-        },
+        Storage::FileSystem::{CreateFileW, FILE_SHARE_MODE, OPEN_EXISTING, PIPE_ACCESS_DUPLEX},
         System::Pipes::{
             ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE,
             PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
@@ -30,6 +27,10 @@ const PIPE_BUFFER_BYTES: u32 = 64 * 1024;
 const LOCAL_PIPE_SDDL: PCWSTR = w!("D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)");
 
 struct OwnedHandle(HANDLE);
+
+// SAFETY: Windows kernel handles are valid across threads. OwnedHandle has unique ownership,
+// exposes no cloning, and is moved to exactly one connection worker before any I/O occurs.
+unsafe impl Send for OwnedHandle {}
 
 impl Drop for OwnedHandle {
     fn drop(&mut self) {
@@ -55,7 +56,6 @@ impl Drop for OwnedSecurityDescriptor {
 
 pub struct PipeServer {
     handle: OwnedHandle,
-    _security_descriptor: OwnedSecurityDescriptor,
 }
 
 impl PipeServer {
@@ -70,7 +70,7 @@ impl PipeServer {
             )
         }
         .map_err(|_| TransportError::OperationFailed)?;
-        let owned_descriptor = OwnedSecurityDescriptor(descriptor);
+        let _owned_descriptor = OwnedSecurityDescriptor(descriptor);
         let mut security = SECURITY_ATTRIBUTES {
             nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
             lpSecurityDescriptor: descriptor.0,
@@ -94,16 +94,19 @@ impl PipeServer {
         }
         Ok(Self {
             handle: OwnedHandle(handle),
-            _security_descriptor: owned_descriptor,
         })
     }
 
-    pub fn accept_request(&self) -> Result<RequestEnvelope, TransportError> {
+    pub fn accept(&self) -> Result<(), TransportError> {
         match unsafe { ConnectNamedPipe(self.handle.0, None) } {
             Ok(()) => {}
             Err(error) if error.code().0 as u32 == ERROR_PIPE_CONNECTED.0 => {}
             Err(_) => return Err(TransportError::OperationFailed),
         }
+        Ok(())
+    }
+
+    pub fn read_request(&self) -> Result<RequestEnvelope, TransportError> {
         read_message(self.handle.0)
     }
 
@@ -133,7 +136,7 @@ pub fn send_request(
     let handle = unsafe {
         CreateFileW(
             PCWSTR(name.as_ptr()),
-            (FILE_GENERIC_READ | FILE_GENERIC_WRITE).0,
+            (GENERIC_READ | GENERIC_WRITE).0,
             FILE_SHARE_MODE(0),
             None,
             OPEN_EXISTING,
