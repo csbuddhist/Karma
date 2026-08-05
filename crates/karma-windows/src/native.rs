@@ -99,6 +99,10 @@ fn rect_from_native(value: RECT) -> Rect {
     }
 }
 
+fn monitor_id_from_handle(handle: MonitorHandle) -> MonitorId {
+    MonitorId(format!("hmonitor-{:x}", handle.0 as usize))
+}
+
 unsafe extern "system" fn collect_monitor(
     monitor: HMONITOR,
     _device_context: HDC,
@@ -118,7 +122,7 @@ unsafe extern "system" fn collect_monitor(
     let native_bounds = unsafe { *bounds };
     let handle = MonitorHandle(monitor.0 as isize);
     monitors.push(MonitorSnapshot {
-        id: MonitorId(format!("hmonitor:{:x}", handle.0 as usize)),
+        id: monitor_id_from_handle(handle),
         handle,
         bounds: rect_from_native(native_bounds),
     });
@@ -209,5 +213,17 @@ mod tests {
     #[test]
     fn monitor_handle_preserves_native_value() {
         assert_eq!(MonitorHandle(42).0, 42);
+    }
+
+    #[test]
+    fn monitor_identifier_uses_protocol_safe_characters() {
+        let id = monitor_id_from_handle(MonitorHandle(0x1a2b));
+
+        assert_eq!(id.0, "hmonitor-1a2b");
+        assert!(
+            id.0
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        );
     }
 }

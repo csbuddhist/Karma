@@ -11,7 +11,9 @@ use windows::{
             },
             PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES,
         },
-        Storage::FileSystem::{CreateFileW, FILE_SHARE_MODE, OPEN_EXISTING, PIPE_ACCESS_DUPLEX},
+        Storage::FileSystem::{
+            CreateFileW, FILE_SHARE_MODE, FlushFileBuffers, OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
+        },
         System::Pipes::{
             ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE,
             PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
@@ -111,7 +113,10 @@ impl PipeServer {
     }
 
     pub fn send_response(&self, response: &ResponseEnvelope) -> Result<(), TransportError> {
-        let result = write_message(self.handle.0, response);
+        let result = write_message(self.handle.0, response).and_then(|_| {
+            unsafe { FlushFileBuffers(self.handle.0) }
+                .map_err(|_| TransportError::OperationFailed)
+        });
         unsafe {
             let _ = DisconnectNamedPipe(self.handle.0);
         }
