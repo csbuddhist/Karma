@@ -1,5 +1,7 @@
 # Karma
 
+[中文版](README.zh-CN.md)
+
 Karma is a local pornography-protection and digital-wellbeing application for macOS and Windows. It continuously monitors every display, closes the source application when it detects high-risk images or videos, and provides application allowlists and blocklists, internet access schedules, administrator passwords, audit logs, and protection against casual termination.
 
 The project follows a “single product, shared core, two native executors” architecture. The UI, policies, AI, and data formats can be shared, while screen capture, process control, network filtering, background persistence, and device management must use native capabilities supported by each platform.
