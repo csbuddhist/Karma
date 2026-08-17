@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [ValidateSet('auto', 'lightweight', 'accurate')]
     [string] $OcrProfile = 'auto'

@@ -6,6 +6,9 @@ bundle_dir="release/windows-x64-test"
 test -f "$bundle_dir/Start-KarmaTest.ps1"
 test -f "$bundle_dir/Verify-KarmaTestBundle.ps1"
 test -f "$bundle_dir/README.md"
+for script in "$bundle_dir"/*.ps1; do
+  test "$(head -c 3 "$script" | od -An -t x1 | tr -d ' \n')" = "efbbbf"
+done
 rg -q 'KARMA_IMAGE_MODEL_MANIFEST' "$bundle_dir/Start-KarmaTest.ps1"
 rg -q 'Get-FileHash' "$bundle_dir/Verify-KarmaTestBundle.ps1"
 
