@@ -161,6 +161,17 @@ impl FramePreparer {
 
     pub fn prepare(&self, input: BgraFrame) -> Result<PreparedFrame, FrameError> {
         let target = self.config.target(input.dimensions())?;
+        if target == input.dimensions() && input.stride() == target.tight_stride()? {
+            let (monitor_id, captured_at_ms, dimensions, _, pixels) = input.into_parts();
+            let fingerprint = difference_hash(&pixels, dimensions)?;
+            return Ok(PreparedFrame::new(
+                monitor_id,
+                captured_at_ms,
+                dimensions,
+                pixels,
+                fingerprint,
+            ));
+        }
         let pixels = scale_bgra(&input, target)?;
         let fingerprint = difference_hash(&pixels, target)?;
         Ok(PreparedFrame::new(
@@ -223,6 +234,25 @@ mod tests {
                 .unwrap(),
             FrameDimensions::new(320, 200).unwrap()
         );
+    }
+
+    #[test]
+    fn tight_frame_at_target_size_reuses_its_pixel_allocation() {
+        let dimensions = FrameDimensions::new(4, 2).unwrap();
+        let pixels = vec![42; dimensions.tight_byte_len().unwrap()];
+        let original_allocation = pixels.as_ptr();
+        let input = BgraFrame::new(
+            MonitorId("m".into()),
+            7,
+            dimensions,
+            dimensions.tight_stride().unwrap(),
+            pixels,
+        )
+        .unwrap();
+
+        let output = FramePreparer::default().prepare(input).unwrap();
+
+        assert_eq!(output.pixels().as_ptr(), original_allocation);
     }
 
     #[test]

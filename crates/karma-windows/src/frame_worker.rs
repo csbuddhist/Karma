@@ -1,6 +1,50 @@
 #[cfg(any(windows, test))]
 use crate::CaptureSessionStatus;
 
+#[cfg(any(windows, test))]
+use std::time::Duration;
+
+#[cfg(any(windows, test))]
+const ACTIVE_FRAME_PROCESSING_INTERVAL: Duration = Duration::from_millis(250);
+#[cfg(any(windows, test))]
+const IDLE_FRAME_PROCESSING_INTERVAL: Duration = Duration::from_secs(1);
+#[cfg(any(windows, test))]
+const ACTIVE_FRAME_PROCESSING_WINDOW: Duration = Duration::from_secs(2);
+
+#[derive(Debug, Default)]
+#[cfg(any(windows, test))]
+struct FrameProcessingGate {
+    last_admitted_at: Option<Duration>,
+    last_fingerprint: Option<u64>,
+    active_until: Option<Duration>,
+}
+
+#[cfg(any(windows, test))]
+impl FrameProcessingGate {
+    fn admit(&mut self, now: Duration) -> bool {
+        let interval = if self.active_until.is_none_or(|until| now <= until) {
+            ACTIVE_FRAME_PROCESSING_INTERVAL
+        } else {
+            IDLE_FRAME_PROCESSING_INTERVAL
+        };
+        if self
+            .last_admitted_at
+            .is_some_and(|previous| now.saturating_sub(previous) < interval)
+        {
+            return false;
+        }
+        self.last_admitted_at = Some(now);
+        true
+    }
+
+    fn observe(&mut self, now: Duration, fingerprint: u64) {
+        if self.last_fingerprint != Some(fingerprint) {
+            self.active_until = Some(now.saturating_add(ACTIVE_FRAME_PROCESSING_WINDOW));
+            self.last_fingerprint = Some(fingerprint);
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameWorkerStatus {
     Starting,
@@ -99,12 +143,15 @@ mod native {
             mpsc::{SyncSender, sync_channel},
         },
         thread::{self, JoinHandle},
+        time::Instant,
     };
 
     use karma_ai::{FrameMetadata, FrameScheduler, FrameWork, PreparedFrame};
     use thiserror::Error;
 
-    use super::{FrameWorkerReport, FrameWorkerStatus, WorkerAction, next_action};
+    use super::{
+        FrameProcessingGate, FrameWorkerReport, FrameWorkerStatus, WorkerAction, next_action,
+    };
     use crate::{WgcCaptureSession, WindowsFrameProcessor, WindowsRuntimeApartment};
 
     pub trait PreparedFrameConsumer: Send + 'static {
@@ -155,6 +202,8 @@ mod native {
         session.set_frame_notifier(notifier);
         set_status(&report, FrameWorkerStatus::Running);
         let mut scheduler = FrameScheduler::default();
+        let mut processing_gate = FrameProcessingGate::default();
+        let worker_started = Instant::now();
 
         loop {
             let frame = session.take_latest_frame();
@@ -165,9 +214,14 @@ mod native {
             ) {
                 WorkerAction::Process => {
                     let frame = frame.expect("worker action requires a frame");
+                    let admitted_at = worker_started.elapsed();
+                    if !processing_gate.admit(admitted_at) {
+                        continue;
+                    }
                     consumer.begin_frame();
                     match processor.process(&frame) {
                         Ok(prepared) => {
+                            processing_gate.observe(admitted_at, prepared.fingerprint());
                             let work = scheduler.select(FrameMetadata {
                                 monitor_id: prepared.monitor_id().clone(),
                                 captured_at_ms: prepared.captured_at_ms(),
@@ -281,9 +335,11 @@ pub use native::{FrameWorkerError, NoopFrameConsumer, PreparedFrameConsumer, Win
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use crate::CaptureSessionStatus;
 
-    use super::{FrameWorkerStatus, WorkerAction, next_action};
+    use super::{FrameProcessingGate, FrameWorkerStatus, WorkerAction, next_action};
 
     #[test]
     fn queued_frame_is_processed_only_while_capture_is_running() {
@@ -295,6 +351,53 @@ mod tests {
             next_action(false, CaptureSessionStatus::Running, false),
             WorkerAction::Wait
         );
+    }
+
+    #[test]
+    fn sixty_hz_capture_admits_at_most_four_expensive_frames_per_second() {
+        let mut gate = FrameProcessingGate::default();
+        let admitted = (0..60)
+            .filter(|frame| gate.admit(Duration::from_millis(frame * 1_000 / 60)))
+            .count();
+
+        assert!(admitted <= 4, "admitted {admitted} expensive frames");
+    }
+
+    #[test]
+    fn unchanged_capture_settles_to_one_expensive_frame_per_second() {
+        let mut gate = FrameProcessingGate::default();
+        let mut settled_frames = 0;
+
+        for frame in 0..240 {
+            let now = Duration::from_millis(frame * 1_000 / 60);
+            if gate.admit(now) {
+                gate.observe(now, 7);
+                if now >= Duration::from_secs(3) {
+                    settled_frames += 1;
+                }
+            }
+        }
+
+        assert_eq!(settled_frames, 1);
+    }
+
+    #[test]
+    fn changed_capture_temporarily_returns_to_four_fps() {
+        let mut gate = FrameProcessingGate::default();
+        let mut frames_after_change = 0;
+
+        for frame in 0..300 {
+            let now = Duration::from_millis(frame * 1_000 / 60);
+            if gate.admit(now) {
+                let fingerprint = if now < Duration::from_secs(4) { 7 } else { 8 };
+                gate.observe(now, fingerprint);
+                if now >= Duration::from_secs(4) {
+                    frames_after_change += 1;
+                }
+            }
+        }
+
+        assert_eq!(frames_after_change, 4);
     }
 
     #[test]

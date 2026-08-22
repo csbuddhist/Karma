@@ -119,6 +119,17 @@ impl BgraFrame {
     pub fn pixels(&self) -> &[u8] {
         &self.pixels
     }
+
+    pub(crate) fn into_parts(mut self) -> (MonitorId, i64, FrameDimensions, usize, Vec<u8>) {
+        let pixels = std::mem::take(&mut *self.pixels);
+        (
+            self.monitor_id,
+            self.captured_at_ms,
+            self.dimensions,
+            self.stride,
+            pixels,
+        )
+    }
 }
 
 impl fmt::Debug for BgraFrame {
