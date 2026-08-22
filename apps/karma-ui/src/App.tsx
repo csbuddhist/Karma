@@ -61,6 +61,7 @@ import type {
   KeywordRule,
   PageKey,
   ScheduleRule,
+  WebsiteRule,
 } from "./types";
 
 type I18nContextValue = {
@@ -108,6 +109,7 @@ const navItems: Array<{
   { key: "monitors", label: "nav.monitors", icon: Monitor },
   { key: "recognition", label: "nav.recognition", icon: Gauge },
   { key: "keywords", label: "nav.keywords", icon: Search },
+  { key: "websites", label: "nav.websites", icon: Globe2 },
   { key: "applications", label: "nav.applications", icon: AppWindow },
   { key: "schedule", label: "nav.schedule", icon: CalendarClock },
   { key: "evidence", label: "nav.evidence", icon: Image },
@@ -120,6 +122,7 @@ const pageMeta: Record<PageKey, { title: MessageKey; subtitle: MessageKey }> = {
   monitors: { title: "page.monitors.title", subtitle: "page.monitors.subtitle" },
   recognition: { title: "page.recognition.title", subtitle: "page.recognition.subtitle" },
   keywords: { title: "page.keywords.title", subtitle: "page.keywords.subtitle" },
+  websites: { title: "page.websites.title", subtitle: "page.websites.subtitle" },
   applications: { title: "page.applications.title", subtitle: "page.applications.subtitle" },
   schedule: { title: "page.schedule.title", subtitle: "page.schedule.subtitle" },
   evidence: { title: "page.evidence.title", subtitle: "page.evidence.subtitle" },
@@ -337,6 +340,7 @@ function Recognition({ state, update }: { state: ConsoleState; update: (state: C
   return <div className="settings-grid">
     <Card><div className="setting-row"><div className="setting-icon violet"><Image /></div><div><strong>{t("recognition.imageTitle")}</strong><p>{t("recognition.imageDescription")}</p></div><Toggle checked={settings.imageEnabled} onChange={(value) => patch({ imageEnabled: value })} label={t("recognition.imageToggle")} /></div></Card>
     <Card><div className="setting-row"><div className="setting-icon blue"><Search /></div><div><strong>{t("recognition.ocrTitle")}</strong><p>{t("recognition.ocrDescription")}</p></div><Toggle checked={settings.ocrEnabled} onChange={(value) => patch({ ocrEnabled: value })} label={t("recognition.ocrToggle")} /></div></Card>
+    <Card className="full-span"><div className="setting-row"><div className="setting-icon green"><AppWindow /></div><div><strong>{t("recognition.titleTitle")}</strong><p>{t("recognition.titleDescription")}</p></div><Toggle checked={settings.titleMatchingEnabled} onChange={(value) => patch({ titleMatchingEnabled: value })} label={t("recognition.titleToggle")} /></div></Card>
     <Card className="full-span"><div className="card-heading"><div><h2>{t("recognition.sensitivity")}</h2><p>{t("recognition.sensitivityDescription")}</p></div><span className="value-badge">{settings.sensitivity}%</span></div><input className="range" type="range" min="60" max="95" value={settings.sensitivity} onChange={(event) => { const value = Number(event.target.value); patch({ sensitivity: value, immediateThreshold: value }); }} /><div className="range-labels"><span>{t("recognition.moreResponsive")}</span><span>{t("recognition.balanced")}</span><span>{t("recognition.fewerFalsePositives")}</span></div></Card>
     <Card className="full-span evidence-setting"><div className="setting-row"><div className="setting-icon amber"><Archive /></div><div><strong>{t("recognition.evidenceTitle")}</strong><p>{t("recognition.evidenceDescription")}</p></div><Toggle checked={settings.evidenceEnabled} onChange={(value) => patch({ evidenceEnabled: value })} label={t("recognition.evidenceToggle")} /></div>{settings.evidenceEnabled && <div className="inline-setting"><label>{t("recognition.retention")}</label><select value={settings.evidenceRetentionDays} onChange={(event) => patch({ evidenceRetentionDays: Number(event.target.value) })}>{[1, 3, 7, 14, 30].map((days) => <option value={days} key={days}>{t(days === 1 ? "overview.day" : "overview.days", { count: days })}</option>)}</select><span>{t("recognition.retentionDescription")}</span></div>}</Card>
   </div>;
@@ -349,6 +353,32 @@ function Keywords({ state, update }: { state: ConsoleState; update: (state: Cons
   function add() { if (!phrase.trim()) return; update({ ...state, keywords: [...state.keywords, { id: crypto.randomUUID(), phrase: phrase.trim(), category, enabled: true }] }); setPhrase(""); }
   const categoryLabel = (value: KeywordRule["category"]) => t(value === "high_risk" ? "keywords.highRisk" : value === "sensitive" ? "keywords.sensitive" : "keywords.exemptionShort");
   return <Card><div className="toolbar"><div className="input-with-icon"><Search size={17} /><input placeholder={t("keywords.placeholder")} value={phrase} onChange={(event) => setPhrase(event.target.value)} onKeyDown={(event) => event.key === "Enter" && add()} /></div><select value={category} onChange={(event) => setCategory(event.target.value as KeywordRule["category"])}><option value="high_risk">{t("keywords.highRisk")}</option><option value="sensitive">{t("keywords.sensitive")}</option><option value="exemption">{t("keywords.exemption")}</option></select><button className="primary-button" onClick={add}><Plus size={17} />{t("keywords.add")}</button></div>{state.keywords.length ? <div className="table"><div className="table-head"><span>{t("keywords.keyword")}</span><span>{t("keywords.category")}</span><span>{t("keywords.status")}</span><span /></div>{state.keywords.map((rule) => <div className="table-row" key={rule.id}><strong>{rule.phrase}</strong><span><span className={`tag ${rule.category}`}>{categoryLabel(rule.category)}</span></span><span><Toggle checked={rule.enabled} onChange={(enabled) => update({ ...state, keywords: state.keywords.map((item) => item.id === rule.id ? { ...item, enabled } : item) })} label={t("keywords.enable", { name: rule.phrase })} /></span><button className="icon-button danger" aria-label={t("keywords.delete", { name: rule.phrase })} onClick={() => update({ ...state, keywords: state.keywords.filter((item) => item.id !== rule.id) })}><Trash2 size={17} /></button></div>)}</div> : <EmptyState icon={<Search />} title={t("keywords.emptyTitle")} text={t("keywords.emptyDescription")} />}</Card>;
+}
+
+function normalizeWebsitePattern(value: string): string | null {
+  try {
+    const url = new URL(/^https?:\/\//i.test(value) ? value : `https://${value}`);
+    if (!/^https?:$/.test(url.protocol) || url.username || url.password || url.port || url.search || url.hash || url.hostname.endsWith(".") || (url.pathname !== "/" && url.pathname !== "")) return null;
+    return url.hostname;
+  } catch {
+    return null;
+  }
+}
+
+function Websites({ state, update }: { state: ConsoleState; update: (state: ConsoleState) => void }) {
+  const { t } = useI18n();
+  const [pattern, setPattern] = useState("");
+  const [action, setAction] = useState<WebsiteRule["action"]>("allow");
+  const [error, setError] = useState("");
+  function add() {
+    const normalized = normalizeWebsitePattern(pattern.trim());
+    if (!normalized) return setError(t("websites.invalid"));
+    if (state.websites.some((rule) => rule.pattern === normalized && rule.action === action)) return setError(t("websites.duplicate"));
+    update({ ...state, websites: [...state.websites, { id: crypto.randomUUID(), pattern: normalized, action, enabled: true }] });
+    setPattern("");
+    setError("");
+  }
+  return <div className="page-stack"><div className="privacy-banner"><Globe2 size={18} /><span><strong>{t("websites.priorityTitle")}</strong> {t("websites.priorityDescription")}</span></div><Card><div className="toolbar"><div className="input-with-icon"><Globe2 size={17} /><input placeholder={t("websites.placeholder")} value={pattern} onChange={(event) => { setPattern(event.target.value); setError(""); }} onKeyDown={(event) => event.key === "Enter" && add()} /></div><select value={action} onChange={(event) => { setAction(event.target.value as WebsiteRule["action"]); setError(""); }}><option value="allow">{t("websites.allow")}</option><option value="block">{t("websites.block")}</option></select><button className="primary-button" onClick={add}><Plus size={17} />{t("websites.add")}</button></div>{error && <div className="form-error website-error"><CircleAlert size={16} />{error}</div>}{state.websites.length ? <div className="table"><div className="table-head"><span>{t("websites.domain")}</span><span>{t("websites.action")}</span><span>{t("websites.status")}</span><span /></div>{state.websites.map((rule) => <div className="table-row" key={rule.id}><strong>{rule.pattern}</strong><span><span className={`tag ${rule.action}`}>{t(rule.action === "allow" ? "websites.allow" : "websites.block")}</span></span><span><Toggle checked={rule.enabled} onChange={(enabled) => update({ ...state, websites: state.websites.map((item) => item.id === rule.id ? { ...item, enabled } : item) })} label={t("websites.enable", { name: rule.pattern })} /></span><button className="icon-button danger" aria-label={t("websites.delete", { name: rule.pattern })} onClick={() => update({ ...state, websites: state.websites.filter((item) => item.id !== rule.id) })}><Trash2 size={17} /></button></div>)}</div> : <EmptyState icon={<Globe2 />} title={t("websites.emptyTitle")} text={t("websites.emptyDescription")} />}</Card></div>;
 }
 
 function localizedApplicationName(rule: ApplicationRule, t: Translate): string {
@@ -444,6 +474,7 @@ function AppContent() {
     if (page === "monitors") return <Monitors state={state} />;
     if (page === "recognition") return <Recognition state={state} update={update} />;
     if (page === "keywords") return <Keywords state={state} update={update} />;
+    if (page === "websites") return <Websites state={state} update={update} />;
     if (page === "applications") return <Applications state={state} update={update} />;
     if (page === "schedule") return <Schedule state={state} update={update} />;
     if (page === "evidence") return <Evidence state={state} sessionToken={sessionToken} />;

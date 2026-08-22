@@ -205,6 +205,9 @@ select, .field input, .toolbar input { height: 39px; padding: 0 11px; color: var
 .tag.high_risk { color: var(--danger); background: var(--danger-soft); }
 .tag.sensitive { color: var(--amber); background: var(--amber-soft); }
 .tag.exemption { color: var(--green); background: var(--green-soft); }
+.tag.allow { color: var(--green); background: var(--green-soft); }
+.tag.block { color: var(--danger); background: var(--danger-soft); }
+.website-error { margin: -9px 0 16px; }
 .icon-button { width: 34px; height: 34px; display: grid; place-items: center; padding: 0; color: #757b72; background: transparent; border: 0; border-radius: 8px; cursor: pointer; }
 .icon-button:hover { background: #f1f1ed; }
 .icon-button.danger:hover { color: var(--danger); background: var(--danger-soft); }

@@ -108,6 +108,10 @@ The unified engine supports:
 - Browser, media player, game, and custom application categories.
 - Rules based on application path, bundle ID, publisher signature, and file hash.
 - Blocklists, allowlists, and a default policy.
+- Browser-domain allowlists and blocklists. An allowlisted domain always wins; a blocklisted
+  domain closes immediately without waiting for an image-risk threshold.
+- Foreground-window title matching with a versioned high-precision English, Chinese, Japanese,
+  and Russian explicit-content list.
 - Temporary allowances, remaining usage time, and cooldown periods.
 - Corrections for screen locking, sleep, time-zone changes, and daylight saving time.
 - Policy priority and conflict explanations.
@@ -118,6 +122,10 @@ Recommended priority:
 Device-enforced policy > Emergency-disable policy > Schedule block > App blocklist
                        > Temporary allowance > App allowlist > Allow by default
 ```
+
+For browser content enforcement, the more specific precedence is `website allowlist > website
+blocklist > title keyword > image threshold`. Domain rules include subdomains but not sibling
+domains.
 
 Policy evaluation returns a structured result rather than directly performing system operations:
 
@@ -170,7 +178,7 @@ By default, only the following are recorded:
 - Model version, risk level, and normalized score.
 - Policy ID, reason code, and component health status.
 
-By default, screen captures, window contents, full URLs, user input, and dynamically generated site certificates are not recorded.
+By default, screen captures, window contents, full URLs, user input, and dynamically generated site certificates are not recorded. The Windows Agent processes the active window title and browser address transiently in memory, sends only the canonical host plus a bounded title to the local Service for independent policy validation, and never persists either value in audit or evidence records.
 
 ## Screen Capture
 
@@ -183,7 +191,12 @@ By default, screen captures, window contents, full URLs, user input, and dynamic
 - If WGC is unavailable, fall back to DXGI Desktop Duplication, but record the fallback event.
 - Capture is not guaranteed on the lock screen, the UAC secure desktop, or DRM-protected content.
 
-The current repository implements Windows frame input, image-inference and OCR-inference slicing, as well as the Windows Service, authenticated IPC, policy persistence, Agent watchdog, health heartbeat, identity-bound enforcement executor, and a DPAPI + AES-GCM evidence store. When “Save event evidence” is enabled, only image-inference frames that reach the immediate-enforcement threshold are encoded by the Agent and submitted to the Service for encrypted storage; the Service revalidates both policy and threshold. The Agent loads image and OCR models from a verified local manifest and does not emit rules, recognized text, scores, or screen content at runtime. Continuous-frame risk fusion and source-window observation are not yet connected, so the current classifier does not automatically close the source application.
+The current repository implements Windows frame input, image-inference and OCR-inference slicing, foreground-window title observation, browser address-bar host discovery, as well as the Windows Service, authenticated IPC, policy persistence, Agent watchdog, health heartbeat, identity-bound enforcement executor, and a DPAPI + AES-GCM evidence store. The Agent polls the active window in a dedicated apartment, evaluates context locally, and sends a bounded matching observation to the Service; the Service independently reapplies allowlist, blocklist, and multilingual title policy before authorizing a process-identity-bound close. Image observations also carry only the canonical browser host so an allowlisted site cannot be closed by a high image score. When “Save event evidence” is enabled, only image-inference frames that reach the immediate-enforcement threshold are encoded by the Agent and submitted to the Service for encrypted storage; the Service revalidates both policy and threshold. The Agent loads image and OCR models from a verified local manifest and does not emit recognized text, scores, titles, URLs, or screen content to logs. Continuous-frame risk fusion is still not connected.
+
+Browser host discovery currently supports Chrome, Edge, Firefox, Brave, Opera/Opera GX,
+Vivaldi, and Arc on Windows through UI Automation. Rules are domain-level (including subdomains),
+not path-level. If a browser hides or does not expose its address bar to accessibility, Karma cannot
+identify an allowlisted or blocklisted host for that window; title and image rules continue to work.
 
 The management UI is located at [`apps/karma-ui/`](apps/karma-ui/). Windows builds connect to `KarmaService` through a native named pipe that supports concurrent clients. Administrator passwords, sessions, live Agent/display status, policy revisions, and evidence viewing are all controlled by the Service. If the connection fails, the GUI shows an explicit Service connection error instead of presenting an unknown authentication state as a password-unlock screen. Non-Windows development builds continue to use an isolated local backend.
 

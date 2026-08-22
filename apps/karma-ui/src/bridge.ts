@@ -12,12 +12,14 @@ export const defaultConsoleState: ConsoleState = {
   recognition: {
     imageEnabled: true,
     ocrEnabled: true,
+    titleMatchingEnabled: true,
     sensitivity: 82,
     immediateThreshold: 82,
     evidenceEnabled: false,
     evidenceRetentionDays: 7,
   },
   keywords: [],
+  websites: [],
   applications: [
     { id: "browser", name: "浏览器", executable: "受支持浏览器", category: "browser", action: "content_only", enabled: true },
     { id: "player", name: "播放器", executable: "受支持播放器", category: "player", action: "content_only", enabled: true },
@@ -59,9 +61,21 @@ export async function lock(sessionToken: string): Promise<void> {
 }
 
 export async function loadConsole(sessionToken: string): Promise<ConsoleState> {
-  if (isTauri()) return invoke("load_console", { sessionToken });
+  if (isTauri()) return hydrateConsoleState(await invoke("load_console", { sessionToken }));
   const stored = localStorage.getItem(browserFallbackKey);
-  return stored ? JSON.parse(stored) : defaultConsoleState;
+  return stored ? hydrateConsoleState(JSON.parse(stored)) : defaultConsoleState;
+}
+
+function hydrateConsoleState(value: Partial<ConsoleState>): ConsoleState {
+  return {
+    ...defaultConsoleState,
+    ...value,
+    recognition: {
+      ...defaultConsoleState.recognition,
+      ...(value.recognition ?? {}),
+    },
+    websites: value.websites ?? [],
+  };
 }
 
 export async function saveConsole(sessionToken: string, state: ConsoleState): Promise<void> {

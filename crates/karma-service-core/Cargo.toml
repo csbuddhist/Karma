@@ -10,6 +10,7 @@ argon2 = { version = "0.5", features = ["std"] }
 base64 = "0.22"
 karma-evidence = { path = "../karma-evidence" }
 karma-ipc = { path = "../karma-ipc" }
+karma-policy = { path = "../karma-policy" }
 rand = "0.8"
 serde.workspace = true
 serde_json.workspace = true

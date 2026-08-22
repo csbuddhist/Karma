@@ -1818,6 +1818,7 @@ dependencies = [
  "karma-domain",
  "karma-ipc",
  "karma-onnx",
+ "karma-policy",
  "karma-windows",
  "karma-windows-ipc",
  "rand 0.8.7",
@@ -1905,6 +1906,8 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.19",
+ "unicode-normalization",
+ "url",
 ]
 
 [[package]]
@@ -1915,6 +1918,7 @@ dependencies = [
  "base64 0.22.1",
  "karma-evidence",
  "karma-ipc",
+ "karma-policy",
  "rand 0.8.7",
  "serde",
  "serde_json",
@@ -1963,6 +1967,7 @@ dependencies = [
  "karma-ai",
  "karma-domain",
  "thiserror 2.0.19",
+ "url",
  "windows 0.62.2",
 ]
 

@@ -4,6 +4,7 @@ export type PageKey =
   | "monitors"
   | "recognition"
   | "keywords"
+  | "websites"
   | "applications"
   | "schedule"
   | "evidence"
@@ -22,6 +23,7 @@ export interface MonitorStatus {
 export interface RecognitionSettings {
   imageEnabled: boolean;
   ocrEnabled: boolean;
+  titleMatchingEnabled: boolean;
   sensitivity: number;
   immediateThreshold: number;
   evidenceEnabled: boolean;
@@ -41,6 +43,13 @@ export interface ApplicationRule {
   executable: string;
   category: "browser" | "player" | "game" | "custom";
   action: "allow" | "block" | "content_only";
+  enabled: boolean;
+}
+
+export interface WebsiteRule {
+  id: string;
+  pattern: string;
+  action: "allow" | "block";
   enabled: boolean;
 }
 
@@ -80,6 +89,7 @@ export interface ConsoleState {
   monitors: MonitorStatus[];
   recognition: RecognitionSettings;
   keywords: KeywordRule[];
+  websites: WebsiteRule[];
   applications: ApplicationRule[];
   schedules: ScheduleRule[];
   evidence: EvidenceItem[];

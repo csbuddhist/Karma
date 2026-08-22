@@ -17,7 +17,20 @@ use windows::{
             Graphics::Capture::IGraphicsCaptureItemInterop, RO_INIT_MULTITHREADED, RoInitialize,
             RoUninitialize,
         },
-        UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId},
+        System::{
+            Com::{CLSCTX_INPROC_SERVER, CoCreateInstance},
+            Variant::VARIANT,
+        },
+        UI::{
+            Accessibility::{
+                CUIAutomation, IUIAutomation, IUIAutomationValuePattern, TreeScope_Descendants,
+                UIA_ControlTypePropertyId, UIA_EditControlTypeId, UIA_ValuePatternId,
+            },
+            WindowsAndMessaging::{
+                GetForegroundWindow, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
+                GetWindowThreadProcessId,
+            },
+        },
     },
     core::{self, PWSTR},
 };
@@ -51,6 +64,8 @@ pub struct ProcessSnapshot {
 
 const WINDOWS_TO_UNIX_EPOCH_MS: u64 = 11_644_473_600_000;
 const MAX_PROCESS_PATH_U16: usize = 32_768;
+const MAX_WINDOW_TITLE_U16: usize = 512;
+const MAX_UIA_EDIT_CONTROLS: i32 = 128;
 
 #[derive(Debug, Error)]
 pub enum WindowsAdapterError {
@@ -192,6 +207,125 @@ pub fn foreground_window() -> Result<Option<ForegroundWindowSnapshot>, WindowsAd
         pid,
         bounds: rect_from_native(bounds),
     }))
+}
+
+pub fn window_title(handle: isize) -> String {
+    let handle = windows::Win32::Foundation::HWND(handle as *mut c_void);
+    let length = unsafe { GetWindowTextLengthW(handle) }
+        .max(0)
+        .min(MAX_WINDOW_TITLE_U16.saturating_sub(1) as i32) as usize;
+    if length == 0 {
+        return String::new();
+    }
+    let mut buffer = vec![0_u16; length.saturating_add(1)];
+    let copied = unsafe { GetWindowTextW(handle, &mut buffer) }.max(0) as usize;
+    buffer.truncate(copied.min(length));
+    String::from_utf16_lossy(&buffer)
+}
+
+pub fn browser_host(handle: isize) -> Option<String> {
+    let automation: IUIAutomation = unsafe {
+        CoCreateInstance(
+            &CUIAutomation,
+            None::<&windows::core::IUnknown>,
+            CLSCTX_INPROC_SERVER,
+        )
+    }
+    .ok()?;
+    let root = unsafe {
+        automation.ElementFromHandle(windows::Win32::Foundation::HWND(handle as *mut c_void))
+    }
+    .ok()?;
+    let control_type = VARIANT::from(UIA_EditControlTypeId.0);
+    let condition =
+        unsafe { automation.CreatePropertyCondition(UIA_ControlTypePropertyId, &control_type) }
+            .ok()?;
+    let elements = unsafe { root.FindAll(TreeScope_Descendants, &condition) }.ok()?;
+    let count = unsafe { elements.Length() }
+        .ok()?
+        .clamp(0, MAX_UIA_EDIT_CONTROLS);
+    let mut best: Option<(u8, String)> = None;
+    for index in 0..count {
+        let Some(element) = (unsafe { elements.GetElement(index) }).ok() else {
+            continue;
+        };
+        if unsafe { element.CurrentIsPassword() }
+            .ok()
+            .is_some_and(|value| value.as_bool())
+        {
+            continue;
+        }
+        let Some(value) = (unsafe {
+            element.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
+        })
+        .ok()
+        .and_then(|pattern| unsafe { pattern.CurrentValue() }.ok())
+        .map(|value| value.to_string()) else {
+            continue;
+        };
+        let Some(host) = host_from_address_bar_value(&value) else {
+            continue;
+        };
+        let name = unsafe { element.CurrentName() }
+            .map(|value| value.to_string())
+            .unwrap_or_default();
+        let automation_id = unsafe { element.CurrentAutomationId() }
+            .map(|value| value.to_string())
+            .unwrap_or_default();
+        let score = address_bar_score(&name, &automation_id, &value);
+        if best
+            .as_ref()
+            .is_none_or(|(best_score, _)| score > *best_score)
+        {
+            best = Some((score, host));
+        }
+    }
+    best.and_then(|(score, host)| (score >= 4).then_some(host))
+}
+
+fn address_bar_score(name: &str, automation_id: &str, value: &str) -> u8 {
+    let name = name.to_lowercase();
+    let automation_id = automation_id.to_lowercase();
+    let mut score = u8::from(value.starts_with("http://") || value.starts_with("https://"));
+    if [
+        "address",
+        "地址",
+        "アドレス",
+        "адрес",
+        "网址",
+        "網址",
+        "omnibox",
+        "url",
+    ]
+    .iter()
+    .any(|hint| name.contains(hint))
+    {
+        score = score.saturating_add(4);
+    }
+    if ["address", "location", "omnibox", "url"]
+        .iter()
+        .any(|hint| automation_id.contains(hint))
+    {
+        score = score.saturating_add(5);
+    }
+    score
+}
+
+fn host_from_address_bar_value(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() || value.chars().any(char::is_whitespace) {
+        return None;
+    }
+    let url = url::Url::parse(value)
+        .or_else(|_| url::Url::parse(&format!("https://{value}")))
+        .ok()?;
+    if !matches!(url.scheme(), "http" | "https")
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return None;
+    }
+    url.host_str().map(str::to_owned)
 }
 
 pub fn inspect_process(process_id: u32) -> Result<Option<ProcessSnapshot>, WindowsAdapterError> {

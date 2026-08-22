@@ -8,7 +8,9 @@ license.workspace = true
 [dependencies]
 karma-domain = { path = "../karma-domain" }
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
+unicode-normalization = "0.1"
+url = "=2.5.4"
 
 [dev-dependencies]
-serde_json.workspace = true

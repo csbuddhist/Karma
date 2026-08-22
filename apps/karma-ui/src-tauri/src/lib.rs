@@ -175,12 +175,14 @@ mod local_backend {
             "recognition": {
                 "imageEnabled": true,
                 "ocrEnabled": true,
+                "titleMatchingEnabled": true,
                 "sensitivity": 82,
                 "immediateThreshold": 82,
                 "evidenceEnabled": false,
                 "evidenceRetentionDays": 7
             },
             "keywords": [],
+            "websites": [],
             "applications": [
                 {
                     "id": "browser",
@@ -573,12 +575,14 @@ mod service_backend {
             "recognition": {
                 "imageEnabled": true,
                 "ocrEnabled": true,
+                "titleMatchingEnabled": true,
                 "sensitivity": 82,
                 "immediateThreshold": 82,
                 "evidenceEnabled": false,
                 "evidenceRetentionDays": 7
             },
             "keywords": [],
+            "websites": [],
             "applications": [
                 {"id":"browser","name":"浏览器","executable":"受支持浏览器","category":"browser","action":"content_only","enabled":true},
                 {"id":"player","name":"播放器","executable":"受支持播放器","category":"player","action":"content_only","enabled":true}

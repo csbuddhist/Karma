@@ -19,6 +19,7 @@ use karma_ipc::{
     BootstrapStatus, EvidenceMetadata, RequestEnvelope, ResponseEnvelope, ServiceErrorCode,
     ServiceFailure, ServiceRequest, ServiceResult, ServiceStatus,
 };
+use karma_policy::{ContextPolicy, ContextVerdict};
 use rand::{RngCore, rngs::OsRng};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -270,6 +271,7 @@ impl ServiceCore {
                 if expected_revision != runtime.stored.policy_revision {
                     return Err(ServiceErrorCode::RevisionConflict);
                 }
+                ContextPolicy::from_value(&policy).map_err(|_| ServiceErrorCode::InvalidRequest)?;
                 runtime.stored.policy_revision = runtime.stored.policy_revision.saturating_add(1);
                 runtime.stored.policy = policy;
                 audit(runtime, now_ms, "policy_updated", "success");
@@ -319,6 +321,11 @@ impl ServiceCore {
                 let Some(target) = observation.source else {
                     return Ok(ServiceResult::Acknowledged);
                 };
+                let context_policy = ContextPolicy::from_value(&runtime.stored.policy)
+                    .map_err(|_| ServiceErrorCode::Internal)?;
+                if context_policy.allows_host(observation.browser_host.as_deref()) {
+                    return Ok(ServiceResult::Acknowledged);
+                }
                 if !protection_enabled || !image_enabled || observation.risk_millis < threshold {
                     return Ok(ServiceResult::Acknowledged);
                 }
@@ -328,6 +335,45 @@ impl ServiceCore {
                 Ok(ServiceResult::DispositionRequired {
                     event_id: observation.event_id,
                     target,
+                    grace_period_ms: DISPOSITION_GRACE_MS,
+                })
+            }
+            ServiceRequest::AgentContextObservation {
+                agent_token,
+                observation,
+            } => {
+                self.authorize_agent(&agent_token)?;
+                if now_ms.saturating_sub(observation.occurred_at_ms) > MAX_OBSERVATION_AGE_MS
+                    || observation.occurred_at_ms > now_ms.saturating_add(1000)
+                {
+                    return Ok(ServiceResult::Acknowledged);
+                }
+                let protection_enabled = runtime
+                    .stored
+                    .policy
+                    .get("protectionEnabled")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true);
+                if !protection_enabled {
+                    return Ok(ServiceResult::Acknowledged);
+                }
+                let context_policy = ContextPolicy::from_value(&runtime.stored.policy)
+                    .map_err(|_| ServiceErrorCode::Internal)?;
+                if !matches!(
+                    context_policy.evaluate(
+                        observation.browser_host.as_deref(),
+                        &observation.window_title,
+                    ),
+                    ContextVerdict::Blocklisted | ContextVerdict::TitleKeyword
+                ) {
+                    return Ok(ServiceResult::Acknowledged);
+                }
+                runtime
+                    .pending_dispositions
+                    .insert(observation.event_id.clone(), observation.source.clone());
+                Ok(ServiceResult::DispositionRequired {
+                    event_id: observation.event_id,
+                    target: observation.source,
                     grace_period_ms: DISPOSITION_GRACE_MS,
                 })
             }
@@ -659,8 +705,8 @@ fn failure(request_id: String, code: ServiceErrorCode) -> ResponseEnvelope {
 mod tests {
     use super::*;
     use karma_ipc::{
-        AgentHeartbeat, AgentObservation, ClientKind, DispositionOutcome, DispositionReport,
-        EvidenceSubmission, ProcessIdentity, ServiceRequest,
+        AgentContextObservation, AgentHeartbeat, AgentObservation, ClientKind, DispositionOutcome,
+        DispositionReport, EvidenceSubmission, ProcessIdentity, ServiceRequest,
     };
 
     #[test]
@@ -694,6 +740,156 @@ mod tests {
             started_at_ms,
         )
         .unwrap()
+    }
+
+    fn configure_policy(core: &ServiceCore, policy: Value) {
+        let session = match success(core.handle(
+            request(
+                "enroll-policy",
+                "enroll-policy-nonce",
+                ServiceRequest::EnrollAdministrator {
+                    password: "long-test-password".into(),
+                },
+            ),
+            1,
+        )) {
+            ServiceResult::Session { session_token, .. } => session_token,
+            _ => panic!("unexpected response"),
+        };
+        success(core.handle(
+            request(
+                "put-policy",
+                "put-policy-nonce",
+                ServiceRequest::PutPolicy {
+                    session_token: session,
+                    expected_revision: 0,
+                    policy,
+                },
+            ),
+            2,
+        ));
+    }
+
+    fn context_observation(
+        event_id: &str,
+        title: &str,
+        browser_host: Option<&str>,
+    ) -> AgentContextObservation {
+        AgentContextObservation {
+            event_id: event_id.into(),
+            agent_instance_id: "agent-1".into(),
+            occurred_at_ms: 100,
+            source: ProcessIdentity {
+                process_id: 42,
+                started_at_ms: 77,
+                executable_name: r"C:\Browser\chrome.exe".into(),
+                executable_sha256: None,
+            },
+            window_title: title.into(),
+            browser_host: browser_host.map(str::to_owned),
+        }
+    }
+
+    fn submit_context(
+        core: &ServiceCore,
+        nonce: &str,
+        observation: AgentContextObservation,
+    ) -> ServiceResult {
+        success(core.handle(
+            RequestEnvelope::new(
+                format!("request-{nonce}"),
+                nonce,
+                ClientKind::Agent,
+                ServiceRequest::AgentContextObservation {
+                    agent_token: "agent-secret".into(),
+                    observation,
+                },
+            ),
+            101,
+        ))
+    }
+
+    #[test]
+    fn website_allowlist_precedes_blocklist_title_and_image_enforcement() {
+        let directory = tempfile::tempdir().unwrap();
+        let core = open_core(directory.path(), 0);
+        configure_policy(
+            &core,
+            json!({
+                "protectionEnabled": true,
+                "recognition": {"imageEnabled": true, "sensitivity": 60},
+                "websites": [
+                    {"id":"block-parent","pattern":"example.com","action":"block","enabled":true},
+                    {"id":"allow-child","pattern":"safe.example.com","action":"allow","enabled":true}
+                ]
+            }),
+        );
+        assert!(matches!(
+            submit_context(
+                &core,
+                "allow-context",
+                context_observation("allow-context", "Porn videos", Some("safe.example.com")),
+            ),
+            ServiceResult::Acknowledged
+        ));
+        let image = AgentObservation {
+            event_id: "allow-image".into(),
+            agent_instance_id: "agent-1".into(),
+            occurred_at_ms: 100,
+            monitor_id: "monitor-1".into(),
+            risk_millis: 1000,
+            reason_code: "image_immediate".into(),
+            source: Some(context_observation("ignored", "ordinary", None).source),
+            browser_host: Some("safe.example.com".into()),
+            evidence_pending: false,
+        };
+        assert!(matches!(
+            success(core.handle(
+                RequestEnvelope::new(
+                    "allow-image-request",
+                    "allow-image-nonce",
+                    ClientKind::Agent,
+                    ServiceRequest::AgentObservation {
+                        agent_token: "agent-secret".into(),
+                        observation: image,
+                    },
+                ),
+                101,
+            )),
+            ServiceResult::Acknowledged
+        ));
+    }
+
+    #[test]
+    fn blocklisted_host_and_multilingual_title_authorize_immediate_disposition() {
+        let directory = tempfile::tempdir().unwrap();
+        let core = open_core(directory.path(), 0);
+        configure_policy(
+            &core,
+            json!({
+                "protectionEnabled": true,
+                "recognition": {"imageEnabled": false, "titleMatchingEnabled": true},
+                "websites": [
+                    {"id":"blocked","pattern":"blocked.example","action":"block","enabled":true}
+                ]
+            }),
+        );
+        assert!(matches!(
+            submit_context(
+                &core,
+                "blocked-host-nonce",
+                context_observation("blocked-host", "", Some("www.blocked.example")),
+            ),
+            ServiceResult::DispositionRequired { event_id, .. } if event_id == "blocked-host"
+        ));
+        assert!(matches!(
+            submit_context(
+                &core,
+                "title-nonce",
+                context_observation("title-match", "最新色情影片", None),
+            ),
+            ServiceResult::DispositionRequired { event_id, .. } if event_id == "title-match"
+        ));
     }
 
     #[test]
@@ -869,6 +1065,7 @@ mod tests {
             risk_millis: 960,
             reason_code: "image_immediate".into(),
             source: Some(source.clone()),
+            browser_host: None,
             evidence_pending: false,
         };
         let request = RequestEnvelope::new(
@@ -948,6 +1145,7 @@ mod tests {
                 executable_name: r"C:\Browser\browser.exe".into(),
                 executable_sha256: None,
             }),
+            browser_host: None,
             evidence_pending: false,
         };
         let response = success(core.handle(

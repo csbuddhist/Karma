@@ -1,6 +1,7 @@
 use std::{
     env,
     fmt::Write as _,
+    hash::{DefaultHasher, Hash, Hasher},
     mem::size_of,
     sync::{
         Arc, RwLock,
@@ -8,19 +9,22 @@ use std::{
         mpsc::{SyncSender, sync_channel},
     },
     thread,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use image::{ExtendedColorType, codecs::jpeg::JpegEncoder};
 use karma_ai::{ImageInference, OcrMatchSummary, PreparedFrame};
 use karma_ipc::{
-    AgentHeartbeat, AgentObservation, ClientKind, ComponentState, EvidenceSubmission,
-    MonitorHealth, ProcessIdentity, RequestEnvelope, ServiceRequest, ServiceResult,
+    AgentContextObservation, AgentHeartbeat, AgentObservation, ClientKind, ComponentState,
+    EvidenceSubmission, MonitorHealth, ProcessIdentity, RequestEnvelope, ServiceRequest,
+    ServiceResult,
 };
+use karma_policy::{ContextPolicy, ContextVerdict};
 use karma_windows::{
     AttributionResult, FrameWorkerReport, FrameWorkerStatus, MonitorSnapshot, Rect,
-    SourceAttributor, WindowCandidate, foreground_window, inspect_process,
+    SourceAttributor, WindowCandidate, WindowsRuntimeApartment, browser_host, foreground_window,
+    inspect_process, window_title,
 };
 use karma_windows_ipc::send_request;
 use rand::{RngCore, rngs::OsRng};
@@ -45,6 +49,8 @@ const AGENT_TOKEN_ENV: &str = "KARMA_AGENT_TOKEN";
 const IPC_TIMEOUT_MS: u32 = 1500;
 const EVIDENCE_COOLDOWN_MS: i64 = 5000;
 const DISPOSITION_COOLDOWN_MS: i64 = 5000;
+const CONTEXT_POLL_INTERVAL: Duration = Duration::from_millis(750);
+const CONTEXT_RETRY_COOLDOWN_MS: i64 = 5000;
 const JPEG_QUALITY: u8 = 80;
 
 #[derive(Debug, Error)]
@@ -138,6 +144,33 @@ impl RecognitionPolicyHandle {
     }
 }
 
+#[derive(Clone, Default)]
+pub struct ContextPolicyHandle(Arc<RwLock<ContextPolicy>>);
+
+impl ContextPolicyHandle {
+    pub fn update(&self, policy: &Value) {
+        if let Ok(policy) = ContextPolicy::from_value(policy) {
+            *self
+                .0
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = policy;
+        }
+    }
+
+    fn snapshot(&self) -> ContextPolicy {
+        self.0
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+}
+
+#[derive(Clone)]
+pub struct SourceContext {
+    identity: ProcessIdentity,
+    window_handle: isize,
+}
+
 pub struct AgentInferenceSink {
     agent_instance_id: Option<String>,
     observation_sender: Option<SyncSender<AgentObservation>>,
@@ -156,7 +189,7 @@ struct WindowsSourceIdentityProvider {
 }
 
 impl WindowsSourceIdentityProvider {
-    fn snapshot(&mut self) -> Option<ProcessIdentity> {
+    fn snapshot(&mut self) -> Option<SourceContext> {
         let foreground = foreground_window().ok().flatten()?;
         let candidate = WindowCandidate {
             handle: foreground.handle,
@@ -173,7 +206,11 @@ impl WindowsSourceIdentityProvider {
             .as_ref()
             .is_some_and(|process| process.process_id == attributed.pid)
         {
-            return self.cached_process.clone();
+            let identity = self.cached_process.clone()?;
+            return Some(SourceContext {
+                identity,
+                window_handle: foreground.handle,
+            });
         }
         let process = inspect_process(attributed.pid).ok().flatten()?;
         let identity = ProcessIdentity {
@@ -183,7 +220,10 @@ impl WindowsSourceIdentityProvider {
             executable_sha256: None,
         };
         self.cached_process = Some(identity.clone());
-        Some(identity)
+        Some(SourceContext {
+            identity,
+            window_handle: foreground.handle,
+        })
     }
 }
 
@@ -250,7 +290,7 @@ impl AgentInferenceSink {
 }
 
 impl OcrSummarySink for AgentInferenceSink {
-    type ImageContext = Option<ProcessIdentity>;
+    type ImageContext = Option<SourceContext>;
 
     fn consume(&mut self, _summary: OcrMatchSummary) {
         self.ocr_summaries = self.ocr_summaries.saturating_add(1);
@@ -291,7 +331,7 @@ impl OcrSummarySink for AgentInferenceSink {
                 monitor_name: self.monitor_name.clone(),
                 application_name: source.as_ref().map_or_else(
                     || "来源应用无法可靠归属".into(),
-                    |value| value.executable_name.clone(),
+                    |value| value.identity.executable_name.clone(),
                 ),
                 risk_millis: inference.score_millis,
                 width: dimensions.width(),
@@ -326,7 +366,10 @@ impl OcrSummarySink for AgentInferenceSink {
             monitor_id: frame.monitor_id().0.clone(),
             risk_millis: inference.score_millis,
             reason_code: "image_immediate".into(),
-            source: Some(source),
+            browser_host: is_supported_browser(&source.identity.executable_name)
+                .then(|| browser_host(source.window_handle))
+                .flatten(),
+            source: Some(source.identity),
             evidence_pending,
         };
         if sender.try_send(observation).is_ok() {
@@ -403,6 +446,19 @@ impl AgentServiceClient {
         }
     }
 
+    fn submit_context_observation(
+        &self,
+        observation: AgentContextObservation,
+    ) -> Result<(), AgentServiceError> {
+        match self.request(ServiceRequest::AgentContextObservation {
+            agent_token: self.token.to_string(),
+            observation,
+        })? {
+            ServiceResult::DispositionCompleted { .. } | ServiceResult::Acknowledged => Ok(()),
+            _ => Err(AgentServiceError::InvalidResponse),
+        }
+    }
+
     fn submit_evidence(&self, mut frame: EvidenceFrame) -> Result<(), AgentServiceError> {
         let pixel_count = usize::try_from(frame.width)
             .ok()
@@ -460,6 +516,106 @@ impl AgentServiceClient {
             _ => AgentServiceError::ServiceUnavailable,
         })
     }
+}
+
+pub fn start_context_monitor(
+    client: Arc<AgentServiceClient>,
+    policy: ContextPolicyHandle,
+) -> thread::JoinHandle<()> {
+    thread::Builder::new()
+        .name("karma-foreground-context".into())
+        .spawn(move || {
+            let Ok(_runtime) = WindowsRuntimeApartment::initialize_mta() else {
+                eprintln!("status=degraded component=foreground_context error=runtime_unavailable");
+                return;
+            };
+            let mut last_fingerprint = None;
+            let mut last_submitted_at_ms = i64::MIN;
+            loop {
+                thread::sleep(CONTEXT_POLL_INTERVAL);
+                let Some(observation) = foreground_context_observation(&client.instance_id) else {
+                    continue;
+                };
+                let verdict = policy.snapshot().evaluate(
+                    observation.browser_host.as_deref(),
+                    &observation.window_title,
+                );
+                if !matches!(
+                    verdict,
+                    ContextVerdict::Blocklisted | ContextVerdict::TitleKeyword
+                ) {
+                    continue;
+                }
+                let fingerprint = context_fingerprint(&observation);
+                if last_fingerprint == Some(fingerprint)
+                    && observation
+                        .occurred_at_ms
+                        .saturating_sub(last_submitted_at_ms)
+                        < CONTEXT_RETRY_COOLDOWN_MS
+                {
+                    continue;
+                }
+                if client.submit_context_observation(observation).is_ok() {
+                    last_fingerprint = Some(fingerprint);
+                    last_submitted_at_ms = unix_time_ms();
+                }
+            }
+        })
+        .expect("failed to start foreground context monitor")
+}
+
+fn foreground_context_observation(agent_instance_id: &str) -> Option<AgentContextObservation> {
+    let foreground = foreground_window().ok().flatten()?;
+    let title = window_title(foreground.handle);
+    let process = inspect_process(foreground.pid).ok().flatten()?;
+    let source = ProcessIdentity {
+        process_id: process.process_id,
+        started_at_ms: process.started_at_ms,
+        executable_name: process.executable_name,
+        executable_sha256: None,
+    };
+    let browser_host = is_supported_browser(&source.executable_name)
+        .then(|| browser_host(foreground.handle))
+        .flatten();
+    if title.is_empty() && browser_host.is_none() {
+        return None;
+    }
+    Some(AgentContextObservation {
+        event_id: format!("context-{}", random_opaque()),
+        agent_instance_id: agent_instance_id.into(),
+        occurred_at_ms: unix_time_ms(),
+        source,
+        window_title: title,
+        browser_host,
+    })
+}
+
+fn context_fingerprint(observation: &AgentContextObservation) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    observation.source.process_id.hash(&mut hasher);
+    observation.source.started_at_ms.hash(&mut hasher);
+    observation.window_title.hash(&mut hasher);
+    observation.browser_host.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn is_supported_browser(executable_name: &str) -> bool {
+    let file_name = executable_name
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(executable_name);
+    [
+        "chrome.exe",
+        "msedge.exe",
+        "firefox.exe",
+        "brave.exe",
+        "opera.exe",
+        "opera_gx.exe",
+        "vivaldi.exe",
+        "arc.exe",
+    ]
+    .iter()
+    .any(|browser| file_name.eq_ignore_ascii_case(browser))
 }
 
 pub fn monitor_health(

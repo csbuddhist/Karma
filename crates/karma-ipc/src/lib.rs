@@ -11,6 +11,8 @@ pub const MAX_REQUEST_ID_CHARS: usize = 64;
 pub const MAX_NONCE_CHARS: usize = 128;
 pub const MAX_SESSION_TOKEN_CHARS: usize = 128;
 pub const MAX_PASSWORD_CHARS: usize = 1024;
+pub const MAX_WINDOW_TITLE_CHARS: usize = 512;
+pub const MAX_BROWSER_HOST_CHARS: usize = 253;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -100,6 +102,10 @@ pub enum ServiceRequest {
         agent_token: String,
         observation: AgentObservation,
     },
+    AgentContextObservation {
+        agent_token: String,
+        observation: AgentContextObservation,
+    },
     SubmitEvidence {
         agent_token: String,
         evidence: EvidenceSubmission,
@@ -131,6 +137,7 @@ impl ServiceRequest {
             | Self::DeleteEvidence { .. } => client == ClientKind::Ui,
             Self::AgentHeartbeat { .. }
             | Self::AgentObservation { .. }
+            | Self::AgentContextObservation { .. }
             | Self::SubmitEvidence { .. }
             | Self::GetAgentPolicy { .. }
             | Self::ReportDisposition { .. } => client == ClientKind::Agent,
@@ -162,6 +169,7 @@ impl ServiceRequest {
             }
             Self::AgentHeartbeat { agent_token, .. }
             | Self::AgentObservation { agent_token, .. }
+            | Self::AgentContextObservation { agent_token, .. }
             | Self::SubmitEvidence { agent_token, .. }
             | Self::GetAgentPolicy { agent_token }
             | Self::ReportDisposition { agent_token, .. } => {
@@ -175,6 +183,7 @@ impl ServiceRequest {
             }
             Self::AgentHeartbeat { heartbeat, .. } => heartbeat.validate()?,
             Self::AgentObservation { observation, .. } => observation.validate()?,
+            Self::AgentContextObservation { observation, .. } => observation.validate()?,
             Self::SubmitEvidence { evidence, .. } => evidence.validate()?,
             Self::ReportDisposition { report, .. } => report.validate()?,
             _ => {}
@@ -257,6 +266,8 @@ pub struct AgentObservation {
     pub risk_millis: u16,
     pub reason_code: String,
     pub source: Option<ProcessIdentity>,
+    #[serde(default)]
+    pub browser_host: Option<String>,
     pub evidence_pending: bool,
 }
 
@@ -271,7 +282,37 @@ impl AgentObservation {
         if let Some(source) = &self.source {
             source.validate()?;
         }
+        validate_browser_host(self.browser_host.as_deref())?;
         Ok(())
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentContextObservation {
+    pub event_id: String,
+    pub agent_instance_id: String,
+    pub occurred_at_ms: i64,
+    pub source: ProcessIdentity,
+    pub window_title: String,
+    pub browser_host: Option<String>,
+}
+
+impl AgentContextObservation {
+    fn validate(&self) -> Result<(), ProtocolError> {
+        validate_identifier(&self.event_id)?;
+        validate_identifier(&self.agent_instance_id)?;
+        self.source.validate()?;
+        if (self.window_title.is_empty() && self.browser_host.is_none())
+            || self.window_title.chars().count() > MAX_WINDOW_TITLE_CHARS
+            || self
+                .window_title
+                .chars()
+                .any(|character| character.is_control() && !character.is_whitespace())
+        {
+            return Err(ProtocolError::InvalidField);
+        }
+        validate_browser_host(self.browser_host.as_deref())
     }
 }
 
@@ -553,6 +594,19 @@ fn validate_identifier(value: &str) -> Result<(), ProtocolError> {
     validate_opaque(value, 128)
 }
 
+fn validate_browser_host(value: Option<&str>) -> Result<(), ProtocolError> {
+    if value.is_some_and(|host| {
+        host.is_empty()
+            || host.chars().count() > MAX_BROWSER_HOST_CHARS
+            || host
+                .bytes()
+                .any(|byte| byte.is_ascii_whitespace() || matches!(byte, b'/' | b'\\' | b'@'))
+    }) {
+        return Err(ProtocolError::InvalidField);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -635,5 +689,41 @@ mod tests {
             ClientKind::Ui,
         );
         assert_eq!(large.validate(), Err(ProtocolError::FrameTooLarge));
+    }
+
+    #[test]
+    fn context_observation_accepts_host_only_but_rejects_empty_context() {
+        let observation = |browser_host| AgentContextObservation {
+            event_id: "event-1".into(),
+            agent_instance_id: "agent-1".into(),
+            occurred_at_ms: 1,
+            source: ProcessIdentity {
+                process_id: 42,
+                started_at_ms: 1,
+                executable_name: "chrome.exe".into(),
+                executable_sha256: None,
+            },
+            window_title: String::new(),
+            browser_host,
+        };
+        let request_for = |browser_host| {
+            request(
+                ServiceRequest::AgentContextObservation {
+                    agent_token: "agent-token".into(),
+                    observation: observation(browser_host),
+                },
+                ClientKind::Agent,
+            )
+        };
+
+        assert!(
+            request_for(Some("blocked.example".into()))
+                .validate()
+                .is_ok()
+        );
+        assert_eq!(
+            request_for(None).validate(),
+            Err(ProtocolError::InvalidField)
+        );
     }
 }
