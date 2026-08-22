@@ -8,11 +8,11 @@ The project follows a “single product, shared core, two native executors” ar
 
 > This software cannot promise absolute resistance to removal by anyone with local administrator or root access, access to the recovery environment, or physical control of the device. Strong enforcement mode must be combined with standard user accounts and device-management capabilities such as MDM and WDAC/AppLocker.
 
-## Cloneable Windows Test Bundle
+## Windows Test Installer
 
-`main` includes a **cloneable Windows test bundle** at [`release/windows-x64-test/`](release/windows-x64-test/). On Windows 10 22H2 or Windows 11 x64, install the Microsoft Visual C++ 2015–2022 x64 Redistributable, then run `./Install-Karma.ps1 -StartConsole` from that directory as an administrator. See the [Windows Installation and Testing Guide](docs/windows-installation-guide.md) for detailed instructions.
+New users can download the single-file `Karma-windows-x64-test-v0.1.1-setup.exe` from the [v0.1.1 Windows Test Build](https://github.com/DrWeiZhou/Karma/releases/tag/v0.1.1). On Windows 10 22H2 or Windows 11 x64, run it as an administrator to install the files, verify their hashes, register the Service, and create shortcuts. The Microsoft Visual C++ 2015–2022 x64 Redistributable is still required.
 
-This bundle is unsigned development/test software. It includes PowerShell-based Service installation and a password-protected uninstall flow, but it is not a production, signed installer. The connection from continuous-frame risk detection to source-application enforcement, usage schedules, and complete administrator-level tamper resistance is not yet finished.
+`main` also retains the auditable **cloneable Windows test bundle** at [`release/windows-x64-test/`](release/windows-x64-test/) for diagnostics and reproducible packaging. The installer remains unsigned development/test software, and uninstall still requires the Karma administrator password; it is not a signed production installer. See the [Windows Installation and Testing Guide](docs/windows-installation-guide.md) for details.
 
 ## Design Principles
 

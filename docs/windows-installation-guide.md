@@ -33,7 +33,7 @@
 - 根据 OCR 摘要或连续帧风险状态机触发来源进程处置；
 - 执行应用时段限制或网络过滤；
 - 同时管理多个已登录但非活动的 Windows 会话；
-- 提供正式签名的 MSI 或安装 EXE。
+- 提供正式签名的生产 MSI 或安装 EXE。当前只提供未签名的单文件测试安装器。
 
 ## 2. 系统要求
 
@@ -73,7 +73,27 @@
 - 防病毒软件可能对新生成、未签名的程序执行额外扫描；
 - 不要为了运行测试而永久关闭安全软件。
 
-## 3. 从仓库获取并启动测试包
+## 3. 安装 Windows 测试版
+
+### 3.1 单文件安装器（推荐）
+
+新用户从 [v0.1.1 Windows Test Build](https://github.com/DrWeiZhou/Karma/releases/tag/v0.1.1) 下载：
+
+```text
+Karma-windows-x64-test-v0.1.1-setup.exe
+```
+
+安装第 2.2 节所述 Microsoft Visual C++ Redistributable 后，右键安装器并选择“以管理员身份运行”。安装器会：
+
+- 把完整测试包安装到 `C:\Program Files\Karma`；
+- 在注册 Service 前验证全部二进制和模型哈希；
+- 注册并启动具有延迟自动启动和崩溃恢复配置的 `KarmaService`；
+- 创建桌面和开始菜单管理控制台快捷方式；
+- 在 Windows“已安装的应用”中注册卸载入口。卸载仍需输入 Karma 管理员密码。
+
+安装器和内部 EXE 当前均未签名，SmartScreen 可能显示“未知发布者”。不要因此永久关闭 Windows Defender。
+
+### 3.2 从仓库安装或诊断
 
 测试人员无需在 Windows 上构建 Rust、下载模型或设置环境变量。克隆仓库后，图形管理界面入口位于 [`release/windows-x64-test/Start-KarmaConsole.ps1`](../release/windows-x64-test/Start-KarmaConsole.ps1)，Agent 测试入口位于 [`release/windows-x64-test/Start-KarmaTest.ps1`](../release/windows-x64-test/Start-KarmaTest.ps1)：
 
@@ -495,6 +515,24 @@ cp target/x86_64-pc-windows-msvc/release/karma-agent-windows.exe \
 cp -L target/x86_64-pc-windows-msvc/release/DirectML.dll \
   target/windows-x64-runtime/
 ```
+
+### 11.1 生成单文件 Windows 安装器
+
+安装 NSIS 3 后，构建脚本会先验证测试包契约和 `SHA256SUMS`，再生成自解压安装器：
+
+```bash
+brew install nsis
+bash tools/package-windows-installer/test_installer_contract.sh
+bash tools/package-windows-installer/build_installer.sh 0.1.1
+```
+
+生成文件：
+
+```text
+target/release-artifacts/Karma-windows-x64-test-v0.1.1-setup.exe
+```
+
+安装器自身包含 CRC，安装阶段还会运行包内 SHA-256 校验；两者均不能替代正式发布所需的 Authenticode 代码签名。
 
 ## 12. 未来正式签名安装器方案（尚未实现）
 

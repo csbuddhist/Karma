@@ -6,12 +6,11 @@ Karma 是一套面向 macOS 和 Windows 的本地色情内容防护与数字健�
 
 > 本软件不能对拥有本机管理员、root、恢复环境或物理控制权的人承诺绝对不可卸载。强约束模式必须配合标准用户账户以及 MDM、WDAC/AppLocker 等设备管理能力。
 
-## Windows 可克隆测试包
+## Windows 测试安装包
 
-`main` 包含一个 **cloneable Windows test bundle**：
-[`release/windows-x64-test/`](release/windows-x64-test/)。在 Windows 10 22H2 或 Windows 11 x64 上，安装 Microsoft Visual C++ 2015–2022 x64 Redistributable 后，以管理员身份在该目录运行 `./Install-Karma.ps1 -StartConsole`；详细步骤见 [Windows 安装与测试指南](docs/windows-installation-guide.md)。
+新用户可从 [v0.1.1 Windows Test Build](https://github.com/DrWeiZhou/Karma/releases/tag/v0.1.1) 下载单文件 `Karma-windows-x64-test-v0.1.1-setup.exe`，在 Windows 10 22H2 或 Windows 11 x64 上以管理员身份运行即可完成文件安装、哈希校验、Service 注册和快捷方式创建。安装前仍需安装 Microsoft Visual C++ 2015–2022 x64 Redistributable。
 
-该包是未签名的开发/测试软件，已提供 PowerShell Service 安装与受密码保护的卸载流程，但不是正式签名安装器。连续帧风险到来源应用处置的连接、使用时段限制和完整管理员级反篡改仍未完成。
+`main` 同时保留可审查的 **cloneable Windows test bundle**：[`release/windows-x64-test/`](release/windows-x64-test/)，用于诊断和复现打包。该安装器仍是未签名的开发/测试软件，卸载继续要求 Karma 管理员密码；它不是正式签名的生产安装器。详细步骤见 [Windows 安装与测试指南](docs/windows-installation-guide.md)。
 
 ## 设计原则
 
