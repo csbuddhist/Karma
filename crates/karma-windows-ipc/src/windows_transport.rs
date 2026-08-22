@@ -114,8 +114,7 @@ impl PipeServer {
 
     pub fn send_response(&self, response: &ResponseEnvelope) -> Result<(), TransportError> {
         let result = write_message(self.handle.0, response).and_then(|_| {
-            unsafe { FlushFileBuffers(self.handle.0) }
-                .map_err(|_| TransportError::OperationFailed)
+            unsafe { FlushFileBuffers(self.handle.0) }.map_err(|_| TransportError::OperationFailed)
         });
         unsafe {
             let _ = DisconnectNamedPipe(self.handle.0);
