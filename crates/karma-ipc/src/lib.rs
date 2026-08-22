@@ -112,7 +112,7 @@ pub enum ServiceRequest {
         report: DispositionReport,
     },
     RequestShutdown {
-        session_token: String,
+        password: String,
     },
 }
 
@@ -142,7 +142,8 @@ impl ServiceRequest {
         match self {
             Self::EnrollAdministrator { password }
             | Self::Authenticate { password }
-            | Self::RevealEvidence { password, .. } => {
+            | Self::RevealEvidence { password, .. }
+            | Self::RequestShutdown { password } => {
                 if password.is_empty() || password.chars().count() > MAX_PASSWORD_CHARS {
                     return Err(ProtocolError::InvalidField);
                 }
@@ -156,8 +157,7 @@ impl ServiceRequest {
             | Self::PutPolicy { session_token, .. }
             | Self::ListEvidence { session_token }
             | Self::RevealEvidence { session_token, .. }
-            | Self::DeleteEvidence { session_token, .. }
-            | Self::RequestShutdown { session_token } => {
+            | Self::DeleteEvidence { session_token, .. } => {
                 validate_opaque(session_token, MAX_SESSION_TOKEN_CHARS)?;
             }
             Self::AgentHeartbeat { agent_token, .. }

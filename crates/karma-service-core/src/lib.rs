@@ -450,8 +450,8 @@ impl ServiceCore {
                 self.persist(&runtime.stored)?;
                 Ok(ServiceResult::Acknowledged)
             }
-            ServiceRequest::RequestShutdown { session_token } => {
-                authorize(runtime, &session_token, now_ms)?;
+            ServiceRequest::RequestShutdown { password } => {
+                self.authenticate(runtime, password, now_ms)?;
                 audit(runtime, now_ms, "service_shutdown_requested", "success");
                 self.persist(&runtime.stored)?;
                 Ok(ServiceResult::Acknowledged)
@@ -737,6 +737,48 @@ mod tests {
             }
             _ => panic!("unexpected response"),
         }
+    }
+
+    #[test]
+    fn incorrect_uninstall_password_does_not_authorize_shutdown() {
+        let directory = tempfile::tempdir().unwrap();
+        let core = open_core(directory.path(), 100);
+        success(core.handle(
+            request(
+                "1",
+                "n1",
+                ServiceRequest::EnrollAdministrator {
+                    password: "long-test-password".into(),
+                },
+            ),
+            101,
+        ));
+
+        let response = core.handle(
+            RequestEnvelope::new(
+                "2",
+                "n2",
+                ClientKind::Installer,
+                ServiceRequest::RequestShutdown {
+                    password: "wrong-password".into(),
+                },
+            ),
+            102,
+        );
+
+        assert_eq!(
+            response.result.unwrap_err().code,
+            ServiceErrorCode::AuthenticationFailed
+        );
+        let state: StoredState =
+            serde_json::from_slice(&fs::read(directory.path().join("service.json")).unwrap())
+                .unwrap();
+        assert!(
+            state
+                .audit
+                .iter()
+                .all(|record| record.kind != "service_shutdown_requested")
+        );
     }
 
     #[test]

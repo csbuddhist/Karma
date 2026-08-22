@@ -24,27 +24,16 @@ fn main() {
     while password.ends_with('\r') || password.ends_with('\n') {
         password.pop();
     }
-    let authentication = request(
-        ClientKind::Ui,
-        ServiceRequest::Authenticate {
-            password: password.to_string(),
-        },
-    );
-    let session_token = match authentication {
-        Ok(ServiceResult::Session { session_token, .. }) => session_token,
-        _ => {
-            eprintln!("administrator authentication failed");
-            std::process::exit(3);
-        }
-    };
     match request(
         ClientKind::Installer,
-        ServiceRequest::RequestShutdown { session_token },
+        ServiceRequest::RequestShutdown {
+            password: password.to_string(),
+        },
     ) {
         Ok(ServiceResult::Acknowledged) => println!("KarmaService accepted the shutdown request"),
         _ => {
-            eprintln!("KarmaService rejected the shutdown request");
-            std::process::exit(4);
+            eprintln!("administrator authentication failed; shutdown was not requested");
+            std::process::exit(3);
         }
     }
 }

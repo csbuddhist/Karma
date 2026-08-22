@@ -6,6 +6,7 @@ repo_root="$(cd "$script_dir/../.." && pwd)"
 installer="$script_dir/KarmaInstaller.nsi"
 builder="$script_dir/build_installer.sh"
 install_script="$repo_root/release/windows-x64-test/Install-Karma.ps1"
+uninstall_script="$repo_root/release/windows-x64-test/Uninstall-Karma.ps1"
 contract_failed=0
 
 assert_contains() {
@@ -13,6 +14,21 @@ assert_contains() {
   local file="$2"
   local message="$3"
   if ! rg -q "$pattern" "$file"; then
+    echo "$message" >&2
+    contract_failed=1
+  fi
+}
+
+assert_before() {
+  local earlier_pattern="$1"
+  local later_pattern="$2"
+  local file="$3"
+  local message="$4"
+  local earlier_line
+  local later_line
+  earlier_line="$(rg -n -m 1 "$earlier_pattern" "$file" | cut -d: -f1 || true)"
+  later_line="$(rg -n -m 1 "$later_pattern" "$file" | cut -d: -f1 || true)"
+  if [[ -z "$earlier_line" || -z "$later_line" || "$earlier_line" -ge "$later_line" ]]; then
     echo "$message" >&2
     contract_failed=1
   fi
@@ -32,7 +48,15 @@ assert_contains "sc\.exe create KarmaService 'binPath=' .* 'start=' 'delayed-aut
 assert_contains "sc\.exe failure KarmaService 'reset=' '0' 'actions=' 'restart/1000/restart/3000/restart/10000'" "$install_script" \
   'installer must pass sc.exe recovery option names and values as separate arguments'
 rg -q 'Uninstall-Karma\.ps1' "$installer"
-rg -q 'KarmaControl\.exe' "$repo_root/release/windows-x64-test/Uninstall-Karma.ps1"
+rg -q 'KarmaControl\.exe' "$uninstall_script"
+assert_before 'Read-Host .*管理员密码' '& \$control shutdown' "$uninstall_script" \
+  'uninstaller must ask for the Karma administrator password before requesting shutdown'
+assert_before 'if \(\$LASTEXITCODE -ne 0\)' 'Get-Service .*KarmaService' "$uninstall_script" \
+  'uninstaller must reject an incorrect password before inspecting or changing the service'
+assert_before 'if \(\$LASTEXITCODE -ne 0\)' 'sc\.exe delete KarmaService' "$uninstall_script" \
+  'uninstaller must authenticate successfully before deleting the service'
+assert_before 'if \(\$LASTEXITCODE -ne 0\)' 'Remove-Item -LiteralPath \$destination' "$uninstall_script" \
+  'uninstaller must authenticate successfully before deleting installed files'
 rg -q 'Uninstall-Karma-Launcher\.exe' "$installer"
 rg -q 'SYSTEM\\CurrentControlSet\\Services\\KarmaService' "$installer"
 rg -q -- '-NonInteractive -ExecutionPolicy Bypass' "$installer"
