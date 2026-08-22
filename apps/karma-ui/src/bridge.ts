@@ -13,7 +13,7 @@ export const defaultConsoleState: ConsoleState = {
     imageEnabled: true,
     ocrEnabled: true,
     sensitivity: 82,
-    immediateThreshold: 95,
+    immediateThreshold: 82,
     evidenceEnabled: false,
     evidenceRetentionDays: 7,
   },

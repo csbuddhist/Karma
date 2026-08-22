@@ -32,8 +32,6 @@ import {
   Save,
   Search,
   Settings,
-  Shield,
-  ShieldCheck,
   Trash2,
   WifiOff,
   X,
@@ -72,6 +70,34 @@ type I18nContextValue = {
 };
 
 const I18nContext = createContext<I18nContextValue | null>(null);
+
+function KarmaShieldIcon({ size = 24 }: { size?: number }) {
+  return (
+    <svg
+      aria-hidden="true"
+      fill="none"
+      height={size}
+      viewBox="0 0 24 24"
+      width={size}
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="M20 13c0 5-3.5 7.5-8 9-4.5-1.5-8-4-8-9V5l8-3 8 3v8Z"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.8"
+      />
+      <path
+        d="M9.5 7.5v9m0-4.5 5-4.5m-5 4.5 5 4.5"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.8"
+      />
+    </svg>
+  );
+}
 
 const navItems: Array<{
   key: PageKey;
@@ -199,7 +225,7 @@ function PasswordGate({
       <div className="auth-language"><LanguageSelect compact /></div>
       <section className="auth-card">
         <div className="brand-lockup">
-          <div className="brand-mark"><Shield /></div>
+          <div className="brand-mark"><KarmaShieldIcon /></div>
           <div><strong>KARMA</strong><span>{t("brand.console")}</span></div>
         </div>
         <div className="auth-copy">
@@ -246,7 +272,7 @@ function ServiceConnectionError({ detail, onRetry }: { detail: string; onRetry: 
       <div className="auth-language"><LanguageSelect compact /></div>
       <section className="auth-card connection-error-card">
         <div className="brand-lockup">
-          <div className="brand-mark"><Shield /></div>
+          <div className="brand-mark"><KarmaShieldIcon /></div>
           <div><strong>KARMA</strong><span>{t("brand.console")}</span></div>
         </div>
         <div className="connection-error-icon"><WifiOff /></div>
@@ -272,7 +298,7 @@ function Overview({ state }: { state: ConsoleState }) {
         <div className="notice warning"><WifiOff size={19} /><div><strong>{t("overview.serviceDisconnected")}</strong><span>{t("overview.serviceDisconnectedDescription")}</span></div></div>
       )}
       <div className="metric-grid">
-        <Card className="metric-card primary"><div className="metric-icon"><ShieldCheck /></div><div><span>{t("overview.protectionStatus")}</span><strong>{t(state.protectionEnabled ? "overview.enabled" : "overview.paused")}</strong><small>{t(state.protectionEnabled ? "overview.policyOnConnect" : "overview.noProtectionActions")}</small></div></Card>
+        <Card className="metric-card primary"><div className="metric-icon"><KarmaShieldIcon /></div><div><span>{t("overview.protectionStatus")}</span><strong>{t(state.protectionEnabled ? "overview.enabled" : "overview.paused")}</strong><small>{t(state.protectionEnabled ? "overview.policyOnConnect" : "overview.noProtectionActions")}</small></div></Card>
         <Card className="metric-card"><div className="metric-icon green"><Monitor /></div><div><span>{t("overview.activeMonitors")}</span><strong>{state.monitors.length}</strong><small>{t(healthyMonitors === 1 ? "overview.healthyMonitor" : "overview.healthyMonitors", { count: healthyMonitors })}</small></div></Card>
         <Card className="metric-card"><div className="metric-icon amber"><Activity /></div><div><span>{t("overview.riskEventsToday")}</span><strong>{state.evidence.length}</strong><small>{t(criticalEvents === 1 ? "overview.criticalEvent" : "overview.criticalEvents", { count: criticalEvents })}</small></div></Card>
         <Card className="metric-card"><div className="metric-icon slate"><Archive /></div><div><span>{t("overview.evidenceRetention")}</span><strong>{state.recognition.evidenceEnabled ? t(state.recognition.evidenceRetentionDays === 1 ? "overview.day" : "overview.days", { count: state.recognition.evidenceRetentionDays }) : t("overview.notEnabled")}</strong><small>{t("overview.encryptedEvidence")}</small></div></Card>
@@ -311,7 +337,7 @@ function Recognition({ state, update }: { state: ConsoleState; update: (state: C
   return <div className="settings-grid">
     <Card><div className="setting-row"><div className="setting-icon violet"><Image /></div><div><strong>{t("recognition.imageTitle")}</strong><p>{t("recognition.imageDescription")}</p></div><Toggle checked={settings.imageEnabled} onChange={(value) => patch({ imageEnabled: value })} label={t("recognition.imageToggle")} /></div></Card>
     <Card><div className="setting-row"><div className="setting-icon blue"><Search /></div><div><strong>{t("recognition.ocrTitle")}</strong><p>{t("recognition.ocrDescription")}</p></div><Toggle checked={settings.ocrEnabled} onChange={(value) => patch({ ocrEnabled: value })} label={t("recognition.ocrToggle")} /></div></Card>
-    <Card className="full-span"><div className="card-heading"><div><h2>{t("recognition.sensitivity")}</h2><p>{t("recognition.sensitivityDescription")}</p></div><span className="value-badge">{settings.sensitivity}%</span></div><input className="range" type="range" min="60" max="95" value={settings.sensitivity} onChange={(event) => patch({ sensitivity: Number(event.target.value) })} /><div className="range-labels"><span>{t("recognition.fewerFalsePositives")}</span><span>{t("recognition.balanced")}</span><span>{t("recognition.moreResponsive")}</span></div></Card>
+    <Card className="full-span"><div className="card-heading"><div><h2>{t("recognition.sensitivity")}</h2><p>{t("recognition.sensitivityDescription")}</p></div><span className="value-badge">{settings.sensitivity}%</span></div><input className="range" type="range" min="60" max="95" value={settings.sensitivity} onChange={(event) => { const value = Number(event.target.value); patch({ sensitivity: value, immediateThreshold: value }); }} /><div className="range-labels"><span>{t("recognition.moreResponsive")}</span><span>{t("recognition.balanced")}</span><span>{t("recognition.fewerFalsePositives")}</span></div></Card>
     <Card className="full-span evidence-setting"><div className="setting-row"><div className="setting-icon amber"><Archive /></div><div><strong>{t("recognition.evidenceTitle")}</strong><p>{t("recognition.evidenceDescription")}</p></div><Toggle checked={settings.evidenceEnabled} onChange={(value) => patch({ evidenceEnabled: value })} label={t("recognition.evidenceToggle")} /></div>{settings.evidenceEnabled && <div className="inline-setting"><label>{t("recognition.retention")}</label><select value={settings.evidenceRetentionDays} onChange={(event) => patch({ evidenceRetentionDays: Number(event.target.value) })}>{[1, 3, 7, 14, 30].map((days) => <option value={days} key={days}>{t(days === 1 ? "overview.day" : "overview.days", { count: days })}</option>)}</select><span>{t("recognition.retentionDescription")}</span></div>}</Card>
   </div>;
 }
@@ -371,7 +397,7 @@ function Audit({ state }: { state: ConsoleState }) {
 
 function SettingsPage({ state, update }: { state: ConsoleState; update: (state: ConsoleState) => void }) {
   const { t } = useI18n();
-  return <div className="settings-grid"><Card className="full-span"><div className="setting-row"><div className="setting-icon green"><ShieldCheck /></div><div><strong>{t("settings.protectionTitle")}</strong><p>{t("settings.protectionDescription")}</p></div><Toggle checked={state.protectionEnabled} onChange={(value) => update({ ...state, protectionEnabled: value })} label={t("settings.protectionToggle")} /></div></Card><Card className="full-span language-card"><div className="setting-row"><div className="setting-icon blue"><Globe2 /></div><div><strong>{t("settings.languageTitle")}</strong><p>{t("language.description")}</p></div><LanguageSelect /></div></Card><Card><div className="card-heading"><div><h2>{t("settings.capabilities")}</h2><p>{t("settings.progress")}</p></div></div><div className="capability-list"><div><Check />{t("settings.capability1")}</div><div><Check />{t("settings.capability2")}</div><div><Check />{t("settings.capability3")}</div><div><Check />{t("settings.capability4")}</div><div><Check />{t("settings.capability5")}</div><div className="pending"><CircleAlert />{t("settings.capabilityPending")}</div></div></Card><Card><div className="card-heading"><div><h2>{t("settings.security")}</h2><p>{t("settings.securitySubtitle")}</p></div></div><div className="security-note"><Lock /><p>{t("settings.securityDescription")}</p></div></Card></div>;
+  return <div className="settings-grid"><Card className="full-span"><div className="setting-row"><div className="setting-icon green"><KarmaShieldIcon /></div><div><strong>{t("settings.protectionTitle")}</strong><p>{t("settings.protectionDescription")}</p></div><Toggle checked={state.protectionEnabled} onChange={(value) => update({ ...state, protectionEnabled: value })} label={t("settings.protectionToggle")} /></div></Card><Card className="full-span language-card"><div className="setting-row"><div className="setting-icon blue"><Globe2 /></div><div><strong>{t("settings.languageTitle")}</strong><p>{t("language.description")}</p></div><LanguageSelect /></div></Card><Card><div className="card-heading"><div><h2>{t("settings.capabilities")}</h2><p>{t("settings.progress")}</p></div></div><div className="capability-list"><div><Check />{t("settings.capability1")}</div><div><Check />{t("settings.capability2")}</div><div><Check />{t("settings.capability3")}</div><div><Check />{t("settings.capability4")}</div><div><Check />{t("settings.capability5")}</div><div className="pending"><CircleAlert />{t("settings.capabilityPending")}</div></div></Card><Card><div className="card-heading"><div><h2>{t("settings.security")}</h2><p>{t("settings.securitySubtitle")}</p></div></div><div className="security-note"><Lock /><p>{t("settings.securityDescription")}</p></div></Card></div>;
 }
 
 function Modal({ title, children, onClose, wide = false }: { title: string; children: ReactNode; onClose: () => void; wide?: boolean }) {
@@ -410,7 +436,7 @@ function AppContent() {
   }, [authMode, sessionToken, dirty]);
   async function authenticated(token: string) { setSessionToken(token); setLoading(true); try { setState(await loadConsole(token)); setAuthMode("unlocked"); } finally { setLoading(false); } }
   function update(next: ConsoleState) { setState(next); setDirty(true); setSaveMessage(""); }
-  async function save() { setSaving(true); try { await saveConsole(sessionToken, state); setDirty(false); setSaveMessage(t("common.settingsSaved")); window.setTimeout(() => setSaveMessage(""), 2200); } finally { setSaving(false); } }
+  async function save() { setSaving(true); try { const next = { ...state, recognition: { ...state.recognition, immediateThreshold: state.recognition.sensitivity } }; await saveConsole(sessionToken, next); setState(next); setDirty(false); setSaveMessage(t("common.settingsSaved")); window.setTimeout(() => setSaveMessage(""), 2200); } finally { setSaving(false); } }
   async function signOut() { await lock(sessionToken); setSessionToken(""); setState(defaultConsoleState); setAuthMode("locked"); setPage("overview"); }
 
   const content = useMemo(() => {
@@ -425,11 +451,11 @@ function AppContent() {
     return <SettingsPage state={state} update={update} />;
   }, [page, state, sessionToken, locale]);
 
-  if (loading) return <div className="loading-screen"><div className="brand-mark"><Shield /></div><span>{t("common.loading")}</span></div>;
+  if (loading) return <div className="loading-screen"><div className="brand-mark"><KarmaShieldIcon /></div><span>{t("common.loading")}</span></div>;
   if (startupError) return <ServiceConnectionError detail={localizeError(startupError, t)} onRetry={() => void refreshAuthStatus()} />;
   if (authMode !== "unlocked") return <PasswordGate mode={authMode} onAuthenticated={authenticated} />;
   const meta = pageMeta[page];
-  return <div className="app-shell"><aside className="sidebar"><div className="brand-lockup sidebar-brand"><div className="brand-mark"><Shield /></div><div><strong>KARMA</strong><span>{t("brand.short")}</span></div></div><nav>{navItems.map((item) => { const Icon = item.icon; return <button className={page === item.key ? "active" : ""} key={item.key} onClick={() => setPage(item.key)}><Icon size={19} /><span>{t(item.label)}</span>{item.key === "evidence" && state.evidence.length > 0 && <b>{state.evidence.length}</b>}</button>; })}</nav><div className="sidebar-foot"><div className="mini-health"><span className={state.serviceConnected ? "online" : "offline"} /><div><strong>{t(state.serviceConnected ? "sidebar.serviceOnline" : "sidebar.serviceOffline")}</strong><small>{t(state.agentConnected ? "sidebar.agentOnline" : "sidebar.consoleOnly")}</small></div></div><button onClick={signOut}><LogOut size={18} /><span>{t("common.lockConsole")}</span></button></div></aside><main className="main"><header><div><span className="eyebrow">KARMA CONTROL</span><h1>{t(meta.title)}</h1><p>{t(meta.subtitle)}</p></div><div className="header-actions">{saveMessage && <span className="saved-message"><Check size={15} />{saveMessage}</span>}<button className="secondary-button" onClick={signOut}><Lock size={16} />{t("common.lock")}</button><button className="primary-button" disabled={!dirty || saving} onClick={save}><Save size={17} />{t(saving ? "common.saving" : "common.saveSettings")}</button></div></header><div className="page-content">{content}</div></main></div>;
+  return <div className="app-shell"><aside className="sidebar"><div className="brand-lockup sidebar-brand"><div className="brand-mark"><KarmaShieldIcon /></div><div><strong>KARMA</strong><span>{t("brand.short")}</span></div></div><nav>{navItems.map((item) => { const Icon = item.icon; return <button className={page === item.key ? "active" : ""} key={item.key} onClick={() => setPage(item.key)}><Icon size={19} /><span>{t(item.label)}</span>{item.key === "evidence" && state.evidence.length > 0 && <b>{state.evidence.length}</b>}</button>; })}</nav><div className="sidebar-foot"><div className="mini-health"><span className={state.serviceConnected ? "online" : "offline"} /><div><strong>{t(state.serviceConnected ? "sidebar.serviceOnline" : "sidebar.serviceOffline")}</strong><small>{t(state.agentConnected ? "sidebar.agentOnline" : "sidebar.consoleOnly")}</small></div></div><button onClick={signOut}><LogOut size={18} /><span>{t("common.lockConsole")}</span></button></div></aside><main className="main"><header><div><span className="eyebrow">KARMA CONTROL</span><h1>{t(meta.title)}</h1><p>{t(meta.subtitle)}</p></div><div className="header-actions">{saveMessage && <span className="saved-message"><Check size={15} />{saveMessage}</span>}<button className="secondary-button" onClick={signOut}><Lock size={16} />{t("common.lock")}</button><button className="primary-button" disabled={!dirty || saving} onClick={save}><Save size={17} />{t(saving ? "common.saving" : "common.saveSettings")}</button></div></header><div className="page-content">{content}</div></main></div>;
 }
 
 export function App() {

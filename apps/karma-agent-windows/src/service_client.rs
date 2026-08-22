@@ -75,6 +75,7 @@ pub struct PolicySnapshot {
 #[derive(Debug, Clone, Copy)]
 struct RecognitionPolicy {
     protection_enabled: bool,
+    image_enabled: bool,
     evidence_enabled: bool,
     threshold_millis: u16,
 }
@@ -83,8 +84,9 @@ impl Default for RecognitionPolicy {
     fn default() -> Self {
         Self {
             protection_enabled: true,
+            image_enabled: true,
             evidence_enabled: false,
-            threshold_millis: 950,
+            threshold_millis: 820,
         }
     }
 }
@@ -99,14 +101,22 @@ impl RecognitionPolicyHandle {
             .and_then(Value::as_bool)
             .unwrap_or(true);
         let recognition = policy.get("recognition");
+        let image_enabled = recognition
+            .and_then(|value| value.get("imageEnabled"))
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
         let evidence_enabled = recognition
             .and_then(|value| value.get("evidenceEnabled"))
             .and_then(Value::as_bool)
             .unwrap_or(false);
         let threshold = recognition
-            .and_then(|value| value.get("immediateThreshold"))
+            .and_then(|value| {
+                value
+                    .get("sensitivity")
+                    .or_else(|| value.get("immediateThreshold"))
+            })
             .and_then(Value::as_u64)
-            .unwrap_or(95)
+            .unwrap_or(82)
             .min(100) as u16
             * 10;
         *self
@@ -114,6 +124,7 @@ impl RecognitionPolicyHandle {
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = RecognitionPolicy {
             protection_enabled,
+            image_enabled,
             evidence_enabled,
             threshold_millis: threshold,
         };
@@ -245,6 +256,10 @@ impl OcrSummarySink for AgentInferenceSink {
         self.ocr_summaries = self.ocr_summaries.saturating_add(1);
     }
 
+    fn image_recognition_enabled(&self) -> bool {
+        self.recognition_policy.snapshot().image_enabled
+    }
+
     fn prepare_image(&mut self) -> Self::ImageContext {
         self.recognition_policy
             .snapshot()
@@ -262,7 +277,7 @@ impl OcrSummarySink for AgentInferenceSink {
         let policy = self.recognition_policy.snapshot();
         let occurred_at_ms = unix_time_ms();
         let evidence_pending = should_capture_evidence(
-            policy.protection_enabled && policy.evidence_enabled,
+            policy.protection_enabled && policy.image_enabled && policy.evidence_enabled,
             policy.threshold_millis,
             inference.score_millis,
             frame.captured_at_ms(),
@@ -290,7 +305,7 @@ impl OcrSummarySink for AgentInferenceSink {
         }
 
         if !should_capture_evidence(
-            policy.protection_enabled,
+            policy.protection_enabled && policy.image_enabled,
             policy.threshold_millis,
             inference.score_millis,
             frame.captured_at_ms(),

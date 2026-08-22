@@ -12,6 +12,18 @@ const OPEN_CONSOLE_MENU_ID: &str = "karma-open-console";
 #[cfg(desktop)]
 const QUIT_MENU_ID: &str = "karma-quit";
 
+fn synchronize_recognition_threshold(state: &mut serde_json::Value) {
+    let sensitivity = state.pointer("/recognition/sensitivity").cloned();
+    if let (Some(recognition), Some(sensitivity)) = (
+        state
+            .get_mut("recognition")
+            .and_then(serde_json::Value::as_object_mut),
+        sensitivity,
+    ) {
+        recognition.insert("immediateThreshold".into(), sensitivity);
+    }
+}
+
 #[cfg(desktop)]
 fn show_console(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
@@ -164,7 +176,7 @@ mod local_backend {
                 "imageEnabled": true,
                 "ocrEnabled": true,
                 "sensitivity": 82,
-                "immediateThreshold": 95,
+                "immediateThreshold": 82,
                 "evidenceEnabled": false,
                 "evidenceRetentionDays": 7
             },
@@ -371,9 +383,10 @@ mod local_backend {
         app: AppHandle,
         runtime: State<'_, ConsoleRuntime>,
         session_token: String,
-        state: Value,
+        mut state: Value,
     ) -> Result<(), ConsoleError> {
         authorize(&runtime, &session_token)?;
+        super::synchronize_recognition_threshold(&mut state);
         if serde_json::to_vec(&state)
             .map_err(|_| ConsoleError::StateTooLarge)?
             .len()
@@ -435,6 +448,20 @@ mod local_backend {
             assert_eq!(state["evidence"], json!([]));
             assert_eq!(state["audit"], json!([]));
             assert!(!state.to_string().contains("thumbnailUrl"));
+        }
+
+        #[test]
+        fn saving_sensitivity_synchronizes_immediate_threshold() {
+            let mut state = json!({
+                "recognition": {
+                    "sensitivity": 67,
+                    "immediateThreshold": 95
+                }
+            });
+
+            super::super::synchronize_recognition_threshold(&mut state);
+
+            assert_eq!(state["recognition"]["immediateThreshold"], 67);
         }
 
         #[test]
@@ -547,7 +574,7 @@ mod service_backend {
                 "imageEnabled": true,
                 "ocrEnabled": true,
                 "sensitivity": 82,
-                "immediateThreshold": 95,
+                "immediateThreshold": 82,
                 "evidenceEnabled": false,
                 "evidenceRetentionDays": 7
             },
@@ -731,6 +758,7 @@ mod service_backend {
         session_token: String,
         mut state: Value,
     ) -> Result<(), ConsoleError> {
+        super::synchronize_recognition_threshold(&mut state);
         let revision = *runtime
             .0
             .lock()

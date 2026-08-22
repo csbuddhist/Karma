@@ -8,7 +8,7 @@ Karma 是一套面向 macOS 和 Windows 的本地色情内容防护与数字健�
 
 ## Windows 测试安装包
 
-新用户可从 [v0.1.4 Windows Test Build](https://github.com/DrWeiZhou/Karma/releases/tag/v0.1.4) 下载单文件 `Karma-windows-x64-test-v0.1.4-setup.exe`，在 Windows 10 22H2 或 Windows 11 x64 上以管理员身份运行即可完成文件安装、哈希校验、Service 注册和快捷方式创建。安装前仍需安装 Microsoft Visual C++ 2015–2022 x64 Redistributable。
+新用户可从 [v0.1.5 Windows Test Build](https://github.com/DrWeiZhou/Karma/releases/tag/v0.1.5) 下载单文件 `Karma-windows-x64-test-v0.1.5-setup.exe`，在 Windows 10 22H2 或 Windows 11 x64 上以管理员身份运行即可完成文件安装、哈希校验、Service 注册和快捷方式创建。安装前仍需安装 Microsoft Visual C++ 2015–2022 x64 Redistributable。
 
 `main` 同时保留可审查的 **cloneable Windows test bundle**：[`release/windows-x64-test/`](release/windows-x64-test/)，用于诊断和复现打包。该安装器仍是未签名的开发/测试软件，卸载继续要求 Karma 管理员密码；它不是正式签名的生产安装器。详细步骤见 [Windows 安装与测试指南](docs/windows-installation-guide.md)。
 
@@ -129,7 +129,7 @@ Decision {
 - ONNX Runtime，本地 CPU/GPU 推理。
 - 同一份模型、标签、归一化参数和阈值覆盖两个平台。
 - 每个显示器维护独立滑动窗口。
-- 默认每秒采样 2 帧；系统繁忙时最低降至每秒 1 帧。
+- 有界帧预处理最多每秒 4 帧，图像推理最多每秒 2 帧；既避免对每次捕获回调执行昂贵工作，也将预处理准入延迟控制在 250 毫秒内。
 - 推理前缩放并模糊极小区域，降低文字和头像误判。
 - 视频和静态图片采用同一连续帧状态机。
 
@@ -143,6 +143,8 @@ score >= 0.95                         → 立即处置
 ```
 
 阈值必须可通过签名配置更新。模型命中后，先确定该显示器上的前台窗口及所属 PID/Bundle ID，再处置来源应用，避免杀死无关浏览器或后台程序。
+
+当前 Windows 测试版在保存控制台敏感度时会同步更新立即处置阈值，并迁移此前保存的不一致值。关闭图像识别后，Agent 会停止图像分类器工作，同时禁止生成图像证据或处置事件。
 
 ### 数据与加密
 

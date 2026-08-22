@@ -10,7 +10,7 @@ The project follows a “single product, shared core, two native executors” ar
 
 ## Windows Test Installer
 
-New users can download the single-file `Karma-windows-x64-test-v0.1.4-setup.exe` from the [v0.1.4 Windows Test Build](https://github.com/DrWeiZhou/Karma/releases/tag/v0.1.4). On Windows 10 22H2 or Windows 11 x64, run it as an administrator to install the files, verify their hashes, register the Service, and create shortcuts. The Microsoft Visual C++ 2015–2022 x64 Redistributable is still required.
+New users can download the single-file `Karma-windows-x64-test-v0.1.5-setup.exe` from the [v0.1.5 Windows Test Build](https://github.com/DrWeiZhou/Karma/releases/tag/v0.1.5). On Windows 10 22H2 or Windows 11 x64, run it as an administrator to install the files, verify their hashes, register the Service, and create shortcuts. The Microsoft Visual C++ 2015–2022 x64 Redistributable is still required.
 
 `main` also retains the auditable **cloneable Windows test bundle** at [`release/windows-x64-test/`](release/windows-x64-test/) for diagnostics and reproducible packaging. The installer remains unsigned development/test software, and uninstall still requires the Karma administrator password; it is not a signed production installer. See the [Windows Installation and Testing Guide](docs/windows-installation-guide.md) for details.
 
@@ -135,7 +135,7 @@ Decision {
 - ONNX Runtime with local CPU/GPU inference.
 - The same model, labels, normalization parameters, and thresholds are used on both platforms.
 - Each display maintains an independent sliding window.
-- The default sampling rate is 2 frames per second, dropping no lower than 1 frame per second when the system is busy.
+- Bounded frame preparation is capped at 4 frames per second and image inference at 2 frames per second, avoiding unbounded capture-callback work while keeping preparation admission latency within 250 ms.
 - Before inference, images are resized and very small regions are blurred to reduce false positives from text and avatars.
 - Video and still images use the same continuous-frame state machine.
 
@@ -151,6 +151,8 @@ Below threshold continuously for 10 seconds → Clear risk state
 ```
 
 Thresholds must be updatable through signed configuration. After a model match, first identify the foreground window on that display and its owning PID/Bundle ID, and then act on the source application to avoid terminating unrelated browsers or background processes.
+
+In the current Windows test build, saving the console sensitivity also updates the immediate-enforcement threshold, including migration of previously saved mismatched values. Disabling image recognition stops image classifier work and prevents image evidence or disposition events.
 
 ### Data and Encryption
 

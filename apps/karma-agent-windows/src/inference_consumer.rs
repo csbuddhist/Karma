@@ -73,6 +73,10 @@ pub trait OcrSummarySink {
 
     fn consume(&mut self, summary: OcrMatchSummary);
 
+    fn image_recognition_enabled(&self) -> bool {
+        true
+    }
+
     fn prepare_image(&mut self) -> Self::ImageContext;
 
     fn consume_image(
@@ -153,11 +157,14 @@ where
     }
 
     pub fn begin_frame(&mut self) {
-        self.pending_image_context = Some(self.sink.prepare_image());
+        self.pending_image_context = self
+            .sink
+            .image_recognition_enabled()
+            .then(|| self.sink.prepare_image());
     }
 
     pub fn consume(&mut self, frame: PreparedFrame, work: FrameWork) {
-        if work.run_image {
+        if work.run_image && self.sink.image_recognition_enabled() {
             let context = self
                 .pending_image_context
                 .take()
@@ -292,11 +299,22 @@ mod tests {
         }
     }
 
-    #[derive(Default)]
     struct RecordingSink {
+        image_enabled: bool,
         calls: usize,
         prepared_images: usize,
         consumed_image_contexts: usize,
+    }
+
+    impl Default for RecordingSink {
+        fn default() -> Self {
+            Self {
+                image_enabled: true,
+                calls: 0,
+                prepared_images: 0,
+                consumed_image_contexts: 0,
+            }
+        }
     }
 
     impl OcrSummarySink for RecordingSink {
@@ -304,6 +322,10 @@ mod tests {
 
         fn consume(&mut self, _summary: OcrMatchSummary) {
             self.calls += 1;
+        }
+
+        fn image_recognition_enabled(&self) -> bool {
+            self.image_enabled
         }
 
         fn prepare_image(&mut self) -> Self::ImageContext {
@@ -370,6 +392,25 @@ mod tests {
             assert_eq!(value.sink().prepared_images, 1);
             assert_eq!(value.sink().consumed_image_contexts, expected_image);
         }
+    }
+
+    #[test]
+    fn disabled_image_recognition_skips_context_and_classifier() {
+        let mut value = consumer(false, false);
+        value.sink.image_enabled = false;
+
+        value.begin_frame();
+        value.consume(
+            prepared_frame(),
+            FrameWork {
+                run_image: true,
+                run_ocr: true,
+            },
+        );
+
+        assert_eq!(value.image_classifier().calls, 0);
+        assert_eq!(value.sink().prepared_images, 0);
+        assert_eq!(value.ocr_engine().calls, 1);
     }
 
     #[test]

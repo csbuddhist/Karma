@@ -37,6 +37,16 @@ const FAILURE_COOLDOWN_MS: i64 = 30 * 1000;
 const MAX_REPLAY_ENTRIES: usize = 4096;
 const MAX_AUDIT_ENTRIES: usize = 5000;
 
+fn recognition_threshold_millis(policy: &Value) -> u16 {
+    policy
+        .pointer("/recognition/sensitivity")
+        .or_else(|| policy.pointer("/recognition/immediateThreshold"))
+        .and_then(Value::as_u64)
+        .unwrap_or(82)
+        .min(100) as u16
+        * 10
+}
+
 #[derive(Debug, Error)]
 pub enum CoreError {
     #[error("service state storage is unavailable")]
@@ -293,24 +303,23 @@ impl ServiceCore {
                 {
                     return Ok(ServiceResult::Acknowledged);
                 }
-                let threshold = runtime
-                    .stored
-                    .policy
-                    .pointer("/recognition/immediateThreshold")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(95)
-                    .min(100) as u16
-                    * 10;
+                let threshold = recognition_threshold_millis(&runtime.stored.policy);
                 let protection_enabled = runtime
                     .stored
                     .policy
                     .get("protectionEnabled")
                     .and_then(Value::as_bool)
                     .unwrap_or(true);
+                let image_enabled = runtime
+                    .stored
+                    .policy
+                    .pointer("/recognition/imageEnabled")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true);
                 let Some(target) = observation.source else {
                     return Ok(ServiceResult::Acknowledged);
                 };
-                if !protection_enabled || observation.risk_millis < threshold {
+                if !protection_enabled || !image_enabled || observation.risk_millis < threshold {
                     return Ok(ServiceResult::Acknowledged);
                 }
                 runtime
@@ -339,15 +348,18 @@ impl ServiceCore {
                     .get("protectionEnabled")
                     .and_then(Value::as_bool)
                     .unwrap_or(true);
-                let threshold = runtime
+                let image_enabled = runtime
                     .stored
                     .policy
-                    .pointer("/recognition/immediateThreshold")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(95)
-                    .min(100) as u16
-                    * 10;
-                if !protection_enabled || !evidence_enabled || evidence.risk_millis < threshold {
+                    .pointer("/recognition/imageEnabled")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true);
+                let threshold = recognition_threshold_millis(&runtime.stored.policy);
+                if !protection_enabled
+                    || !image_enabled
+                    || !evidence_enabled
+                    || evidence.risk_millis < threshold
+                {
                     return Err(ServiceErrorCode::InvalidRequest);
                 }
                 if runtime
@@ -651,6 +663,20 @@ mod tests {
         EvidenceSubmission, ProcessIdentity, ServiceRequest,
     };
 
+    #[test]
+    fn sensitivity_precedes_legacy_immediate_threshold() {
+        assert_eq!(
+            recognition_threshold_millis(&json!({
+                "recognition": {
+                    "sensitivity": 67,
+                    "immediateThreshold": 95
+                }
+            })),
+            670
+        );
+        assert_eq!(recognition_threshold_millis(&json!({})), 820);
+    }
+
     fn request(id: &str, nonce: &str, body: ServiceRequest) -> RequestEnvelope {
         RequestEnvelope::new(id, nonce, ClientKind::Ui, body)
     }
@@ -872,6 +898,72 @@ mod tests {
             core.record_disposition(&mismatched, 102),
             Err(ServiceErrorCode::InvalidRequest)
         );
+    }
+
+    #[test]
+    fn disabled_image_recognition_does_not_authorize_disposition() {
+        let directory = tempfile::tempdir().unwrap();
+        let core = open_core(directory.path(), 0);
+        let session = match success(core.handle(
+            request(
+                "enroll",
+                "enroll-nonce",
+                ServiceRequest::EnrollAdministrator {
+                    password: "long-test-password".into(),
+                },
+            ),
+            1,
+        )) {
+            ServiceResult::Session { session_token, .. } => session_token,
+            _ => panic!("unexpected response"),
+        };
+        success(core.handle(
+            request(
+                "policy",
+                "policy-nonce",
+                ServiceRequest::PutPolicy {
+                    session_token: session,
+                    expected_revision: 0,
+                    policy: json!({
+                        "protectionEnabled": true,
+                        "recognition": {
+                            "imageEnabled": false,
+                            "immediateThreshold": 60
+                        }
+                    }),
+                },
+            ),
+            2,
+        ));
+        let observation = AgentObservation {
+            event_id: "event-disabled-image".into(),
+            agent_instance_id: "agent-1".into(),
+            occurred_at_ms: 100,
+            monitor_id: "monitor-1".into(),
+            risk_millis: 990,
+            reason_code: "image_immediate".into(),
+            source: Some(ProcessIdentity {
+                process_id: 42,
+                started_at_ms: 77,
+                executable_name: r"C:\Browser\browser.exe".into(),
+                executable_sha256: None,
+            }),
+            evidence_pending: false,
+        };
+        let response = success(core.handle(
+            RequestEnvelope::new(
+                "observation",
+                "observation-nonce",
+                ClientKind::Agent,
+                ServiceRequest::AgentObservation {
+                    agent_token: "agent-secret".into(),
+                    observation,
+                },
+            ),
+            101,
+        ));
+
+        assert!(matches!(response, ServiceResult::Acknowledged));
     }
 
     #[test]
