@@ -41,6 +41,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .auth-ambient { position: absolute; border-radius: 50%; filter: blur(2px); }
 .ambient-one { width: 440px; height: 440px; left: -170px; bottom: -180px; background: rgba(123, 157, 115, .24); }
 .ambient-two { width: 360px; height: 360px; right: -100px; top: -130px; background: rgba(112, 108, 218, .17); }
+.auth-language { z-index: 2; position: absolute; top: 24px; right: 24px; }
 .auth-card { z-index: 1; width: min(100%, 480px); padding: 38px 42px 30px; background: rgba(255,255,252,.94); border: 1px solid rgba(255,255,255,.8); border-radius: 26px; box-shadow: 0 34px 90px rgba(39,43,35,.14); backdrop-filter: blur(18px); }
 .auth-copy { margin: 38px 0 26px; }
 .eyebrow { display: block; margin-bottom: 7px; color: var(--accent); font-size: 10px; line-height: 1; font-weight: 700; letter-spacing: .16em; }
@@ -174,6 +175,12 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .setting-icon.blue { color: #3c70a5; background: #e6f0f8; }
 .setting-icon.amber { color: var(--amber); background: var(--amber-soft); }
 .setting-icon.green { color: var(--green); background: var(--green-soft); }
+.language-select { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; }
+.language-select > span { color: var(--muted); font-size: 10px; font-weight: 600; }
+.language-select select { min-width: 145px; background-color: white; cursor: pointer; }
+.language-select.compact { gap: 7px; padding-left: 10px; color: #60665e; background: rgba(255,255,252,.86); border: 1px solid rgba(205,207,198,.9); border-radius: 10px; box-shadow: 0 8px 24px rgba(39,43,35,.08); backdrop-filter: blur(12px); }
+.language-select.compact select { min-width: 118px; height: 36px; padding-left: 5px; background: transparent; border: 0; }
+.language-card .setting-row { min-height: 44px; }
 .toggle { flex: 0 0 auto; width: 38px; height: 22px; padding: 2px; border: 0; border-radius: 20px; background: #cdd0c9; cursor: pointer; transition: background .2s; }
 .toggle span { display: block; width: 18px; height: 18px; background: white; border-radius: 50%; box-shadow: 0 2px 5px rgba(0,0,0,.18); transition: transform .2s; }
 .toggle.is-on { background: var(--accent); }
@@ -290,6 +297,7 @@ select, .field input, .toolbar input { height: 39px; padding: 0 11px; color: var
 }
 
 @media (max-width: 620px) {
+  .auth-language { top: 14px; right: 14px; }
   .main > header { align-items: flex-start; flex-direction: column; padding: 19px; }
   .header-actions { width: 100%; }
   .header-actions .primary-button { margin-left: auto; }
@@ -302,4 +310,6 @@ select, .field input, .toolbar input { height: 39px; padding: 0 11px; color: var
   .app-rule { align-items: flex-start; flex-wrap: wrap; }
   .app-rule select { width: calc(100% - 52px); margin-left: 52px; }
   .auth-card { padding: 31px 25px 25px; }
+  .language-card .setting-row { align-items: flex-start; flex-wrap: wrap; }
+  .language-card .language-select { width: 100%; justify-content: space-between; padding-left: 58px; }
 }
