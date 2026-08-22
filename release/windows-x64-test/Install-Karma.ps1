@@ -11,7 +11,7 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 }
 
 & (Join-Path $PSScriptRoot 'Verify-KarmaTestBundle.ps1')
-if ($LASTEXITCODE -ne 0) { throw '测试包完整性校验失败。' }
+if (-not $?) { throw '测试包完整性校验失败。' }
 
 $source = [IO.Path]::GetFullPath($PSScriptRoot)
 $destination = [IO.Path]::GetFullPath($InstallDirectory)
@@ -29,11 +29,14 @@ if (-not (Test-Path -LiteralPath $serviceExe -PathType Leaf)) {
     throw "缺少服务程序：$serviceExe"
 }
 
-& sc.exe create KarmaService "binPath= `"$serviceExe`"" 'start= delayed-auto' 'DisplayName= Karma Family Protection' | Out-Null
+& sc.exe create KarmaService 'binPath=' "`"$serviceExe`"" 'start=' 'delayed-auto' 'DisplayName=' 'Karma Family Protection' | Out-Null
 if ($LASTEXITCODE -ne 0) { throw '创建 KarmaService 失败。' }
 & sc.exe description KarmaService 'Karma 本地家庭内容保护与策略服务' | Out-Null
-& sc.exe failure KarmaService 'reset= 0' 'actions= restart/1000/restart/3000/restart/10000' | Out-Null
+if ($LASTEXITCODE -ne 0) { throw '设置 KarmaService 描述失败。' }
+& sc.exe failure KarmaService 'reset=' '0' 'actions=' 'restart/1000/restart/3000/restart/10000' | Out-Null
+if ($LASTEXITCODE -ne 0) { throw '设置 KarmaService 恢复操作失败。' }
 & sc.exe failureflag KarmaService 1 | Out-Null
+if ($LASTEXITCODE -ne 0) { throw '启用 KarmaService 非崩溃恢复失败。' }
 Start-Service -Name 'KarmaService'
 (Get-Service -Name 'KarmaService').WaitForStatus('Running', [TimeSpan]::FromSeconds(15))
 

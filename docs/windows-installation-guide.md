@@ -77,10 +77,10 @@
 
 ### 3.1 单文件安装器（推荐）
 
-新用户从 [v0.1.2 Windows Test Build](https://github.com/DrWeiZhou/Karma/releases/tag/v0.1.2) 下载：
+新用户从 [v0.1.3 Windows Test Build](https://github.com/DrWeiZhou/Karma/releases/tag/v0.1.3) 下载：
 
 ```text
-Karma-windows-x64-test-v0.1.2-setup.exe
+Karma-windows-x64-test-v0.1.3-setup.exe
 ```
 
 安装第 2.2 节所述 Microsoft Visual C++ Redistributable 后，右键安装器并选择“以管理员身份运行”。安装器会：
@@ -523,13 +523,13 @@ cp -L target/x86_64-pc-windows-msvc/release/DirectML.dll \
 ```bash
 brew install nsis
 bash tools/package-windows-installer/test_installer_contract.sh
-bash tools/package-windows-installer/build_installer.sh 0.1.2
+bash tools/package-windows-installer/build_installer.sh 0.1.3
 ```
 
 生成文件：
 
 ```text
-target/release-artifacts/Karma-windows-x64-test-v0.1.2-setup.exe
+target/release-artifacts/Karma-windows-x64-test-v0.1.3-setup.exe
 ```
 
 安装器自身包含 CRC，安装阶段还会运行包内 SHA-256 校验；两者均不能替代正式发布所需的 Authenticode 代码签名。

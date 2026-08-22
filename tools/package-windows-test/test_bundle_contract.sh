@@ -18,6 +18,10 @@ done
 
 test -f "$bundle_dir/karma-agent-windows.exe"
 test -f "$bundle_dir/karma-ui.exe"
+if ! rg -a -F -q '../dist' "$bundle_dir/karma-ui.exe"; then
+  echo "karma-ui.exe does not contain the production frontendDist marker" >&2
+  exit 1
+fi
 test -f "$bundle_dir/Start-KarmaConsole.ps1"
 test -f "$bundle_dir/DirectML.dll"
 test -f "$bundle_dir/SHA256SUMS"
