@@ -22,7 +22,7 @@ use karma_windows::{
     enumerate_active_monitors,
 };
 #[cfg(windows)]
-use service_client::{AgentInferenceSink, AgentServiceClient, EvidencePolicyHandle};
+use service_client::{AgentInferenceSink, AgentServiceClient, RecognitionPolicyHandle};
 #[cfg(windows)]
 use startup::{CaptureTargetFactory, MonitorInventory, StartupProbe};
 
@@ -473,10 +473,10 @@ fn run_windows(
             None
         }
     };
-    let evidence_policy = EvidencePolicyHandle::default();
+    let recognition_policy = RecognitionPolicyHandle::default();
     if let Some(client) = &service_client {
         if let Ok(snapshot) = client.fetch_policy() {
-            evidence_policy.update(&snapshot.policy);
+            recognition_policy.update(&snapshot.policy);
         }
     }
 
@@ -515,8 +515,9 @@ fn run_windows(
                     .map_err(|_| std::io::Error::other("word pack invalid"))?,
                 AgentInferenceSink::new(
                     service_client.clone(),
-                    evidence_policy.clone(),
+                    recognition_policy.clone(),
                     format!("显示器 {}", monitor_index.saturating_add(1)),
+                    monitor.bounds,
                 ),
             );
             if !ocr_initialized {
@@ -570,7 +571,7 @@ fn run_windows(
                     .collect();
                 match client.publish_health(monitors) {
                     Ok(snapshot) => {
-                        evidence_policy.update(&snapshot.policy);
+                        recognition_policy.update(&snapshot.policy);
                         println!(
                             "status=running component=service_ipc policy_revision={} protection_enabled={}",
                             snapshot.revision, snapshot.protection_enabled

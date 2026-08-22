@@ -108,6 +108,8 @@ mod native {
     use crate::{WgcCaptureSession, WindowsFrameProcessor, WindowsRuntimeApartment};
 
     pub trait PreparedFrameConsumer: Send + 'static {
+        fn begin_frame(&mut self) {}
+
         fn consume(&mut self, frame: PreparedFrame, work: FrameWork);
     }
 
@@ -163,6 +165,7 @@ mod native {
             ) {
                 WorkerAction::Process => {
                     let frame = frame.expect("worker action requires a frame");
+                    consumer.begin_frame();
                     match processor.process(&frame) {
                         Ok(prepared) => {
                             let work = scheduler.select(FrameMetadata {

@@ -31,7 +31,7 @@ const MAX_STATE_BYTES: usize = 2 * 1024 * 1024;
 const SESSION_LIFETIME_MS: i64 = 15 * 60 * 1000;
 const AGENT_OFFLINE_AFTER_MS: i64 = 30 * 1000;
 const MAX_OBSERVATION_AGE_MS: i64 = 10 * 1000;
-const DISPOSITION_GRACE_MS: u32 = 2000;
+const DISPOSITION_GRACE_MS: u32 = 0;
 const MAX_FAILURES: u32 = 5;
 const FAILURE_COOLDOWN_MS: i64 = 30 * 1000;
 const MAX_REPLAY_ENTRIES: usize = 4096;
@@ -814,8 +814,11 @@ mod tests {
         );
         assert!(matches!(
             success(core.handle(request, 101)),
-            ServiceResult::DispositionRequired { event_id, target, .. }
-                if event_id == "event-1" && target == source
+            ServiceResult::DispositionRequired {
+                event_id,
+                target,
+                grace_period_ms: 0,
+            } if event_id == "event-1" && target == source
         ));
         let mismatched = DispositionReport {
             event_id: "event-1".into(),

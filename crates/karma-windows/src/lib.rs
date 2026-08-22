@@ -36,8 +36,9 @@ pub use gpu_frame::NativeCaptureTexture;
 pub use gpu_scaler::{GpuFrameScaler, GpuScalerError};
 #[cfg(windows)]
 pub use native::{
-    ForegroundWindowSnapshot, MonitorHandle, MonitorSnapshot, WgcCaptureTarget,
+    ForegroundWindowSnapshot, MonitorHandle, MonitorSnapshot, ProcessSnapshot, WgcCaptureTarget,
     WindowsAdapterError, WindowsRuntimeApartment, enumerate_active_monitors, foreground_window,
+    inspect_process,
 };
 #[cfg(windows)]
 pub use staging_reader::StagingTextureReader;

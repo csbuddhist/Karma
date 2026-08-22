@@ -5,15 +5,21 @@ use thiserror::Error;
 use windows::{
     Graphics::Capture::GraphicsCaptureItem,
     Win32::{
-        Foundation::{LPARAM, RECT},
+        Foundation::{
+            CloseHandle, ERROR_INVALID_PARAMETER, FILETIME, GetLastError, HANDLE, LPARAM, RECT,
+        },
         Graphics::Gdi::{EnumDisplayMonitors, HDC, HMONITOR},
+        System::Threading::{
+            GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+            QueryFullProcessImageNameW,
+        },
         System::WinRT::{
             Graphics::Capture::IGraphicsCaptureItemInterop, RO_INIT_MULTITHREADED, RoInitialize,
             RoUninitialize,
         },
         UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId},
     },
-    core,
+    core::{self, PWSTR},
 };
 
 use crate::MappedFrameError;
@@ -35,6 +41,16 @@ pub struct ForegroundWindowSnapshot {
     pub pid: u32,
     pub bounds: Rect,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessSnapshot {
+    pub process_id: u32,
+    pub started_at_ms: i64,
+    pub executable_name: String,
+}
+
+const WINDOWS_TO_UNIX_EPOCH_MS: u64 = 11_644_473_600_000;
+const MAX_PROCESS_PATH_U16: usize = 32_768;
 
 #[derive(Debug, Error)]
 pub enum WindowsAdapterError {
@@ -58,6 +74,10 @@ pub enum WindowsAdapterError {
     StagingSourceMismatch,
     #[error("prepared frame data is invalid")]
     FrameData(#[source] karma_ai::FrameError),
+    #[error("process image path is invalid")]
+    InvalidProcessPath,
+    #[error("process start time is invalid")]
+    InvalidProcessStartTime,
 }
 
 impl WindowsAdapterError {
@@ -174,6 +194,58 @@ pub fn foreground_window() -> Result<Option<ForegroundWindowSnapshot>, WindowsAd
     }))
 }
 
+pub fn inspect_process(process_id: u32) -> Result<Option<ProcessSnapshot>, WindowsAdapterError> {
+    let handle = match unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id) }
+    {
+        Ok(handle) => OwnedHandle(handle),
+        Err(_) if unsafe { GetLastError() } == ERROR_INVALID_PARAMETER => return Ok(None),
+        Err(source) => return Err(WindowsAdapterError::api("OpenProcess", source)),
+    };
+    let mut creation = FILETIME::default();
+    let mut exit = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    unsafe { GetProcessTimes(handle.0, &mut creation, &mut exit, &mut kernel, &mut user) }
+        .map_err(|source| WindowsAdapterError::api("GetProcessTimes", source))?;
+    let mut path = vec![0_u16; MAX_PROCESS_PATH_U16];
+    let mut path_len = path.len() as u32;
+    unsafe {
+        QueryFullProcessImageNameW(
+            handle.0,
+            Default::default(),
+            PWSTR(path.as_mut_ptr()),
+            &mut path_len,
+        )
+    }
+    .map_err(|source| WindowsAdapterError::api("QueryFullProcessImageNameW", source))?;
+    path.truncate(path_len as usize);
+    let executable_name =
+        String::from_utf16(&path).map_err(|_| WindowsAdapterError::InvalidProcessPath)?;
+    Ok(Some(ProcessSnapshot {
+        process_id,
+        started_at_ms: filetime_to_unix_ms(creation)?,
+        executable_name,
+    }))
+}
+
+fn filetime_to_unix_ms(value: FILETIME) -> Result<i64, WindowsAdapterError> {
+    let ticks = (u64::from(value.dwHighDateTime) << 32) | u64::from(value.dwLowDateTime);
+    let unix_ms = (ticks / 10_000)
+        .checked_sub(WINDOWS_TO_UNIX_EPOCH_MS)
+        .ok_or(WindowsAdapterError::InvalidProcessStartTime)?;
+    i64::try_from(unix_ms).map_err(|_| WindowsAdapterError::InvalidProcessStartTime)
+}
+
+struct OwnedHandle(HANDLE);
+
+impl Drop for OwnedHandle {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = CloseHandle(self.0);
+        }
+    }
+}
+
 pub struct WgcCaptureTarget {
     item: GraphicsCaptureItem,
 }
@@ -221,8 +293,7 @@ mod tests {
 
         assert_eq!(id.0, "hmonitor-1a2b");
         assert!(
-            id.0
-                .bytes()
+            id.0.bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
         );
     }

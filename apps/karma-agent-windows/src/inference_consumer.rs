@@ -69,9 +69,19 @@ fn record_result<E>(health: &InferenceHealthHandle, started: Instant, result: Re
 ///
 /// Implementations must not retain sensitive OCR-derived data beyond their intended purpose.
 pub trait OcrSummarySink {
+    type ImageContext;
+
     fn consume(&mut self, summary: OcrMatchSummary);
 
-    fn consume_image(&mut self, _frame: &PreparedFrame, _inference: &ImageInference) {}
+    fn prepare_image(&mut self) -> Self::ImageContext;
+
+    fn consume_image(
+        &mut self,
+        _frame: &PreparedFrame,
+        _inference: &ImageInference,
+        _context: Self::ImageContext,
+    ) {
+    }
 }
 
 /// The default runtime sink deliberately retains only a delivery count.
@@ -88,19 +98,24 @@ impl CountingOcrSummarySink {
 }
 
 impl OcrSummarySink for CountingOcrSummarySink {
+    type ImageContext = ();
+
     fn consume(&mut self, _summary: OcrMatchSummary) {
         self.summaries = self.summaries.saturating_add(1);
     }
+
+    fn prepare_image(&mut self) {}
 }
 
 /// Runs the image and OCR engines independently against one prepared frame.
-pub struct ScheduledInferenceConsumer<I, O, S> {
+pub struct ScheduledInferenceConsumer<I, O, S: OcrSummarySink> {
     image_classifier: I,
     ocr_engine: O,
     word_pack: WordPack,
     sink: S,
     image_health: InferenceHealthHandle,
     ocr_health: InferenceHealthHandle,
+    pending_image_context: Option<S::ImageContext>,
 }
 
 impl<I, O, S> ScheduledInferenceConsumer<I, O, S>
@@ -117,6 +132,7 @@ where
             sink,
             image_health: InferenceHealthHandle::default(),
             ocr_health: InferenceHealthHandle::default(),
+            pending_image_context: None,
         }
     }
 
@@ -136,13 +152,23 @@ where
         state.unavailable = true;
     }
 
+    pub fn begin_frame(&mut self) {
+        self.pending_image_context = Some(self.sink.prepare_image());
+    }
+
     pub fn consume(&mut self, frame: PreparedFrame, work: FrameWork) {
         if work.run_image {
+            let context = self
+                .pending_image_context
+                .take()
+                .unwrap_or_else(|| self.sink.prepare_image());
             let started = Instant::now();
             let result = self.image_classifier.classify(&frame).map(|inference| {
-                self.sink.consume_image(&frame, &inference);
+                self.sink.consume_image(&frame, &inference, context);
             });
             record_result(&self.image_health, started, result);
+        } else {
+            self.pending_image_context = None;
         }
 
         if work.run_ocr {
@@ -194,7 +220,12 @@ where
     I: ImageClassifier + Send + 'static,
     O: OcrEngine + Send + 'static,
     S: OcrSummarySink + Send + 'static,
+    S::ImageContext: Send + 'static,
 {
+    fn begin_frame(&mut self) {
+        ScheduledInferenceConsumer::begin_frame(self);
+    }
+
     fn consume(&mut self, frame: PreparedFrame, work: FrameWork) {
         ScheduledInferenceConsumer::consume(self, frame, work);
     }
@@ -264,11 +295,29 @@ mod tests {
     #[derive(Default)]
     struct RecordingSink {
         calls: usize,
+        prepared_images: usize,
+        consumed_image_contexts: usize,
     }
 
     impl OcrSummarySink for RecordingSink {
+        type ImageContext = usize;
+
         fn consume(&mut self, _summary: OcrMatchSummary) {
             self.calls += 1;
+        }
+
+        fn prepare_image(&mut self) -> Self::ImageContext {
+            self.prepared_images += 1;
+            self.prepared_images
+        }
+
+        fn consume_image(
+            &mut self,
+            _frame: &PreparedFrame,
+            _inference: &ImageInference,
+            context: Self::ImageContext,
+        ) {
+            self.consumed_image_contexts = context;
         }
     }
 
@@ -314,9 +363,12 @@ mod tests {
             (true, true, 1, 1),
         ] {
             let mut value = consumer(false, false);
+            value.begin_frame();
             value.consume(prepared_frame(), FrameWork { run_image, run_ocr });
             assert_eq!(value.image_classifier().calls, expected_image);
             assert_eq!(value.ocr_engine().calls, expected_ocr);
+            assert_eq!(value.sink().prepared_images, 1);
+            assert_eq!(value.sink().consumed_image_contexts, expected_image);
         }
     }
 
