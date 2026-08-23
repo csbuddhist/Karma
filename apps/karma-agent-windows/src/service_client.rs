@@ -20,7 +20,7 @@ use karma_ipc::{
     EvidenceSubmission, MonitorHealth, ProcessIdentity, RequestEnvelope, ServiceRequest,
     ServiceResult,
 };
-use karma_policy::{ContextPolicy, ContextVerdict};
+use karma_policy::{ApplicationEffect, ApplicationPolicy, ContextPolicy, ContextVerdict};
 use karma_windows::{
     AttributionResult, FrameWorkerReport, FrameWorkerStatus, MonitorSnapshot, Rect,
     SourceAttributor, WindowCandidate, WindowsRuntimeApartment, browser_host, foreground_window,
@@ -158,6 +158,27 @@ impl ContextPolicyHandle {
     }
 
     fn snapshot(&self) -> ContextPolicy {
+        self.0
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct ApplicationPolicyHandle(Arc<RwLock<ApplicationPolicy>>);
+
+impl ApplicationPolicyHandle {
+    pub fn update(&self, policy: &Value) {
+        if let Ok(policy) = ApplicationPolicy::from_value(policy) {
+            *self
+                .0
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = policy;
+        }
+    }
+
+    fn snapshot(&self) -> ApplicationPolicy {
         self.0
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -521,6 +542,7 @@ impl AgentServiceClient {
 pub fn start_context_monitor(
     client: Arc<AgentServiceClient>,
     policy: ContextPolicyHandle,
+    applications: ApplicationPolicyHandle,
 ) -> thread::JoinHandle<()> {
     thread::Builder::new()
         .name("karma-foreground-context".into())
@@ -540,10 +562,10 @@ pub fn start_context_monitor(
                     observation.browser_host.as_deref(),
                     &observation.window_title,
                 );
-                if !matches!(
-                    verdict,
-                    ContextVerdict::Blocklisted | ContextVerdict::TitleKeyword
-                ) {
+                let effect = applications
+                    .snapshot()
+                    .effect_for(&observation.source.executable_name);
+                if !karma_policy::context_enforcement(verdict, effect) {
                     continue;
                 }
                 let fingerprint = context_fingerprint(&observation);

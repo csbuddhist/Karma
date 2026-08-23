@@ -23,7 +23,8 @@ use karma_windows::{
 };
 #[cfg(windows)]
 use service_client::{
-    AgentInferenceSink, AgentServiceClient, ContextPolicyHandle, RecognitionPolicyHandle,
+    AgentInferenceSink, AgentServiceClient, ApplicationPolicyHandle, ContextPolicyHandle,
+    RecognitionPolicyHandle,
 };
 #[cfg(windows)]
 use startup::{CaptureTargetFactory, MonitorInventory, StartupProbe};
@@ -477,14 +478,20 @@ fn run_windows(
     };
     let recognition_policy = RecognitionPolicyHandle::default();
     let context_policy = ContextPolicyHandle::default();
+    let application_policy = ApplicationPolicyHandle::default();
     if let Some(client) = &service_client {
         if let Ok(snapshot) = client.fetch_policy() {
             recognition_policy.update(&snapshot.policy);
             context_policy.update(&snapshot.policy);
+            application_policy.update(&snapshot.policy);
         }
     }
     let _context_monitor = service_client.as_ref().map(|client| {
-        service_client::start_context_monitor(client.clone(), context_policy.clone())
+        service_client::start_context_monitor(
+            client.clone(),
+            context_policy.clone(),
+            application_policy.clone(),
+        )
     });
 
     let mut workers = Vec::new();
@@ -580,6 +587,7 @@ fn run_windows(
                     Ok(snapshot) => {
                         recognition_policy.update(&snapshot.policy);
                         context_policy.update(&snapshot.policy);
+                        application_policy.update(&snapshot.policy);
                         println!(
                             "status=running component=service_ipc policy_revision={} protection_enabled={}",
                             snapshot.revision, snapshot.protection_enabled

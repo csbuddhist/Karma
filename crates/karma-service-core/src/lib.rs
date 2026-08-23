@@ -19,7 +19,7 @@ use karma_ipc::{
     BootstrapStatus, EvidenceMetadata, RequestEnvelope, ResponseEnvelope, ServiceErrorCode,
     ServiceFailure, ServiceRequest, ServiceResult, ServiceStatus,
 };
-use karma_policy::{ContextPolicy, ContextVerdict};
+use karma_policy::{ApplicationEffect, ApplicationPolicy, ContextPolicy};
 use rand::{RngCore, rngs::OsRng};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -293,6 +293,8 @@ impl ServiceCore {
                     return Err(ServiceErrorCode::RevisionConflict);
                 }
                 ContextPolicy::from_value(&policy).map_err(|_| ServiceErrorCode::InvalidRequest)?;
+                ApplicationPolicy::from_value(&policy)
+                    .map_err(|_| ServiceErrorCode::InvalidRequest)?;
                 runtime.stored.policy_revision = runtime.stored.policy_revision.saturating_add(1);
                 runtime.stored.policy = policy;
                 audit(runtime, now_ms, "policy_updated", "success");
@@ -347,6 +349,13 @@ impl ServiceCore {
                 if context_policy.allows_host(observation.browser_host.as_deref()) {
                     return Ok(ServiceResult::Acknowledged);
                 }
+                let application_policy = ApplicationPolicy::from_value(&runtime.stored.policy)
+                    .map_err(|_| ServiceErrorCode::Internal)?;
+                if application_policy.effect_for(&target.executable_name)
+                    == ApplicationEffect::Allow
+                {
+                    return Ok(ServiceResult::Acknowledged);
+                }
                 if !protection_enabled || !image_enabled || observation.risk_millis < threshold {
                     return Ok(ServiceResult::Acknowledged);
                 }
@@ -380,13 +389,15 @@ impl ServiceCore {
                 }
                 let context_policy = ContextPolicy::from_value(&runtime.stored.policy)
                     .map_err(|_| ServiceErrorCode::Internal)?;
-                if !matches!(
-                    context_policy.evaluate(
-                        observation.browser_host.as_deref(),
-                        &observation.window_title,
-                    ),
-                    ContextVerdict::Blocklisted | ContextVerdict::TitleKeyword
-                ) {
+                let application_policy = ApplicationPolicy::from_value(&runtime.stored.policy)
+                    .map_err(|_| ServiceErrorCode::Internal)?;
+                let verdict = context_policy.evaluate(
+                    observation.browser_host.as_deref(),
+                    &observation.window_title,
+                );
+                let application_effect =
+                    application_policy.effect_for(&observation.source.executable_name);
+                if !karma_policy::context_enforcement(verdict, application_effect) {
                     return Ok(ServiceResult::Acknowledged);
                 }
                 runtime
@@ -1139,6 +1150,148 @@ mod tests {
                         policy: json!({
                             "keywords": [
                                 {"id":"bad","phrase":"","category":"high_risk","enabled":true}
+                            ]
+                        }),
+                    },
+                ),
+                2,
+            )
+            .result
+            .unwrap_err()
+            .code,
+            ServiceErrorCode::InvalidRequest
+        );
+    }
+
+    #[test]
+    fn allowed_application_is_exempt_from_image_and_title_enforcement() {
+        let directory = tempfile::tempdir().unwrap();
+        let core = open_core(directory.path(), 0);
+        configure_policy(
+            &core,
+            json!({
+                "protectionEnabled": true,
+                "recognition": {"imageEnabled": true, "sensitivity": 60, "titleMatchingEnabled": true},
+                "applications": [
+                    {"id":"zcode","name":"ZCode","executable":"ZCode.exe","category":"custom","action":"allow","enabled":true}
+                ]
+            }),
+        );
+        let image = AgentObservation {
+            event_id: "image-allowed".into(),
+            agent_instance_id: "agent-1".into(),
+            occurred_at_ms: 100,
+            monitor_id: "monitor-1".into(),
+            risk_millis: 990,
+            reason_code: "image_immediate".into(),
+            source: Some(ProcessIdentity {
+                process_id: 42,
+                started_at_ms: 77,
+                executable_name: r"C:\Users\wei\AppData\Local\Programs\ZCode.exe".into(),
+                executable_sha256: None,
+            }),
+            browser_host: None,
+            evidence_pending: false,
+        };
+        assert!(matches!(
+            success(core.handle(
+                RequestEnvelope::new(
+                    "image-allowed-request",
+                    "image-allowed-nonce",
+                    ClientKind::Agent,
+                    ServiceRequest::AgentObservation {
+                        agent_token: "agent-secret".into(),
+                        observation: image,
+                    },
+                ),
+                101,
+            )),
+            ServiceResult::Acknowledged
+        ));
+        let mut context = context_observation("title-allowed", "最新色情影片", None);
+        context.source.executable_name = r"C:\Tools\ZCode.exe".into();
+        assert!(matches!(
+            submit_context(&core, "title-allowed-nonce", context),
+            ServiceResult::Acknowledged
+        ));
+    }
+
+    #[test]
+    fn blocklisted_host_still_closes_an_allowed_application() {
+        let directory = tempfile::tempdir().unwrap();
+        let core = open_core(directory.path(), 0);
+        configure_policy(
+            &core,
+            json!({
+                "protectionEnabled": true,
+                "recognition": {"titleMatchingEnabled": true},
+                "websites": [
+                    {"id":"blocked","pattern":"blocked.example","action":"block","enabled":true}
+                ],
+                "applications": [
+                    {"id":"browser","name":"浏览器","executable":"chrome.exe","category":"browser","action":"allow","enabled":true}
+                ]
+            }),
+        );
+        assert!(matches!(
+            submit_context(
+                &core,
+                "blocked-host-nonce",
+                context_observation("blocked-host", "", Some("www.blocked.example")),
+            ),
+            ServiceResult::DispositionRequired { event_id, .. } if event_id == "blocked-host"
+        ));
+    }
+
+    #[test]
+    fn blocked_application_is_closed_whenever_observed() {
+        let directory = tempfile::tempdir().unwrap();
+        let core = open_core(directory.path(), 0);
+        configure_policy(
+            &core,
+            json!({
+                "protectionEnabled": true,
+                "applications": [
+                    {"id":"game","name":"游戏","executable":"game.exe","category":"game","action":"block","enabled":true}
+                ]
+            }),
+        );
+        let mut context = context_observation("blocked-app", "日常工作会议纪要", None);
+        context.source.executable_name = r"D:\Games\Game.exe".into();
+        assert!(matches!(
+            submit_context(&core, "blocked-app-nonce", context),
+            ServiceResult::DispositionRequired { event_id, .. } if event_id == "blocked-app"
+        ));
+    }
+
+    #[test]
+    fn put_policy_rejects_invalid_application_rules() {
+        let directory = tempfile::tempdir().unwrap();
+        let core = open_core(directory.path(), 0);
+        let session = match success(core.handle(
+            request(
+                "enroll",
+                "enroll-nonce",
+                ServiceRequest::EnrollAdministrator {
+                    password: "long-test-password".into(),
+                },
+            ),
+            1,
+        )) {
+            ServiceResult::Session { session_token, .. } => session_token,
+            _ => panic!("unexpected response"),
+        };
+        assert_eq!(
+            core.handle(
+                request(
+                    "policy",
+                    "policy-nonce",
+                    ServiceRequest::PutPolicy {
+                        session_token: session,
+                        expected_revision: 0,
+                        policy: json!({
+                            "applications": [
+                                {"id":"bad","name":"X","executable":"x.exe","category":"custom","action":"terminate","enabled":true}
                             ]
                         }),
                     },
