@@ -27,7 +27,13 @@ try {
     $OutputEncoding = New-Object Text.UTF8Encoding($false)
     $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
     $plain | & $control shutdown
-    if ($LASTEXITCODE -ne 0) { throw '管理员密码验证失败，卸载已取消。' }
+    if ($LASTEXITCODE -ne 0) {
+        if ($LASTEXITCODE -eq 4) {
+            Write-Host 'KarmaService 未在运行或无法连接，跳过 shutdown 授权并继续卸载。' -ForegroundColor Yellow
+        } else {
+            throw "KarmaControl 退出码 $LASTEXITCODE：管理员密码验证失败或无法读取密码，卸载已取消。"
+        }
+    }
 } finally {
     $plain = $null
     $OutputEncoding = $previousOutputEncoding

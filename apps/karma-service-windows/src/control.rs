@@ -24,14 +24,28 @@ fn main() {
     while password.ends_with('\r') || password.ends_with('\n') {
         password.pop();
     }
-    match request(
+    let request = RequestEnvelope::new(
+        opaque(),
+        opaque(),
         ClientKind::Installer,
         ServiceRequest::RequestShutdown {
             password: password.to_string(),
         },
-    ) {
+    );
+    let response = match send_request(&request, 3000) {
+        Ok(response) => response,
+        Err(_) => {
+            eprintln!("KarmaService is not reachable; shutdown was not requested");
+            std::process::exit(4);
+        }
+    };
+    match response.result {
         Ok(ServiceResult::Acknowledged) => println!("KarmaService accepted the shutdown request"),
-        _ => {
+        Ok(_) => {
+            eprintln!("unexpected service response; shutdown was not requested");
+            std::process::exit(3);
+        }
+        Err(_) => {
             eprintln!("administrator authentication failed; shutdown was not requested");
             std::process::exit(3);
         }
@@ -39,19 +53,16 @@ fn main() {
 }
 
 #[cfg(windows)]
-fn request(client: ClientKind, body: ServiceRequest) -> Result<ServiceResult, ()> {
-    let request = RequestEnvelope::new(opaque(), opaque(), client, body);
-    send_request(&request, 3000)
-        .map_err(|_| ())?
-        .result
-        .map_err(|_| ())
-}
-
-#[cfg(windows)]
 fn opaque() -> String {
+    use std::fmt::Write;
     let mut bytes = [0_u8; 24];
     OsRng.fill_bytes(&mut bytes);
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    bytes
+        .iter()
+        .fold(String::with_capacity(48), |mut value, byte| {
+            let _ = write!(value, "{byte:02x}");
+            value
+        })
 }
 
 #[cfg(not(windows))]

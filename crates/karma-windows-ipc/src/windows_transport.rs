@@ -73,7 +73,7 @@ impl PipeServer {
         }
         .map_err(|_| TransportError::OperationFailed)?;
         let _owned_descriptor = OwnedSecurityDescriptor(descriptor);
-        let mut security = SECURITY_ATTRIBUTES {
+        let security = SECURITY_ATTRIBUTES {
             nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
             lpSecurityDescriptor: descriptor.0,
             bInheritHandle: false.into(),
@@ -88,7 +88,7 @@ impl PipeServer {
                 PIPE_BUFFER_BYTES,
                 PIPE_BUFFER_BYTES,
                 0,
-                Some(&mut security),
+                Some(&security),
             )
         };
         if handle == INVALID_HANDLE_VALUE {

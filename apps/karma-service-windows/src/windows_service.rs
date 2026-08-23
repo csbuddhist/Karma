@@ -240,7 +240,7 @@ fn handle_connection(
     Ok(())
 }
 
-fn harden_path(path: &PathBuf) -> Result<(), ServiceHostError> {
+fn harden_path(path: &std::path::Path) -> Result<(), ServiceHostError> {
     let mut descriptor = PSECURITY_DESCRIPTOR::default();
     unsafe {
         ConvertStringSecurityDescriptorToSecurityDescriptorW(

@@ -79,6 +79,13 @@ uninstall_existing:
     ${EndIf}
     IfFileExists "$1\Uninstall-Karma-Launcher.exe" 0 existing_uninstaller_missing
 
+    # 旧版卸载器通过 IPC 管道向运行中的 KarmaService 验证管理员密码。
+    # 若服务未运行，旧版 KarmaControl 会把连接失败误报为密码验证失败，
+    # 因此先确保服务已启动（已在运行时 sc start 返回 1056，可安全忽略）。
+    nsExec::ExecToStack '"$SYSDIR\sc.exe" start KarmaService'
+    Pop $5
+    Sleep 2000
+
     ExecWait '"$1\Uninstall-Karma-Launcher.exe" /S' $2
     ${If} $2 != 0
       MessageBox MB_OK|MB_ICONSTOP "管理员密码验证失败或现有版本卸载未完成。安装已取消，Karma 保持原有安装状态。"
