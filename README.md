@@ -112,7 +112,9 @@ The unified engine supports:
   domain closes immediately without waiting for an image-risk threshold.
 - Foreground-window title matching with a versioned high-precision English, Chinese, Japanese,
   and Russian explicit-content list, extended by console-managed custom high-risk and sensitive
-  keywords; console-managed exemption keywords suppress keyword matches.
+  keywords; console-managed exemption keywords suppress keyword matches. The console keyword
+  page browses and searches the built-in read-only list by language and supports adding,
+  editing, enabling, deleting, and searching custom keywords.
 - Temporary allowances, remaining usage time, and cooldown periods.
 - Corrections for screen locking, sleep, time-zone changes, and daylight saving time.
 - Policy priority and conflict explanations.

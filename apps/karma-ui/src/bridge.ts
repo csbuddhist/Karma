@@ -185,6 +185,16 @@ export async function configureLaunchAtStartup(enabled: boolean): Promise<void> 
   }
 }
 
+export async function getAppVersion(): Promise<string> {
+  if (!isTauri()) return "dev";
+  try {
+    const { getVersion } = await import("@tauri-apps/api/app");
+    return await getVersion();
+  } catch {
+    return "dev";
+  }
+}
+
 export async function revealEvidence(sessionToken: string, evidenceId: string, password: string): Promise<string> {
   if (isTauri()) return invoke("reveal_evidence", { sessionToken, evidenceId, password });
   if (localStorage.getItem(browserPasswordKey) !== await browserPasswordDigest(password)) throw new Error("管理员密码不正确");

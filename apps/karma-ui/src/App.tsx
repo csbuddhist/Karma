@@ -31,6 +31,7 @@ import {
   LockKeyhole,
   LogOut,
   Monitor,
+  Pencil,
   Power,
   Plus,
   Save,
@@ -50,6 +51,7 @@ import {
   defaultConsoleState,
   enroll,
   exportSettings,
+  getAppVersion,
   importSettings,
   isTauriConsole,
   loadConsole,
@@ -60,6 +62,7 @@ import {
   saveConsole,
   unlock,
 } from "./bridge";
+import { bundledKeywordCount, bundledKeywordGroups } from "./bundledKeywords";
 import {
   createTranslator,
   getInitialLocale,
@@ -361,13 +364,116 @@ function Recognition({ state, update }: { state: ConsoleState; update: (state: C
   </div>;
 }
 
+const bundledLanguageLabels: Record<string, MessageKey> = {
+  en: "keywords.langEn",
+  zh: "keywords.langZh",
+  ja: "keywords.langJa",
+  ru: "keywords.langRu",
+};
+
 function Keywords({ state, update }: { state: ConsoleState; update: (state: ConsoleState) => void }) {
   const { t } = useI18n();
   const [phrase, setPhrase] = useState("");
   const [category, setCategory] = useState<KeywordRule["category"]>("sensitive");
-  function add() { if (!phrase.trim()) return; update({ ...state, keywords: [...state.keywords, { id: crypto.randomUUID(), phrase: phrase.trim(), category, enabled: true }] }); setPhrase(""); }
+  const [addError, setAddError] = useState("");
+  const [filter, setFilter] = useState("");
+  const [editing, setEditing] = useState<KeywordRule | null>(null);
+  const [editPhrase, setEditPhrase] = useState("");
+  const [editCategory, setEditCategory] = useState<KeywordRule["category"]>("sensitive");
+  const [editError, setEditError] = useState("");
+  const [builtInFilter, setBuiltInFilter] = useState("");
   const categoryLabel = (value: KeywordRule["category"]) => t(value === "high_risk" ? "keywords.highRisk" : value === "sensitive" ? "keywords.sensitive" : "keywords.exemptionShort");
-  return <div className="page-stack"><div className="privacy-banner"><Search size={18} /><span><strong>{t("keywords.bannerTitle")}</strong> {t("keywords.bannerDescription")}</span></div><Card><div className="toolbar"><div className="input-with-icon"><Search size={17} /><input placeholder={t("keywords.placeholder")} value={phrase} onChange={(event) => setPhrase(event.target.value)} onKeyDown={(event) => event.key === "Enter" && add()} /></div><select value={category} onChange={(event) => setCategory(event.target.value as KeywordRule["category"])}><option value="high_risk">{t("keywords.highRisk")}</option><option value="sensitive">{t("keywords.sensitive")}</option><option value="exemption">{t("keywords.exemption")}</option></select><button className="primary-button" onClick={add}><Plus size={17} />{t("keywords.add")}</button></div>{state.keywords.length ? <div className="table"><div className="table-head"><span>{t("keywords.keyword")}</span><span>{t("keywords.category")}</span><span>{t("keywords.status")}</span><span /></div>{state.keywords.map((rule) => <div className="table-row" key={rule.id}><strong>{rule.phrase}</strong><span><span className={`tag ${rule.category}`}>{categoryLabel(rule.category)}</span></span><span><Toggle checked={rule.enabled} onChange={(enabled) => update({ ...state, keywords: state.keywords.map((item) => item.id === rule.id ? { ...item, enabled } : item) })} label={t("keywords.enable", { name: rule.phrase })} /></span><button className="icon-button danger" aria-label={t("keywords.delete", { name: rule.phrase })} onClick={() => update({ ...state, keywords: state.keywords.filter((item) => item.id !== rule.id) })}><Trash2 size={17} /></button></div>)}</div> : <EmptyState icon={<Search />} title={t("keywords.emptyTitle")} text={t("keywords.emptyDescription")} />}</Card></div>;
+  const languageLabel = (language: string) => { const key = bundledLanguageLabels[language]; return key ? t(key) : language; };
+  const duplicateOf = (candidatePhrase: string, candidateCategory: KeywordRule["category"], ignoreId?: string) => state.keywords.some((rule) => rule.id !== ignoreId && rule.phrase === candidatePhrase && rule.category === candidateCategory);
+  function add() {
+    const trimmed = phrase.trim();
+    if (!trimmed) return;
+    if (duplicateOf(trimmed, category)) return setAddError(t("keywords.duplicate"));
+    update({ ...state, keywords: [...state.keywords, { id: crypto.randomUUID(), phrase: trimmed, category, enabled: true }] });
+    setPhrase("");
+    setAddError("");
+  }
+  function openEdit(rule: KeywordRule) { setEditing(rule); setEditPhrase(rule.phrase); setEditCategory(rule.category); setEditError(""); }
+  function saveEdit() {
+    if (!editing) return;
+    const trimmed = editPhrase.trim();
+    if (!trimmed) return;
+    if (duplicateOf(trimmed, editCategory, editing.id)) return setEditError(t("keywords.duplicate"));
+    update({ ...state, keywords: state.keywords.map((item) => item.id === editing.id ? { ...item, phrase: trimmed, category: editCategory } : item) });
+    setEditing(null);
+  }
+  const normalizedFilter = filter.trim().toLowerCase();
+  const visibleKeywords = normalizedFilter ? state.keywords.filter((rule) => rule.phrase.toLowerCase().includes(normalizedFilter)) : state.keywords;
+  const builtInNeedle = builtInFilter.trim().toLowerCase();
+  const visibleBundledGroups = bundledKeywordGroups
+    .map((group) => ({ ...group, keywords: builtInNeedle ? group.keywords.filter((keyword) => keyword.toLowerCase().includes(builtInNeedle)) : group.keywords }))
+    .filter((group) => group.keywords.length > 0);
+  return <div className="page-stack">
+    <div className="privacy-banner"><Search size={18} /><span><strong>{t("keywords.bannerTitle")}</strong> {t("keywords.bannerDescription")}</span></div>
+    <Card>
+      <div className="card-heading">
+        <div><h2>{t("keywords.customTitle")}</h2></div>
+        {state.keywords.length > 0 && (
+          <div className="input-with-icon heading-search">
+            <Search size={16} />
+            <input placeholder={t("keywords.searchPlaceholder")} value={filter} onChange={(event) => setFilter(event.target.value)} />
+          </div>
+        )}
+      </div>
+      <div className="toolbar">
+        <div className="input-with-icon"><Search size={17} /><input placeholder={t("keywords.placeholder")} value={phrase} onChange={(event) => { setPhrase(event.target.value); setAddError(""); }} onKeyDown={(event) => event.key === "Enter" && add()} /></div>
+        <select value={category} onChange={(event) => setCategory(event.target.value as KeywordRule["category"])}><option value="high_risk">{t("keywords.highRisk")}</option><option value="sensitive">{t("keywords.sensitive")}</option><option value="exemption">{t("keywords.exemption")}</option></select>
+        <button className="primary-button" onClick={add}><Plus size={17} />{t("keywords.add")}</button>
+      </div>
+      {addError && <div className="form-error keyword-error"><CircleAlert size={16} />{addError}</div>}
+      {state.keywords.length ? (
+        visibleKeywords.length ? (
+          <div className="table">
+            <div className="table-head"><span>{t("keywords.keyword")}</span><span>{t("keywords.category")}</span><span>{t("keywords.status")}</span><span /></div>
+            {visibleKeywords.map((rule) => (
+              <div className="table-row" key={rule.id}>
+                <strong>{rule.phrase}</strong>
+                <span><span className={`tag ${rule.category}`}>{categoryLabel(rule.category)}</span></span>
+                <span><Toggle checked={rule.enabled} onChange={(enabled) => update({ ...state, keywords: state.keywords.map((item) => item.id === rule.id ? { ...item, enabled } : item) })} label={t("keywords.enable", { name: rule.phrase })} /></span>
+                <span className="row-actions">
+                  <button className="icon-button" aria-label={t("keywords.edit", { name: rule.phrase })} onClick={() => openEdit(rule)}><Pencil size={16} /></button>
+                  <button className="icon-button danger" aria-label={t("keywords.delete", { name: rule.phrase })} onClick={() => update({ ...state, keywords: state.keywords.filter((item) => item.id !== rule.id) })}><Trash2 size={16} /></button>
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : <EmptyState icon={<Search />} title={t("keywords.searchNoMatch")} text={t("keywords.emptyDescription")} />
+      ) : <EmptyState icon={<Search />} title={t("keywords.emptyTitle")} text={t("keywords.emptyDescription")} />}
+    </Card>
+    <Card>
+      <div className="card-heading">
+        <div><h2>{t("keywords.builtInTitle")}</h2><p>{t("keywords.builtInDescription")}</p></div>
+        <div className="card-heading-side">
+          <div className="input-with-icon heading-search"><Search size={16} /><input placeholder={t("keywords.searchPlaceholder")} value={builtInFilter} onChange={(event) => setBuiltInFilter(event.target.value)} /></div>
+          <span className="value-badge">{t("keywords.count", { count: bundledKeywordCount })}</span>
+        </div>
+      </div>
+      {visibleBundledGroups.length ? (
+        <div className="keyword-groups">
+          {visibleBundledGroups.map((group) => (
+            <div className="keyword-group" key={group.language}>
+              <div className="keyword-group-head"><strong>{languageLabel(group.language)}</strong><small>{t("keywords.count", { count: group.keywords.length })}</small></div>
+              <div className="keyword-chips">{group.keywords.map((keyword) => <span className="keyword-chip" key={keyword}>{keyword}</span>)}</div>
+            </div>
+          ))}
+        </div>
+      ) : <EmptyState icon={<Search />} title={t("keywords.searchNoMatch")} text={t("keywords.builtInDescription")} />}
+      <p className="card-footnote">{t("keywords.builtInNote")}</p>
+    </Card>
+    {editing && (
+      <Modal title={t("keywords.editTitle")} onClose={() => setEditing(null)}>
+        <label className="field"><span>{t("keywords.phraseLabel")}</span><input autoFocus value={editPhrase} onChange={(event) => { setEditPhrase(event.target.value); setEditError(""); }} onKeyDown={(event) => event.key === "Enter" && saveEdit()} /></label>
+        <label className="field"><span>{t("keywords.category")}</span><select value={editCategory} onChange={(event) => setEditCategory(event.target.value as KeywordRule["category"])}><option value="high_risk">{t("keywords.highRisk")}</option><option value="sensitive">{t("keywords.sensitive")}</option><option value="exemption">{t("keywords.exemption")}</option></select></label>
+        {editError && <div className="form-error"><CircleAlert size={16} />{editError}</div>}
+        <button className="primary-button modal-submit" disabled={!editPhrase.trim()} onClick={saveEdit}>{t("keywords.save")}</button>
+      </Modal>
+    )}
+  </div>;
 }
 
 function normalizeWebsitePattern(value: string): string | null {
@@ -593,10 +699,12 @@ function AppContent() {
   const [saveMessage, setSaveMessage] = useState("");
   const [saveError, setSaveError] = useState("");
   const [startupError, setStartupError] = useState("");
+  const [appVersion, setAppVersion] = useState("");
 
   async function refreshAuthStatus() { setLoading(true); setStartupError(""); try { setAuthMode(await authStatus()); } catch (reason) { setStartupError(reason instanceof Error ? reason.message : String(reason)); } finally { setLoading(false); } }
   useEffect(() => { document.documentElement.lang = locale; document.title = t("document.title"); }, [locale, t]);
   useEffect(() => { void refreshAuthStatus(); }, []);
+  useEffect(() => { void getAppVersion().then(setAppVersion).catch(() => undefined); }, []);
   useEffect(() => {
     if (authMode !== "unlocked" || !sessionToken) return;
     let timeout = window.setTimeout(() => void signOut(), 15 * 60 * 1000);
@@ -666,7 +774,7 @@ function AppContent() {
   if (startupError) return <ServiceConnectionError detail={localizeError(startupError, t)} onRetry={() => void refreshAuthStatus()} />;
   if (authMode !== "unlocked") return <PasswordGate mode={authMode} onAuthenticated={authenticated} />;
   const meta = pageMeta[page];
-  return <div className="app-shell"><aside className="sidebar"><div className="brand-lockup sidebar-brand"><div className="brand-mark"><KarmaShieldIcon /></div><div><strong>KARMA</strong><span>{t("brand.short")}</span></div></div><nav>{navItems.map((item) => { const Icon = item.icon; return <button className={page === item.key ? "active" : ""} key={item.key} onClick={() => setPage(item.key)}><Icon size={19} /><span>{t(item.label)}</span>{item.key === "evidence" && state.evidence.length > 0 && <b>{state.evidence.length}</b>}</button>; })}</nav><div className="sidebar-foot"><div className="mini-health"><span className={state.serviceConnected ? "online" : "offline"} /><div><strong>{t(state.serviceConnected ? "sidebar.serviceOnline" : "sidebar.serviceOffline")}</strong><small>{t(state.agentConnected ? "sidebar.agentOnline" : "sidebar.consoleOnly")}</small></div></div><button onClick={signOut}><LogOut size={18} /><span>{t("common.lockConsole")}</span></button></div></aside><main className="main"><header><div><span className="eyebrow">KARMA CONTROL</span><h1>{t(meta.title)}</h1><p>{t(meta.subtitle)}</p></div><div className="header-actions">{saveMessage && <span className="saved-message"><Check size={15} />{saveMessage}</span>}{saveError && <span className="save-error-message"><CircleAlert size={15} />{saveError}</span>}<button className="secondary-button" onClick={signOut}><Lock size={16} />{t("common.lock")}</button><button className="primary-button" disabled={!dirty || saving} onClick={save}><Save size={17} />{t(saving ? "common.saving" : "common.saveSettings")}</button></div></header><div className="page-content">{content}</div></main></div>;
+  return <div className="app-shell"><aside className="sidebar"><div className="brand-lockup sidebar-brand"><div className="brand-mark"><KarmaShieldIcon /></div><div><strong>KARMA</strong><span>{t("brand.short")}</span></div></div><nav>{navItems.map((item) => { const Icon = item.icon; return <button className={page === item.key ? "active" : ""} key={item.key} onClick={() => setPage(item.key)}><Icon size={19} /><span>{t(item.label)}</span>{item.key === "evidence" && state.evidence.length > 0 && <b>{state.evidence.length}</b>}</button>; })}</nav><div className="sidebar-foot"><div className="mini-health"><span className={state.serviceConnected ? "online" : "offline"} /><div><strong>{t(state.serviceConnected ? "sidebar.serviceOnline" : "sidebar.serviceOffline")}</strong><small>{t(state.agentConnected ? "sidebar.agentOnline" : "sidebar.consoleOnly")}</small></div></div><button onClick={signOut}><LogOut size={18} /><span>{t("common.lockConsole")}</span></button>{appVersion && <div className="sidebar-version">{t("sidebar.version", { version: appVersion })}</div>}</div></aside><main className="main"><header><div><span className="eyebrow">KARMA CONTROL</span><h1>{t(meta.title)}</h1><p>{t(meta.subtitle)}</p></div><div className="header-actions">{saveMessage && <span className="saved-message"><Check size={15} />{saveMessage}</span>}{saveError && <span className="save-error-message"><CircleAlert size={15} />{saveError}</span>}<button className="secondary-button" onClick={signOut}><Lock size={16} />{t("common.lock")}</button><button className="primary-button" disabled={!dirty || saving} onClick={save}><Save size={17} />{t(saving ? "common.saving" : "common.saveSettings")}</button></div></header><div className="page-content">{content}</div></main></div>;
 }
 
 export function App() {
