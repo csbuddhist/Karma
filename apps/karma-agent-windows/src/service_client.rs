@@ -20,7 +20,7 @@ use karma_ipc::{
     EvidenceSubmission, MonitorHealth, ProcessIdentity, RequestEnvelope, ServiceRequest,
     ServiceResult,
 };
-use karma_policy::{ApplicationEffect, ApplicationPolicy, ContextPolicy, ContextVerdict};
+use karma_policy::{ApplicationPolicy, ContextPolicy};
 use karma_windows::{
     AttributionResult, FrameWorkerReport, FrameWorkerStatus, MonitorSnapshot, Rect,
     SourceAttributor, WindowCandidate, WindowsRuntimeApartment, browser_host, foreground_window,
