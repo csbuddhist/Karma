@@ -10,7 +10,7 @@ The project follows a “single product, shared core, two native executors” ar
 
 ## Windows Test Installer
 
-New users can download the single-file `Karma-windows-x64-test-v0.1.8-setup.exe` from the [v0.1.8 Windows Test Build](https://github.com/DrWeiZhou/Karma/releases/tag/v0.1.8). On Windows 10 22H2 or Windows 11 x64, run it as an administrator to install the files, verify their hashes, register the Service, and create shortcuts. The Microsoft Visual C++ 2015–2022 x64 Redistributable is still required.
+New users can download the single-file `Karma-windows-x64-test-v0.1.9-setup.exe` from the [v0.1.9 Windows Test Build](https://github.com/DrWeiZhou/Karma/releases/tag/v0.1.9). On Windows 10 22H2 or Windows 11 x64, run it as an administrator to install the files, verify their hashes, register the Service, and create shortcuts. The Microsoft Visual C++ 2015–2022 x64 Redistributable is still required.
 
 `main` also retains the auditable **cloneable Windows test bundle** at [`release/windows-x64-test/`](release/windows-x64-test/) for diagnostics and reproducible packaging. If setup detects an existing installation, it offers to remove it, requests the Karma administrator password through the existing uninstaller, closes the installed administration console, and continues installation only after Service removal succeeds. The administration console launches in the background at user sign-in by default and can be disabled in System Settings; the protection Service starts with Windows independently. The installer remains unsigned development/test software, and uninstall still requires the Karma administrator password; it is not a signed production installer. See the [Windows Installation and Testing Guide](docs/windows-installation-guide.md) for details.
 
