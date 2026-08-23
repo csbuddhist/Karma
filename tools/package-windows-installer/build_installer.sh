@@ -8,6 +8,7 @@ bundle_dir="$repo_root/release/windows-x64-test"
 output_dir="$repo_root/target/release-artifacts"
 output_file="$output_dir/Karma-windows-x64-test-v${version}-setup.exe"
 icon_file="$repo_root/apps/karma-ui/src-tauri/icons/icon.ico"
+cleanup_file="$script_dir/Cleanup-InstallDirectory.ps1"
 
 if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   echo "version must use MAJOR.MINOR.PATCH format" >&2
@@ -32,6 +33,7 @@ makensis \
   -DBUNDLE_DIR="$bundle_dir" \
   -DOUTPUT_FILE="$output_file" \
   -DICON_FILE="$icon_file" \
+  -DCLEANUP_FILE="$cleanup_file" \
   "$script_dir/KarmaInstaller.nsi"
 
 file "$output_file"

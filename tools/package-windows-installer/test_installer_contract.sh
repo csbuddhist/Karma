@@ -7,6 +7,7 @@ installer="$script_dir/KarmaInstaller.nsi"
 builder="$script_dir/build_installer.sh"
 install_script="$repo_root/release/windows-x64-test/Install-Karma.ps1"
 uninstall_script="$repo_root/release/windows-x64-test/Uninstall-Karma.ps1"
+cleanup_script="$script_dir/Cleanup-InstallDirectory.ps1"
 contract_failed=0
 
 assert_contains() {
@@ -36,6 +37,11 @@ assert_before() {
 
 test -f "$installer"
 test -f "$builder"
+test -f "$cleanup_script"
+head -c 3 "$cleanup_script" | od -An -t x1 | tr -d ' \n' | grep -qx 'efbbbf' || {
+  echo 'cleanup script must start with a UTF-8 BOM' >&2
+  contract_failed=1
+}
 rg -q 'RequestExecutionLevel admin' "$installer"
 rg -q '\$PROGRAMFILES64\\Karma' "$installer"
 rg -q 'test_installer_contract\.sh' "$builder"
@@ -51,16 +57,33 @@ rg -q 'Uninstall-Karma\.ps1' "$installer"
 rg -q 'KarmaControl\.exe' "$uninstall_script"
 assert_contains 'MessageBox MB_YESNO.*是否先卸载现有版本并继续安装' "$installer" \
   'installer must ask before removing an existing installation'
-assert_contains 'ExecWait .*Uninstall-Karma-Launcher\.exe.* /S.* \$2' "$installer" \
-  'installer must automatically invoke the existing uninstaller after confirmation'
-assert_before 'MessageBox MB_YESNO.*是否先卸载现有版本并继续安装' 'ExecWait .*Uninstall-Karma-Launcher\.exe.* /S' "$installer" \
-  'installer must obtain confirmation before invoking the existing uninstaller'
-assert_before 'ExecWait .*Uninstall-Karma-Launcher\.exe.* /S' '\$2 != 0' "$installer" \
-  'installer must wait for and validate the existing uninstaller result'
+# 升级必须直接同步运行已安装的密码授权卸载脚本：NSIS 卸载器复制到临时目录
+# 异步执行，原进程总是立即退出 0，ExecWait 无法据此判断卸载是否成功。
+assert_contains 'ExecWait .*-File "\$1\\Uninstall-Karma\.ps1".* \$2' "$installer" \
+  'installer must run the installed password-authorized uninstall script synchronously'
+if rg -q 'ExecWait .*Uninstall-Karma-Launcher\.exe.* /S' "$installer"; then
+  echo 'installer must not wait on the NSIS uninstaller launcher: it always exits 0 immediately' >&2
+  contract_failed=1
+fi
+assert_before 'MessageBox MB_YESNO.*是否先卸载现有版本并继续安装' 'ExecWait .*-File "\$1\\Uninstall-Karma\.ps1"' "$installer" \
+  'installer must obtain confirmation before running the existing uninstall script'
+assert_before 'ExecWait .*-File "\$1\\Uninstall-Karma\.ps1"' '\$2 != 0' "$installer" \
+  'installer must wait for and validate the existing uninstall script result'
 assert_contains '^wait_for_existing_service_removal:' "$installer" \
   'installer must poll for the existing service to disappear after uninstall succeeds'
 assert_before '^wait_for_existing_service_removal:' '现有 KarmaService .*未能移除' "$installer" \
   'installer must wait for confirmed service removal before reporting failure'
+# 卸载后、解包前必须清理遗留进程与被占用文件，否则 NSIS 会报“无法打开要写入的文件”。
+assert_contains 'Karma-Cleanup\.ps1' "$installer" \
+  'installer must run the leftover-process cleanup before extracting files'
+assert_before 'ExecWait .*-File "\$1\\Uninstall-Karma\.ps1"' 'Karma-Cleanup\.ps1' "$installer" \
+  'installer must clean up only after the existing uninstall script finishes'
+assert_before 'Karma-Cleanup\.ps1' '^Section "Install"' "$installer" \
+  'installer must clean up leftover processes before extracting files'
+assert_contains "Stop-Process -Id" "$cleanup_script" \
+  'cleanup script must force-stop Karma processes from the old install directory'
+assert_contains 'Remove-Item -LiteralPath \$destination -Recurse -Force' "$cleanup_script" \
+  'cleanup script must remove the old install directory when files remain'
 if rg -q '请先运行现有安装目录中的 Uninstall-Karma-Launcher\.exe' "$installer"; then
   echo 'installer must not require the user to launch the existing uninstaller manually' >&2
   contract_failed=1
@@ -73,12 +96,18 @@ assert_before 'if \(\$LASTEXITCODE -ne 0\)' 'sc\.exe delete KarmaService' "$unin
   'uninstaller must authenticate successfully before deleting the service'
 assert_before 'if \(\$LASTEXITCODE -ne 0\)' 'Remove-Item -LiteralPath \$destination' "$uninstall_script" \
   'uninstaller must authenticate successfully before deleting installed files'
-assert_contains "Get-Process -Name 'karma-ui'" "$uninstall_script" \
+assert_contains "Stop-KarmaProcess -Name 'karma-ui'" "$uninstall_script" \
   'uninstaller must locate the installed administration console before deleting its executable'
+assert_contains "Stop-KarmaProcess -Name 'karma-agent-windows'" "$uninstall_script" \
+  'uninstaller must also stop the session agent before deleting installed files'
 assert_before 'if \(\$LASTEXITCODE -ne 0\)' 'Stop-Process -Id' "$uninstall_script" \
   'uninstaller must authenticate successfully before stopping the administration console'
 assert_before 'Stop-Process -Id' 'Remove-Item -LiteralPath \$destination' "$uninstall_script" \
   'uninstaller must stop the installed administration console before deleting installed files'
+assert_contains '未能全部退出' "$uninstall_script" \
+  'uninstaller must wait for stopped processes to actually exit before deleting files'
+assert_contains 'for \(\$attempt = 1; \$attempt -le 3; \$attempt\+\+\)' "$uninstall_script" \
+  'uninstaller must retry the directory removal while process handles are released'
 assert_before '\$service\.Dispose\(\)' 'sc\.exe delete KarmaService' "$uninstall_script" \
   'uninstaller must release its service handle before deleting KarmaService'
 assert_contains '\$deleteExitCode -notin @\(0, 1060, 1072\)' "$uninstall_script" \

@@ -40,29 +40,53 @@ try {
     [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
 }
 
-$consolePath = [IO.Path]::GetFullPath((Join-Path $destination 'karma-ui.exe'))
-$consoleProcesses = @(Get-Process -Name 'karma-ui' -ErrorAction SilentlyContinue)
-foreach ($process in $consoleProcesses) {
-    try {
-        $processPath = [IO.Path]::GetFullPath($process.Path)
-    } catch {
-        continue
-    }
-    if ($processPath -ine $consolePath) {
-        continue
-    }
-    try {
-        if (-not $process.HasExited) {
-            Stop-Process -Id $process.Id -Force -ErrorAction Stop
-            $process.WaitForExit(5000) | Out-Null
+function Stop-KarmaProcess {
+    param(
+        [string] $Name,
+        [string] $Directory
+    )
+    foreach ($process in @(Get-Process -Name $Name -ErrorAction SilentlyContinue)) {
+        $processPath = $null
+        try {
+            $processPath = [IO.Path]::GetFullPath($process.Path)
+        } catch {
+            # 路径读取失败（例如进程属于其他会话）时跳过路径校验，直接按名称结束：
+            # karma-ui、karma-agent-windows、KarmaControl 都是 Karma 专用进程名。
         }
-    } catch {
-        if (-not $process.HasExited) {
-            throw '无法关闭 Karma 管理控制台，卸载已取消。'
+        if ($processPath -and -not $processPath.StartsWith($Directory + '\', [StringComparison]::OrdinalIgnoreCase)) {
+            $process.Dispose()
+            continue
         }
-    } finally {
-        $process.Dispose()
+        try {
+            if (-not $process.HasExited) {
+                Stop-Process -Id $process.Id -Force -ErrorAction Stop
+            }
+        } catch {
+        } finally {
+            $process.Dispose()
+        }
     }
+}
+
+# 密码验证通过后：先结束控制台、Agent 与卸载授权程序，再等待它们真正退出，
+# 否则可执行文件仍被占用，目录删除会失败。
+$processNames = @('karma-ui', 'karma-agent-windows', 'KarmaControl')
+Stop-KarmaProcess -Name 'karma-ui' -Directory $destination
+Stop-KarmaProcess -Name 'karma-agent-windows' -Directory $destination
+Stop-KarmaProcess -Name 'KarmaControl' -Directory $destination
+$deadline = (Get-Date).AddSeconds(10)
+do {
+    $remaining = @()
+    foreach ($name in $processNames) {
+        $remaining += @(Get-Process -Name $name -ErrorAction SilentlyContinue | Where-Object {
+            try { -not $_.HasExited } catch { $false }
+        })
+    }
+    if ($remaining.Count -eq 0) { break }
+    Start-Sleep -Milliseconds 500
+} while ((Get-Date) -lt $deadline)
+if ($remaining.Count -gt 0) {
+    throw 'Karma 相关进程未能全部退出，文件仍被占用，卸载已取消。'
 }
 
 $autoStartName = 'Karma Family Protection'
@@ -83,7 +107,21 @@ if ($null -ne $service) {
 }
 
 if (Test-Path -LiteralPath $destination) {
-    Remove-Item -LiteralPath $destination -Recurse -Force
+    # 强制结束进程后句柄释放存在延迟，重试若干次再判定失败。
+    $lastRemoveError = $null
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        try {
+            Remove-Item -LiteralPath $destination -Recurse -Force -ErrorAction Stop
+            $lastRemoveError = $null
+            break
+        } catch {
+            $lastRemoveError = $_
+            Start-Sleep -Seconds 2
+        }
+    }
+    if ($null -ne $lastRemoveError) {
+        throw "无法删除安装目录 $destination：$($lastRemoveError.Exception.Message)"
+    }
 }
 if ($PurgeData) {
     $dataDirectory = Join-Path $env:ProgramData 'Karma'

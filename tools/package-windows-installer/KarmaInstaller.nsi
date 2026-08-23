@@ -19,6 +19,9 @@ Unicode true
 !ifndef ICON_FILE
   !error "ICON_FILE is required"
 !endif
+!ifndef CLEANUP_FILE
+  !error "CLEANUP_FILE is required"
+!endif
 
 !define PRODUCT_NAME "Karma Family Protection"
 !define PRODUCT_PUBLISHER "Karma"
@@ -77,16 +80,20 @@ uninstall_existing:
     ${If} $1 == ""
       StrCpy $1 "$PROGRAMFILES64\Karma"
     ${EndIf}
-    IfFileExists "$1\Uninstall-Karma-Launcher.exe" 0 existing_uninstaller_missing
+    IfFileExists "$1\Uninstall-Karma.ps1" 0 existing_uninstaller_missing
 
-    # 旧版卸载器通过 IPC 管道向运行中的 KarmaService 验证管理员密码。
-    # 若服务未运行，旧版 KarmaControl 会把连接失败误报为密码验证失败，
-    # 因此先确保服务已启动（已在运行时 sc start 返回 1056，可安全忽略）。
+    # 直接同步运行已安装的密码授权卸载脚本：控制台窗口可见，可以输入
+    # 管理员密码，并且返回真实的退出码。不能调用 Uninstall-Karma-Launcher.exe：
+    # NSIS 卸载器会把自身复制到临时目录异步执行，原进程总是立即退出 0，
+    # 安装器既等不到卸载完成，也拿不到真实的失败结果。
+    #
+    # 旧版 KarmaControl 会把“服务未运行”误报为密码验证失败，因此先确保
+    # 服务已启动（已在运行时 sc start 返回 1056，可安全忽略）。
     nsExec::ExecToStack '"$SYSDIR\sc.exe" start KarmaService'
     Pop $5
     Sleep 2000
 
-    ExecWait '"$1\Uninstall-Karma-Launcher.exe" /S' $2
+    ExecWait '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$1\Uninstall-Karma.ps1" -InstallDirectory "$1"' $2
     ${If} $2 != 0
       MessageBox MB_OK|MB_ICONSTOP "管理员密码验证失败或现有版本卸载未完成。安装已取消，Karma 保持原有安装状态。"
       Abort
@@ -96,7 +103,7 @@ uninstall_existing:
 wait_for_existing_service_removal:
     ReadRegStr $3 HKLM "SYSTEM\CurrentControlSet\Services\KarmaService" "ImagePath"
     ${If} $3 == ""
-      Goto existing_uninstall_done
+      Goto existing_cleanup
     ${EndIf}
     IntOp $4 $4 + 1
     ${If} $4 < 60
@@ -106,8 +113,20 @@ wait_for_existing_service_removal:
     MessageBox MB_OK|MB_ICONSTOP "现有 KarmaService 在 30 秒内未能移除。请关闭“服务”管理器或其他可能占用该 Service 的工具后重试。安装已取消。"
     Abort
 
+    # 旧版卸载脚本可能遗留运行中的 karma-ui 等进程和被占用的文件；
+    # 解包前强制结束并清空安装目录，避免出现“无法打开要写入的文件”。
+existing_cleanup:
+    InitPluginsDir
+    File /oname=$PLUGINSDIR\Karma-Cleanup.ps1 "${CLEANUP_FILE}"
+    ExecWait '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\Karma-Cleanup.ps1" -InstallDirectory "$1"' $6
+    ${If} $6 != 0
+      MessageBox MB_OK|MB_ICONSTOP "旧安装目录 $1 仍被 Karma 进程占用，无法清理。请结束 karma-ui 等进程后重试安装。安装已取消。"
+      Abort
+    ${EndIf}
+    Goto existing_uninstall_done
+
 existing_uninstaller_missing:
-    MessageBox MB_OK|MB_ICONSTOP "找不到现有版本的 Uninstall-Karma-Launcher.exe，无法自动卸载。安装已取消。"
+    MessageBox MB_OK|MB_ICONSTOP "找不到现有版本的 Uninstall-Karma.ps1，无法自动卸载。请先从“应用和功能”中卸载 Karma，再运行本安装器。安装已取消。"
     Abort
 
 existing_uninstall_done:
