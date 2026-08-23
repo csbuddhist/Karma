@@ -28,6 +28,10 @@ Place focused Rust unit tests in `#[cfg(test)] mod tests` and cross-module scena
 
 Follow the existing imperative Conventional Commit prefixes: `feat:`, `fix:`, `docs:`, and `build:`. Keep commits narrowly scoped. Pull requests should describe behavior and security/privacy impact, link the issue, list verification commands, and include UI screenshots or Windows acceptance evidence when applicable.
 
+## Documentation & Release Language
+
+Keep all project-facing documentation bilingual. Maintain equivalent English and Simplified Chinese content in `README.md` and `README.zh-CN.md`, updating both whenever behavior, installation, downloads, or limitations change. Every GitHub Release description must include complete English and Simplified Chinese sections in the same release notes.
+
 ## Security & Configuration Tips
 
 Keep `.local-models/`, credentials, raw captures, and decrypted evidence out of Git. Preserve authenticated, bounded IPC interfaces; never replace identity-checked operations with arbitrary path or PID execution.

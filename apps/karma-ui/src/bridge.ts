@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { disable, enable } from "@tauri-apps/plugin-autostart";
 import type { ConsoleState } from "./types";
 
 const browserFallbackKey = "karma-ui-browser-state";
@@ -6,6 +7,7 @@ const browserPasswordKey = "karma-ui-browser-password";
 
 export const defaultConsoleState: ConsoleState = {
   protectionEnabled: true,
+  launchAtStartup: true,
   serviceConnected: false,
   agentConnected: false,
   monitors: [],
@@ -81,6 +83,15 @@ function hydrateConsoleState(value: Partial<ConsoleState>): ConsoleState {
 export async function saveConsole(sessionToken: string, state: ConsoleState): Promise<void> {
   if (isTauri()) return invoke("save_console", { sessionToken, state });
   localStorage.setItem(browserFallbackKey, JSON.stringify(state));
+}
+
+export async function configureLaunchAtStartup(enabled: boolean): Promise<void> {
+  if (!isTauri()) return;
+  if (enabled) {
+    await enable();
+  } else {
+    await disable();
+  }
 }
 
 export async function revealEvidence(sessionToken: string, evidenceId: string, password: string): Promise<string> {

@@ -84,6 +84,7 @@ export interface AuditItem {
 
 export interface ConsoleState {
   protectionEnabled: boolean;
+  launchAtStartup: boolean;
   serviceConnected: boolean;
   agentConnected: boolean;
   monitors: MonitorStatus[];

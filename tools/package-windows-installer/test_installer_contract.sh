@@ -49,6 +49,18 @@ assert_contains "sc\.exe failure KarmaService 'reset=' '0' 'actions=' 'restart/1
   'installer must pass sc.exe recovery option names and values as separate arguments'
 rg -q 'Uninstall-Karma\.ps1' "$installer"
 rg -q 'KarmaControl\.exe' "$uninstall_script"
+assert_contains 'MessageBox MB_YESNO.*是否先卸载现有版本并继续安装' "$installer" \
+  'installer must ask before removing an existing installation'
+assert_contains 'ExecWait .*Uninstall-Karma-Launcher\.exe.* /S.* \$2' "$installer" \
+  'installer must automatically invoke the existing uninstaller after confirmation'
+assert_before 'MessageBox MB_YESNO.*是否先卸载现有版本并继续安装' 'ExecWait .*Uninstall-Karma-Launcher\.exe.* /S' "$installer" \
+  'installer must obtain confirmation before invoking the existing uninstaller'
+assert_before 'ExecWait .*Uninstall-Karma-Launcher\.exe.* /S' '\$2 != 0' "$installer" \
+  'installer must wait for and validate the existing uninstaller result'
+if rg -q '请先运行现有安装目录中的 Uninstall-Karma-Launcher\.exe' "$installer"; then
+  echo 'installer must not require the user to launch the existing uninstaller manually' >&2
+  contract_failed=1
+fi
 assert_before 'Read-Host .*管理员密码' '& \$control shutdown' "$uninstall_script" \
   'uninstaller must ask for the Karma administrator password before requesting shutdown'
 assert_before 'if \(\$LASTEXITCODE -ne 0\)' 'Get-Service .*KarmaService' "$uninstall_script" \

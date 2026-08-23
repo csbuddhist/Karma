@@ -3,7 +3,7 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/../.." && pwd)"
-version="${1:-0.1.6}"
+version="${1:-0.1.7}"
 bundle_dir="$repo_root/release/windows-x64-test"
 output_dir="$repo_root/target/release-artifacts"
 output_file="$output_dir/Karma-windows-x64-test-v${version}-setup.exe"

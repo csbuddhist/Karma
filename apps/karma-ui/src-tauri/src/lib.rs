@@ -11,6 +11,8 @@ const MAIN_WINDOW_LABEL: &str = "main";
 const OPEN_CONSOLE_MENU_ID: &str = "karma-open-console";
 #[cfg(desktop)]
 const QUIT_MENU_ID: &str = "karma-quit";
+#[cfg(desktop)]
+const AUTOSTART_ARGUMENT: &str = "--autostart";
 
 fn synchronize_recognition_threshold(state: &mut serde_json::Value) {
     let sensitivity = state.pointer("/recognition/sensitivity").cloned();
@@ -69,11 +71,21 @@ fn setup_tray(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
         tray = tray.icon(icon.clone());
     }
     tray.build(app)?;
+    if std::env::args_os().any(|argument| argument == AUTOSTART_ARGUMENT) {
+        if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+            window.hide()?;
+        }
+    }
     Ok(())
 }
 
 fn desktop_builder() -> tauri::Builder<tauri::Wry> {
-    let builder = tauri::Builder::default();
+    let builder = tauri::Builder::default().plugin(
+        tauri_plugin_autostart::Builder::new()
+            .arg(AUTOSTART_ARGUMENT)
+            .app_name("Karma Family Protection")
+            .build(),
+    );
 
     #[cfg(desktop)]
     let builder = builder.setup(setup_tray).on_window_event(|window, event| {
@@ -169,6 +181,7 @@ mod local_backend {
     fn default_console_state() -> Value {
         json!({
             "protectionEnabled": true,
+            "launchAtStartup": true,
             "serviceConnected": false,
             "agentConnected": false,
             "monitors": [],
@@ -447,6 +460,7 @@ mod local_backend {
         #[test]
         fn default_state_contains_no_evidence_or_sensitive_content() {
             let state = default_console_state();
+            assert_eq!(state["launchAtStartup"], true);
             assert_eq!(state["evidence"], json!([]));
             assert_eq!(state["audit"], json!([]));
             assert!(!state.to_string().contains("thumbnailUrl"));
@@ -569,6 +583,7 @@ mod service_backend {
     fn default_console_state() -> Value {
         json!({
             "protectionEnabled": true,
+            "launchAtStartup": true,
             "serviceConnected": true,
             "agentConnected": false,
             "monitors": [],

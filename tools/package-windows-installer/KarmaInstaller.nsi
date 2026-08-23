@@ -69,8 +69,34 @@ Function .onInit
 
   ReadRegStr $0 HKLM "SYSTEM\CurrentControlSet\Services\KarmaService" "ImagePath"
   ${If} $0 != ""
-    MessageBox MB_OK|MB_ICONEXCLAMATION "KarmaService 已安装。请先运行现有安装目录中的 Uninstall-Karma-Launcher.exe，并使用管理员密码完成卸载。"
+    MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2 "检测到已安装的 Karma。是否先卸载现有版本并继续安装？卸载需要输入 Karma 管理员密码。" IDYES uninstall_existing
     Abort
+
+uninstall_existing:
+    ReadRegStr $1 HKLM "${PRODUCT_REGISTRY_KEY}" "InstallDirectory"
+    ${If} $1 == ""
+      StrCpy $1 "$PROGRAMFILES64\Karma"
+    ${EndIf}
+    IfFileExists "$1\Uninstall-Karma-Launcher.exe" 0 existing_uninstaller_missing
+
+    ExecWait '"$1\Uninstall-Karma-Launcher.exe" /S' $2
+    ${If} $2 != 0
+      MessageBox MB_OK|MB_ICONSTOP "管理员密码验证失败或现有版本卸载未完成。安装已取消，Karma 保持原有安装状态。"
+      Abort
+    ${EndIf}
+
+    ReadRegStr $3 HKLM "SYSTEM\CurrentControlSet\Services\KarmaService" "ImagePath"
+    ${If} $3 != ""
+      MessageBox MB_OK|MB_ICONSTOP "现有 KarmaService 未能移除，安装已取消。"
+      Abort
+    ${EndIf}
+    Goto existing_uninstall_done
+
+existing_uninstaller_missing:
+    MessageBox MB_OK|MB_ICONSTOP "找不到现有版本的 Uninstall-Karma-Launcher.exe，无法自动卸载。安装已取消。"
+    Abort
+
+existing_uninstall_done:
   ${EndIf}
 FunctionEnd
 

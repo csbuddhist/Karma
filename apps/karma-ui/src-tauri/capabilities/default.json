@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "The Karma administration window only needs core window access; privileged actions are exposed through authenticated commands.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "autostart:default"]
 }

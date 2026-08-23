@@ -28,6 +28,7 @@ import {
   LockKeyhole,
   LogOut,
   Monitor,
+  Power,
   Plus,
   Save,
   Search,
@@ -38,6 +39,7 @@ import {
 } from "lucide-react";
 import {
   authStatus,
+  configureLaunchAtStartup,
   defaultConsoleState,
   enroll,
   loadConsole,
@@ -427,7 +429,7 @@ function Audit({ state }: { state: ConsoleState }) {
 
 function SettingsPage({ state, update }: { state: ConsoleState; update: (state: ConsoleState) => void }) {
   const { t } = useI18n();
-  return <div className="settings-grid"><Card className="full-span"><div className="setting-row"><div className="setting-icon green"><KarmaShieldIcon /></div><div><strong>{t("settings.protectionTitle")}</strong><p>{t("settings.protectionDescription")}</p></div><Toggle checked={state.protectionEnabled} onChange={(value) => update({ ...state, protectionEnabled: value })} label={t("settings.protectionToggle")} /></div></Card><Card className="full-span language-card"><div className="setting-row"><div className="setting-icon blue"><Globe2 /></div><div><strong>{t("settings.languageTitle")}</strong><p>{t("language.description")}</p></div><LanguageSelect /></div></Card><Card><div className="card-heading"><div><h2>{t("settings.capabilities")}</h2><p>{t("settings.progress")}</p></div></div><div className="capability-list"><div><Check />{t("settings.capability1")}</div><div><Check />{t("settings.capability2")}</div><div><Check />{t("settings.capability3")}</div><div><Check />{t("settings.capability4")}</div><div><Check />{t("settings.capability5")}</div><div className="pending"><CircleAlert />{t("settings.capabilityPending")}</div></div></Card><Card><div className="card-heading"><div><h2>{t("settings.security")}</h2><p>{t("settings.securitySubtitle")}</p></div></div><div className="security-note"><Lock /><p>{t("settings.securityDescription")}</p></div></Card></div>;
+  return <div className="settings-grid"><Card className="full-span"><div className="setting-row"><div className="setting-icon green"><KarmaShieldIcon /></div><div><strong>{t("settings.protectionTitle")}</strong><p>{t("settings.protectionDescription")}</p></div><Toggle checked={state.protectionEnabled} onChange={(value) => update({ ...state, protectionEnabled: value })} label={t("settings.protectionToggle")} /></div></Card><Card className="full-span"><div className="setting-row"><div className="setting-icon violet"><Power /></div><div><strong>{t("settings.autostartTitle")}</strong><p>{t("settings.autostartDescription")}</p></div><Toggle checked={state.launchAtStartup} onChange={(value) => update({ ...state, launchAtStartup: value })} label={t("settings.autostartToggle")} /></div></Card><Card className="full-span language-card"><div className="setting-row"><div className="setting-icon blue"><Globe2 /></div><div><strong>{t("settings.languageTitle")}</strong><p>{t("language.description")}</p></div><LanguageSelect /></div></Card><Card><div className="card-heading"><div><h2>{t("settings.capabilities")}</h2><p>{t("settings.progress")}</p></div></div><div className="capability-list"><div><Check />{t("settings.capability1")}</div><div><Check />{t("settings.capability2")}</div><div><Check />{t("settings.capability3")}</div><div><Check />{t("settings.capability4")}</div><div><Check />{t("settings.capability5")}</div><div className="pending"><CircleAlert />{t("settings.capabilityPending")}</div></div></Card><Card><div className="card-heading"><div><h2>{t("settings.security")}</h2><p>{t("settings.securitySubtitle")}</p></div></div><div className="security-note"><Lock /><p>{t("settings.securityDescription")}</p></div></Card></div>;
 }
 
 function Modal({ title, children, onClose, wide = false }: { title: string; children: ReactNode; onClose: () => void; wide?: boolean }) {
@@ -464,9 +466,9 @@ function AppContent() {
     const interval = window.setInterval(refresh, 5000);
     return () => window.clearInterval(interval);
   }, [authMode, sessionToken, dirty]);
-  async function authenticated(token: string) { setSessionToken(token); setLoading(true); try { setState(await loadConsole(token)); setAuthMode("unlocked"); } finally { setLoading(false); } }
+  async function authenticated(token: string) { setSessionToken(token); setLoading(true); try { const next = await loadConsole(token); setState(next); setAuthMode("unlocked"); void configureLaunchAtStartup(next.launchAtStartup).catch((reason) => console.error("Failed to synchronize autostart", reason)); } finally { setLoading(false); } }
   function update(next: ConsoleState) { setState(next); setDirty(true); setSaveMessage(""); }
-  async function save() { setSaving(true); try { const next = { ...state, recognition: { ...state.recognition, immediateThreshold: state.recognition.sensitivity } }; await saveConsole(sessionToken, next); setState(next); setDirty(false); setSaveMessage(t("common.settingsSaved")); window.setTimeout(() => setSaveMessage(""), 2200); } finally { setSaving(false); } }
+  async function save() { setSaving(true); try { const next = { ...state, recognition: { ...state.recognition, immediateThreshold: state.recognition.sensitivity } }; await configureLaunchAtStartup(next.launchAtStartup); await saveConsole(sessionToken, next); setState(next); setDirty(false); setSaveMessage(t("common.settingsSaved")); window.setTimeout(() => setSaveMessage(""), 2200); } finally { setSaving(false); } }
   async function signOut() { await lock(sessionToken); setSessionToken(""); setState(defaultConsoleState); setAuthMode("locked"); setPage("overview"); }
 
   const content = useMemo(() => {
