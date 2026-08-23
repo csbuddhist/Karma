@@ -1,10 +1,12 @@
 import {
+  ChangeEvent,
   createContext,
   FormEvent,
   ReactNode,
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import {
@@ -15,6 +17,7 @@ import {
   Check,
   ChevronRight,
   CircleAlert,
+  Download,
   Eye,
   EyeOff,
   FileClock,
@@ -34,17 +37,25 @@ import {
   Search,
   Settings,
   Trash2,
+  Upload,
   WifiOff,
   X,
 } from "lucide-react";
 import {
   authStatus,
   changePassword,
+  chooseExportPath,
+  chooseImportPath,
   configureLaunchAtStartup,
   defaultConsoleState,
   enroll,
+  exportSettings,
+  importSettings,
+  isTauriConsole,
   loadConsole,
   lock,
+  mergeImportedPolicy,
+  parseImportedBackupFile,
   revealEvidence,
   saveConsole,
   unlock,
@@ -356,7 +367,7 @@ function Keywords({ state, update }: { state: ConsoleState; update: (state: Cons
   const [category, setCategory] = useState<KeywordRule["category"]>("sensitive");
   function add() { if (!phrase.trim()) return; update({ ...state, keywords: [...state.keywords, { id: crypto.randomUUID(), phrase: phrase.trim(), category, enabled: true }] }); setPhrase(""); }
   const categoryLabel = (value: KeywordRule["category"]) => t(value === "high_risk" ? "keywords.highRisk" : value === "sensitive" ? "keywords.sensitive" : "keywords.exemptionShort");
-  return <Card><div className="toolbar"><div className="input-with-icon"><Search size={17} /><input placeholder={t("keywords.placeholder")} value={phrase} onChange={(event) => setPhrase(event.target.value)} onKeyDown={(event) => event.key === "Enter" && add()} /></div><select value={category} onChange={(event) => setCategory(event.target.value as KeywordRule["category"])}><option value="high_risk">{t("keywords.highRisk")}</option><option value="sensitive">{t("keywords.sensitive")}</option><option value="exemption">{t("keywords.exemption")}</option></select><button className="primary-button" onClick={add}><Plus size={17} />{t("keywords.add")}</button></div>{state.keywords.length ? <div className="table"><div className="table-head"><span>{t("keywords.keyword")}</span><span>{t("keywords.category")}</span><span>{t("keywords.status")}</span><span /></div>{state.keywords.map((rule) => <div className="table-row" key={rule.id}><strong>{rule.phrase}</strong><span><span className={`tag ${rule.category}`}>{categoryLabel(rule.category)}</span></span><span><Toggle checked={rule.enabled} onChange={(enabled) => update({ ...state, keywords: state.keywords.map((item) => item.id === rule.id ? { ...item, enabled } : item) })} label={t("keywords.enable", { name: rule.phrase })} /></span><button className="icon-button danger" aria-label={t("keywords.delete", { name: rule.phrase })} onClick={() => update({ ...state, keywords: state.keywords.filter((item) => item.id !== rule.id) })}><Trash2 size={17} /></button></div>)}</div> : <EmptyState icon={<Search />} title={t("keywords.emptyTitle")} text={t("keywords.emptyDescription")} />}</Card>;
+  return <div className="page-stack"><div className="privacy-banner"><Search size={18} /><span><strong>{t("keywords.bannerTitle")}</strong> {t("keywords.bannerDescription")}</span></div><Card><div className="toolbar"><div className="input-with-icon"><Search size={17} /><input placeholder={t("keywords.placeholder")} value={phrase} onChange={(event) => setPhrase(event.target.value)} onKeyDown={(event) => event.key === "Enter" && add()} /></div><select value={category} onChange={(event) => setCategory(event.target.value as KeywordRule["category"])}><option value="high_risk">{t("keywords.highRisk")}</option><option value="sensitive">{t("keywords.sensitive")}</option><option value="exemption">{t("keywords.exemption")}</option></select><button className="primary-button" onClick={add}><Plus size={17} />{t("keywords.add")}</button></div>{state.keywords.length ? <div className="table"><div className="table-head"><span>{t("keywords.keyword")}</span><span>{t("keywords.category")}</span><span>{t("keywords.status")}</span><span /></div>{state.keywords.map((rule) => <div className="table-row" key={rule.id}><strong>{rule.phrase}</strong><span><span className={`tag ${rule.category}`}>{categoryLabel(rule.category)}</span></span><span><Toggle checked={rule.enabled} onChange={(enabled) => update({ ...state, keywords: state.keywords.map((item) => item.id === rule.id ? { ...item, enabled } : item) })} label={t("keywords.enable", { name: rule.phrase })} /></span><button className="icon-button danger" aria-label={t("keywords.delete", { name: rule.phrase })} onClick={() => update({ ...state, keywords: state.keywords.filter((item) => item.id !== rule.id) })}><Trash2 size={17} /></button></div>)}</div> : <EmptyState icon={<Search />} title={t("keywords.emptyTitle")} text={t("keywords.emptyDescription")} />}</Card></div>;
 }
 
 function normalizeWebsitePattern(value: string): string | null {
@@ -473,9 +484,96 @@ function PasswordChangeCard({ sessionToken }: { sessionToken: string }) {
   </Card>;
 }
 
+function BackupCard({
+  sessionToken,
+  state,
+  update,
+}: {
+  sessionToken: string;
+  state: ConsoleState;
+  update: (state: ConsoleState) => void;
+}) {
+  const { t } = useI18n();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const fileInput = useRef<HTMLInputElement | null>(null);
+
+  function applyImported(imported: Partial<ConsoleState>) {
+    update(mergeImportedPolicy(state, imported));
+    setNotice(t("settings.importApplied"));
+  }
+
+  async function doExport() {
+    setError("");
+    setNotice("");
+    setBusy(true);
+    try {
+      if (isTauriConsole()) {
+        const path = await chooseExportPath();
+        if (!path) return;
+        await exportSettings(sessionToken, path);
+      } else {
+        await exportSettings(sessionToken);
+      }
+      setNotice(t("settings.exportSuccess"));
+    } catch (reason) {
+      setError(localizeError(reason, t));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function doImport() {
+    setError("");
+    setNotice("");
+    if (!isTauriConsole()) {
+      fileInput.current?.click();
+      return;
+    }
+    setBusy(true);
+    try {
+      const path = await chooseImportPath();
+      if (!path) return;
+      applyImported(await importSettings(sessionToken, path));
+    } catch (reason) {
+      setError(localizeError(reason, t));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onBrowserFile(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    setError("");
+    setNotice("");
+    setBusy(true);
+    try {
+      applyImported(await parseImportedBackupFile(file));
+    } catch (reason) {
+      setError(localizeError(reason, t));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return <Card className="full-span">
+    <div className="card-heading"><div><h2>{t("settings.backupTitle")}</h2><p>{t("settings.backupDescription")}</p></div></div>
+    <div className="backup-actions">
+      <button className="primary-button" disabled={busy} onClick={doExport}><Download size={17} />{t("settings.exportSettings")}</button>
+      <button className="secondary-button" disabled={busy} onClick={doImport}><Upload size={17} />{t("settings.importSettings")}</button>
+      <input ref={fileInput} type="file" accept="application/json,.json" hidden onChange={onBrowserFile} />
+    </div>
+    {error && <div className="form-error backup-feedback"><CircleAlert size={16} />{error}</div>}
+    {notice && !error && <div className="form-success backup-feedback"><Check size={16} />{notice}</div>}
+  </Card>;
+}
+
 function SettingsPage({ state, update, sessionToken }: { state: ConsoleState; update: (state: ConsoleState) => void; sessionToken: string }) {
   const { t } = useI18n();
-  return <div className="settings-grid"><Card className="full-span"><div className="setting-row"><div className="setting-icon green"><KarmaShieldIcon /></div><div><strong>{t("settings.protectionTitle")}</strong><p>{t("settings.protectionDescription")}</p></div><Toggle checked={state.protectionEnabled} onChange={(value) => update({ ...state, protectionEnabled: value })} label={t("settings.protectionToggle")} /></div></Card><Card className="full-span"><div className="setting-row"><div className="setting-icon violet"><Power /></div><div><strong>{t("settings.autostartTitle")}</strong><p>{t("settings.autostartDescription")}</p></div><Toggle checked={state.launchAtStartup} onChange={(value) => update({ ...state, launchAtStartup: value })} label={t("settings.autostartToggle")} /></div></Card><Card className="full-span language-card"><div className="setting-row"><div className="setting-icon blue"><Globe2 /></div><div><strong>{t("settings.languageTitle")}</strong><p>{t("language.description")}</p></div><LanguageSelect /></div></Card><PasswordChangeCard sessionToken={sessionToken} /><Card><div className="card-heading"><div><h2>{t("settings.capabilities")}</h2><p>{t("settings.progress")}</p></div></div><div className="capability-list"><div><Check />{t("settings.capability1")}</div><div><Check />{t("settings.capability2")}</div><div><Check />{t("settings.capability3")}</div><div><Check />{t("settings.capability4")}</div><div><Check />{t("settings.capability5")}</div><div className="pending"><CircleAlert />{t("settings.capabilityPending")}</div></div></Card><Card><div className="card-heading"><div><h2>{t("settings.security")}</h2><p>{t("settings.securitySubtitle")}</p></div></div><div className="security-note"><Lock /><p>{t("settings.securityDescription")}</p></div></Card></div>;
+  return <div className="settings-grid"><Card className="full-span"><div className="setting-row"><div className="setting-icon green"><KarmaShieldIcon /></div><div><strong>{t("settings.protectionTitle")}</strong><p>{t("settings.protectionDescription")}</p></div><Toggle checked={state.protectionEnabled} onChange={(value) => update({ ...state, protectionEnabled: value })} label={t("settings.protectionToggle")} /></div></Card><Card className="full-span"><div className="setting-row"><div className="setting-icon violet"><Power /></div><div><strong>{t("settings.autostartTitle")}</strong><p>{t("settings.autostartDescription")}</p></div><Toggle checked={state.launchAtStartup} onChange={(value) => update({ ...state, launchAtStartup: value })} label={t("settings.autostartToggle")} /></div></Card><Card className="full-span language-card"><div className="setting-row"><div className="setting-icon blue"><Globe2 /></div><div><strong>{t("settings.languageTitle")}</strong><p>{t("language.description")}</p></div><LanguageSelect /></div></Card><PasswordChangeCard sessionToken={sessionToken} /><BackupCard sessionToken={sessionToken} state={state} update={update} /><Card><div className="card-heading"><div><h2>{t("settings.capabilities")}</h2><p>{t("settings.progress")}</p></div></div><div className="capability-list"><div><Check />{t("settings.capability1")}</div><div><Check />{t("settings.capability2")}</div><div><Check />{t("settings.capability3")}</div><div><Check />{t("settings.capability4")}</div><div><Check />{t("settings.capability5")}</div><div className="pending"><CircleAlert />{t("settings.capabilityPending")}</div></div></Card><Card><div className="card-heading"><div><h2>{t("settings.security")}</h2><p>{t("settings.securitySubtitle")}</p></div></div><div className="security-note"><Lock /><p>{t("settings.securityDescription")}</p></div></Card></div>;
 }
 
 function Modal({ title, children, onClose, wide = false }: { title: string; children: ReactNode; onClose: () => void; wide?: boolean }) {

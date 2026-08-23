@@ -1079,6 +1079,80 @@ mod tests {
     }
 
     #[test]
+    fn custom_title_keywords_enforce_and_exemptions_suppress_bundled_matches() {
+        let directory = tempfile::tempdir().unwrap();
+        let core = open_core(directory.path(), 0);
+        configure_policy(
+            &core,
+            json!({
+                "protectionEnabled": true,
+                "recognition": {"imageEnabled": false, "titleMatchingEnabled": true},
+                "keywords": [
+                    {"id":"custom-1","phrase":"赌球直播","category":"high_risk","enabled":true},
+                    {"id":"exempt-1","phrase":"医学教育","category":"exemption","enabled":true}
+                ]
+            }),
+        );
+        assert!(matches!(
+            submit_context(
+                &core,
+                "custom-keyword-nonce",
+                context_observation("custom-keyword", "今晚赌球直播现场", None),
+            ),
+            ServiceResult::DispositionRequired { event_id, .. } if event_id == "custom-keyword"
+        ));
+        assert!(matches!(
+            submit_context(
+                &core,
+                "exempt-keyword-nonce",
+                context_observation("exempt-keyword", "色情内容医学教育课件", None),
+            ),
+            ServiceResult::Acknowledged
+        ));
+    }
+
+    #[test]
+    fn put_policy_rejects_invalid_custom_keyword_rules() {
+        let directory = tempfile::tempdir().unwrap();
+        let core = open_core(directory.path(), 0);
+        let session = match success(core.handle(
+            request(
+                "enroll",
+                "enroll-nonce",
+                ServiceRequest::EnrollAdministrator {
+                    password: "long-test-password".into(),
+                },
+            ),
+            1,
+        )) {
+            ServiceResult::Session { session_token, .. } => session_token,
+            _ => panic!("unexpected response"),
+        };
+        assert_eq!(
+            core.handle(
+                request(
+                    "policy",
+                    "policy-nonce",
+                    ServiceRequest::PutPolicy {
+                        session_token: session,
+                        expected_revision: 0,
+                        policy: json!({
+                            "keywords": [
+                                {"id":"bad","phrase":"","category":"high_risk","enabled":true}
+                            ]
+                        }),
+                    },
+                ),
+                2,
+            )
+            .result
+            .unwrap_err()
+            .code,
+            ServiceErrorCode::InvalidRequest
+        );
+    }
+
+    #[test]
     fn incorrect_uninstall_password_does_not_authorize_shutdown() {
         let directory = tempfile::tempdir().unwrap();
         let core = open_core(directory.path(), 100);

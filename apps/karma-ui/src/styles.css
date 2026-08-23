@@ -228,6 +228,8 @@ select, .field input, .toolbar input { height: 39px; padding: 0 11px; color: var
 .password-form-footer { grid-column: 1 / -1; display: flex; align-items: center; gap: 11px; margin-top: 15px; }
 .password-form-footer .form-error, .password-form-footer .form-success { flex: 1; }
 .password-form-footer .primary-button { flex: 0 0 auto; }
+.backup-actions { display: flex; align-items: center; gap: 10px; margin-top: 15px; }
+.backup-feedback { margin-top: 13px; }
 .form-success { display: flex; align-items: center; gap: 8px; padding: 10px 12px; color: var(--green); font-size: 12px; background: var(--green-soft); border-radius: 10px; }
 .save-error-message { display: flex; align-items: center; gap: 5px; margin-right: 5px; color: var(--danger); font-size: 12px; }
 .modal-submit { width: 100%; margin-top: 20px; }

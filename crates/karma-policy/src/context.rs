@@ -5,6 +5,7 @@ use unicode_normalization::UnicodeNormalization;
 use url::{Host, Url};
 
 const MAX_WEBSITE_RULES: usize = 256;
+const MAX_KEYWORD_RULES: usize = 256;
 const MAX_RULE_ID_CHARS: usize = 128;
 const MAX_RULE_VALUE_CHARS: usize = 2048;
 const BUNDLED_TITLE_KEYWORDS: &str =
@@ -37,6 +38,7 @@ pub struct ContextPolicy {
     title_matching_enabled: bool,
     website_rules: Vec<WebsiteRule>,
     title_keywords: Vec<String>,
+    exempt_keywords: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -54,6 +56,23 @@ struct WebsiteRuleInput {
     pattern: String,
     action: WebsiteRuleAction,
     enabled: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct KeywordRuleInput {
+    id: String,
+    phrase: String,
+    category: KeywordCategory,
+    enabled: bool,
+}
+
+#[derive(Deserialize, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+enum KeywordCategory {
+    HighRisk,
+    Sensitive,
+    Exemption,
 }
 
 #[derive(Deserialize)]
@@ -108,6 +127,33 @@ impl ContextPolicy {
             });
         }
 
+        let raw_keywords = policy
+            .get("keywords")
+            .cloned()
+            .unwrap_or_else(|| Value::Array(Vec::new()));
+        let raw_keywords: Vec<KeywordRuleInput> =
+            serde_json::from_value(raw_keywords).map_err(|_| ContextPolicyError::InvalidPolicy)?;
+        if raw_keywords.len() > MAX_KEYWORD_RULES {
+            return Err(ContextPolicyError::InvalidPolicy);
+        }
+        let mut custom_keywords = Vec::new();
+        let mut exempt_keywords = Vec::new();
+        for rule in raw_keywords.into_iter().filter(|rule| rule.enabled) {
+            if rule.id.is_empty()
+                || rule.id.chars().count() > MAX_RULE_ID_CHARS
+                || rule.phrase.trim().is_empty()
+                || rule.phrase.chars().count() > MAX_RULE_VALUE_CHARS
+            {
+                return Err(ContextPolicyError::InvalidPolicy);
+            }
+            match rule.category {
+                KeywordCategory::HighRisk | KeywordCategory::Sensitive => {
+                    custom_keywords.push(normalize_text(&rule.phrase))
+                }
+                KeywordCategory::Exemption => exempt_keywords.push(normalize_text(&rule.phrase)),
+            }
+        }
+
         let bundled: BundledKeywords = serde_json::from_str(BUNDLED_TITLE_KEYWORDS)
             .map_err(|_| ContextPolicyError::InvalidBundledKeywords)?;
         if bundled.format_version != 1
@@ -123,17 +169,19 @@ impl ContextPolicy {
         {
             return Err(ContextPolicyError::InvalidBundledKeywords);
         }
-        let title_keywords = bundled
+        let mut title_keywords: Vec<String> = bundled
             .languages
             .into_iter()
             .flat_map(|group| group.keywords)
             .map(|keyword| normalize_text(&keyword))
             .collect();
+        title_keywords.append(&mut custom_keywords);
 
         Ok(Self {
             title_matching_enabled,
             website_rules,
             title_keywords,
+            exempt_keywords,
         })
     }
 
@@ -153,8 +201,22 @@ impl ContextPolicy {
         }) {
             return ContextVerdict::Blocklisted;
         }
-        if self.title_matching_enabled && self.title_matches(window_title) {
-            return ContextVerdict::TitleKeyword;
+        if self.title_matching_enabled {
+            let normalized_title = normalize_text(window_title);
+            let words = title_words(&normalized_title);
+            let is_exempt = self
+                .exempt_keywords
+                .iter()
+                .any(|keyword| phrase_matches(&normalized_title, &words, keyword));
+            if !is_exempt
+                && !normalized_title.is_empty()
+                && self
+                    .title_keywords
+                    .iter()
+                    .any(|keyword| phrase_matches(&normalized_title, &words, keyword))
+            {
+                return ContextVerdict::TitleKeyword;
+            }
         }
         ContextVerdict::None
     }
@@ -162,31 +224,27 @@ impl ContextPolicy {
     pub fn allows_host(&self, browser_host: Option<&str>) -> bool {
         self.evaluate(browser_host, "") == ContextVerdict::Allowlisted
     }
+}
 
-    fn title_matches(&self, title: &str) -> bool {
-        let normalized = normalize_text(title);
-        if normalized.is_empty() {
-            return false;
-        }
-        let words: Vec<&str> = normalized
-            .split(|character: char| !character.is_alphanumeric())
-            .filter(|word| !word.is_empty())
-            .collect();
-        self.title_keywords.iter().any(|keyword| {
-            if contains_cjk(keyword) {
-                normalized.contains(keyword)
-            } else {
-                let keyword_words: Vec<&str> = keyword
-                    .split(|character: char| !character.is_alphanumeric())
-                    .filter(|word| !word.is_empty())
-                    .collect();
-                !keyword_words.is_empty()
-                    && words
-                        .windows(keyword_words.len())
-                        .any(|window| window == keyword_words.as_slice())
-            }
-        })
+fn title_words(normalized: &str) -> Vec<&str> {
+    normalized
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect()
+}
+
+fn phrase_matches(normalized_title: &str, title_words: &[&str], keyword: &str) -> bool {
+    if contains_cjk(keyword) {
+        return normalized_title.contains(keyword);
     }
+    let keyword_words = keyword
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>();
+    !keyword_words.is_empty()
+        && title_words
+            .windows(keyword_words.len())
+            .any(|window| window == keyword_words.as_slice())
 }
 
 fn normalize_text(value: &str) -> String {
@@ -351,5 +409,90 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(policy.evaluate(None, "porn"), ContextVerdict::None);
+    }
+
+    #[test]
+    fn custom_keywords_join_title_matching_and_exemptions_suppress_it() {
+        let policy = ContextPolicy::from_value(&json!({
+            "keywords": [
+                {"id":"custom-1","phrase":"赌球直播","category":"high_risk","enabled":true},
+                {"id":"custom-2","phrase":"casino stream","category":"sensitive","enabled":true},
+                {"id":"custom-off","phrase":"ignored phrase","category":"high_risk","enabled":false},
+                {"id":"exempt-1","phrase":"医学教育","category":"exemption","enabled":true},
+                {"id":"exempt-2","phrase":"art history","category":"exemption","enabled":true}
+            ]
+        }))
+        .unwrap();
+
+        assert_eq!(
+            policy.evaluate(None, "今晚 赌球直播 现场"),
+            ContextVerdict::TitleKeyword
+        );
+        assert_eq!(
+            policy.evaluate(None, "Best CASINO Stream tonight"),
+            ContextVerdict::TitleKeyword
+        );
+        assert_eq!(
+            policy.evaluate(None, "ignored phrase in title"),
+            ContextVerdict::None
+        );
+        // A bundled keyword is suppressed when an exemption phrase also matches.
+        assert_eq!(
+            policy.evaluate(None, "色情内容医学教育课件"),
+            ContextVerdict::None
+        );
+        // Exemptions use word boundaries for non-CJK phrases and do not
+        // suppress other titles.
+        assert_eq!(
+            policy.evaluate(None, "Modern ART History porn lecture"),
+            ContextVerdict::None
+        );
+        assert_eq!(
+            policy.evaluate(None, "Party porn videos"),
+            ContextVerdict::TitleKeyword
+        );
+        // Website verdicts still outrank keyword exemptions.
+        let strict = ContextPolicy::from_value(&json!({
+            "websites": [
+                {"id":"blocked","pattern":"blocked.example","action":"block","enabled":true}
+            ],
+            "keywords": [
+                {"id":"exempt-1","phrase":"blocked.example","category":"exemption","enabled":true}
+            ]
+        }))
+        .unwrap();
+        assert_eq!(
+            strict.evaluate(Some("blocked.example"), "blocked.example"),
+            ContextVerdict::Blocklisted
+        );
+    }
+
+    #[test]
+    fn invalid_custom_keyword_rules_are_rejected() {
+        let base = |keywords| json!({ "keywords": keywords });
+        assert!(
+            ContextPolicy::from_value(&base(vec![serde_json::json!(
+                {"id":"k","phrase":"","category":"high_risk","enabled":true}
+            )]))
+            .is_err()
+        );
+        assert!(
+            ContextPolicy::from_value(&base(vec![serde_json::json!(
+                {"id":"k","phrase":"unknown category","category":"other","enabled":true}
+            )]))
+            .is_err()
+        );
+        assert!(
+            ContextPolicy::from_value(&base(vec![serde_json::json!(
+                {"id":"k","phrase":"extra field","category":"high_risk","enabled":true,"note":"x"}
+            )]))
+            .is_err()
+        );
+        let oversized: Vec<serde_json::Value> = (0..257)
+            .map(|index| {
+                serde_json::json!({"id":format!("k{index}"),"phrase":"词","category":"high_risk","enabled":true})
+            })
+            .collect();
+        assert!(ContextPolicy::from_value(&base(oversized)).is_err());
     }
 }

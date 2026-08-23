@@ -16,12 +16,14 @@ tauri-build = { version = "=2.4.1", features = [] }
 [dependencies]
 argon2 = { version = "0.5", features = ["std"] }
 karma-ipc = { path = "../../../crates/karma-ipc" }
+karma-policy = { path = "../../../crates/karma-policy" }
 karma-windows-ipc = { path = "../../../crates/karma-windows-ipc" }
 rand = "0.8"
 serde.workspace = true
 serde_json.workspace = true
 tauri = { version = "=2.8.5", features = ["tray-icon", "custom-protocol"] }
 tauri-plugin-autostart = "=2.5.1"
+tauri-plugin-dialog = "2"
 thiserror.workspace = true
 zeroize = "1"
 

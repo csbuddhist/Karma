@@ -35,6 +35,90 @@ function isTauri(): boolean {
   return "__TAURI_INTERNALS__" in window;
 }
 
+export function isTauriConsole(): boolean {
+  return isTauri();
+}
+
+const runtimeStateKeys = ["serviceConnected", "agentConnected", "monitors", "evidence", "audit"];
+
+function stripRuntimeState(value: Record<string, unknown>): Record<string, unknown> {
+  const stripped = { ...value };
+  for (const key of runtimeStateKeys) delete stripped[key];
+  return stripped;
+}
+
+function exportFileName(): string {
+  return `karma-policy-${new Date().toISOString().slice(0, 10)}.json`;
+}
+
+export async function chooseExportPath(): Promise<string | null> {
+  const { save } = await import("@tauri-apps/plugin-dialog");
+  return save({
+    defaultPath: exportFileName(),
+    filters: [{ name: "JSON", extensions: ["json"] }],
+  });
+}
+
+export async function chooseImportPath(): Promise<string | null> {
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const selection = await open({
+    multiple: false,
+    directory: false,
+    filters: [{ name: "JSON", extensions: ["json"] }],
+  });
+  return typeof selection === "string" ? selection : null;
+}
+
+export async function exportSettings(sessionToken: string, path?: string): Promise<void> {
+  if (isTauri()) {
+    if (!path) throw new Error("无法写入导出文件");
+    await invoke("export_settings", { sessionToken, path });
+    return;
+  }
+  const stored = localStorage.getItem(browserFallbackKey);
+  const policy: Record<string, unknown> = stored
+    ? (JSON.parse(stored) as Record<string, unknown>)
+    : { ...defaultConsoleState };
+  const backup = {
+    schema: "karma-policy-export",
+    version: 1,
+    exported_at_ms: Date.now(),
+    policy: stripRuntimeState(policy),
+  };
+  const url = URL.createObjectURL(new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" }));
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = exportFileName();
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+export async function importSettings(sessionToken: string, path: string): Promise<Partial<ConsoleState>> {
+  if (isTauri()) return hydrateConsoleState(await invoke("import_settings", { sessionToken, path }));
+  throw new Error("备份文件无法读取或格式不正确");
+}
+
+export async function parseImportedBackupFile(file: File): Promise<Partial<ConsoleState>> {
+  let parsed: { schema?: unknown; version?: unknown; policy?: unknown };
+  try {
+    parsed = JSON.parse(await file.text());
+  } catch {
+    throw new Error("备份文件无法读取或格式不正确");
+  }
+  if (parsed.schema !== "karma-policy-export" || parsed.version !== 1 || typeof parsed.policy !== "object" || !parsed.policy) {
+    throw new Error("备份文件无法读取或格式不正确");
+  }
+  return hydrateConsoleState(parsed.policy as Partial<ConsoleState>);
+}
+
+export function mergeImportedPolicy(current: ConsoleState, imported: Partial<ConsoleState>): ConsoleState {
+  return hydrateConsoleState({
+    ...current,
+    ...imported,
+    recognition: { ...current.recognition, ...(imported.recognition ?? {}) },
+  });
+}
+
 async function browserPasswordDigest(password: string): Promise<string> {
   const bytes = new TextEncoder().encode(`karma-ui-development-only:${password}`);
   const digest = await crypto.subtle.digest("SHA-256", bytes);

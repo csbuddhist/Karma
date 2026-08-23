@@ -26,6 +26,122 @@ fn synchronize_recognition_threshold(state: &mut serde_json::Value) {
     }
 }
 
+const EXPORT_SCHEMA: &str = "karma-policy-export";
+const EXPORT_VERSION: u32 = 1;
+const MAX_EXPORT_BYTES: usize = 1_048_576;
+const RUNTIME_STATE_KEYS: [&str; 5] = [
+    "serviceConnected",
+    "agentConnected",
+    "monitors",
+    "evidence",
+    "audit",
+];
+
+fn strip_runtime_state(state: &mut serde_json::Value) {
+    if let Some(object) = state.as_object_mut() {
+        for key in RUNTIME_STATE_KEYS {
+            object.remove(key);
+        }
+    }
+}
+
+fn build_export_document(policy: serde_json::Value) -> serde_json::Value {
+    let mut policy = policy;
+    strip_runtime_state(&mut policy);
+    let exported_at_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or_default();
+    serde_json::json!({
+        "schema": EXPORT_SCHEMA,
+        "version": EXPORT_VERSION,
+        "exported_at_ms": exported_at_ms,
+        "policy": policy
+    })
+}
+
+fn parse_import_document(bytes: &[u8]) -> Option<serde_json::Value> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct ImportDocument {
+        schema: String,
+        version: u32,
+        exported_at_ms: u64,
+        policy: serde_json::Value,
+    }
+    if bytes.len() > MAX_EXPORT_BYTES {
+        return None;
+    }
+    let document: ImportDocument = serde_json::from_slice(bytes).ok()?;
+    // The timestamp only proves the field is present; it never influences import.
+    let _ = document.exported_at_ms;
+    if document.schema != EXPORT_SCHEMA
+        || document.version != EXPORT_VERSION
+        || !document.policy.is_object()
+    {
+        return None;
+    }
+    let mut policy = document.policy;
+    strip_runtime_state(&mut policy);
+    // Reject backups whose policy cannot be enforced before the webview sees them.
+    karma_policy::ContextPolicy::from_value(&policy).ok()?;
+    Some(policy)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{build_export_document, parse_import_document};
+
+    #[test]
+    fn export_document_round_trips_and_omits_runtime_state() {
+        let document = build_export_document(json!({
+            "protectionEnabled": true,
+            "keywords": [
+                {"id":"k1","phrase":"自定义词","category":"high_risk","enabled":true}
+            ],
+            "serviceConnected": true,
+            "monitors": [{"id": "m1"}],
+            "evidence": [],
+            "audit": []
+        }));
+
+        assert_eq!(document["schema"], "karma-policy-export");
+        assert_eq!(document["version"], 1);
+        let bytes = serde_json::to_vec(&document).unwrap();
+        let policy = parse_import_document(&bytes).expect("export must re-import");
+        assert_eq!(policy["protectionEnabled"], true);
+        assert_eq!(policy["keywords"].as_array().unwrap().len(), 1);
+        assert!(policy.get("serviceConnected").is_none());
+        assert!(policy.get("monitors").is_none());
+    }
+
+    #[test]
+    fn import_rejects_foreign_documents_large_files_and_invalid_policies() {
+        assert!(parse_import_document(b"not json").is_none());
+        assert!(
+            parse_import_document(
+                br#"{"schema":"other-format","version":1,"exported_at_ms":1,"policy":{}}"#
+            )
+            .is_none()
+        );
+        assert!(
+            parse_import_document(
+                br#"{"schema":"karma-policy-export","version":2,"exported_at_ms":1,"policy":{}}"#
+            )
+            .is_none()
+        );
+        let oversized = vec![b' '; super::MAX_EXPORT_BYTES + 1];
+        assert!(parse_import_document(&oversized).is_none());
+        // A syntactically valid backup whose website rules cannot be enforced
+        // must be refused instead of reaching the console.
+        let invalid_policy = br#"{"schema":"karma-policy-export","version":1,"exported_at_ms":1,
+            "policy":{"websites":[{"id":"bad","pattern":"example.com/path","action":"block","enabled":true}]}}"#;
+        assert!(parse_import_document(invalid_policy).is_none());
+    }
+}
+
 #[cfg(desktop)]
 fn show_console(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
@@ -80,12 +196,14 @@ fn setup_tray(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn desktop_builder() -> tauri::Builder<tauri::Wry> {
-    let builder = tauri::Builder::default().plugin(
-        tauri_plugin_autostart::Builder::new()
-            .arg(AUTOSTART_ARGUMENT)
-            .app_name("Karma Family Protection")
-            .build(),
-    );
+    let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(
+            tauri_plugin_autostart::Builder::new()
+                .arg(AUTOSTART_ARGUMENT)
+                .app_name("Karma Family Protection")
+                .build(),
+        );
 
     #[cfg(desktop)]
     let builder = builder.setup(setup_tray).on_window_event(|window, event| {
@@ -149,6 +267,10 @@ mod local_backend {
         EvidenceUnavailable,
         #[error("本地安全存储不可用")]
         StorageUnavailable,
+        #[error("无法写入导出文件")]
+        ExportFailed,
+        #[error("备份文件无法读取或格式不正确")]
+        InvalidBackup,
     }
 
     impl serde::Serialize for ConsoleError {
@@ -415,6 +537,31 @@ mod local_backend {
     }
 
     #[tauri::command]
+    fn export_settings(
+        app: AppHandle,
+        runtime: State<'_, ConsoleRuntime>,
+        session_token: String,
+        path: String,
+    ) -> Result<(), ConsoleError> {
+        authorize(&runtime, &session_token)?;
+        let stored = load_stored(&config_path(&app)?)?;
+        let bytes = serde_json::to_vec(&super::build_export_document(stored.state))
+            .map_err(|_| ConsoleError::StorageUnavailable)?;
+        fs::write(path, bytes).map_err(|_| ConsoleError::ExportFailed)
+    }
+
+    #[tauri::command]
+    fn import_settings(
+        runtime: State<'_, ConsoleRuntime>,
+        session_token: String,
+        path: String,
+    ) -> Result<Value, ConsoleError> {
+        authorize(&runtime, &session_token)?;
+        let bytes = fs::read(path).map_err(|_| ConsoleError::InvalidBackup)?;
+        super::parse_import_document(&bytes).ok_or(ConsoleError::InvalidBackup)
+    }
+
+    #[tauri::command]
     fn lock(runtime: State<'_, ConsoleRuntime>, session_token: String) -> Result<(), ConsoleError> {
         let mut auth = runtime
             .0
@@ -489,7 +636,9 @@ mod local_backend {
                 lock,
                 load_console,
                 save_console,
-                reveal_evidence
+                reveal_evidence,
+                export_settings,
+                import_settings
             ])
             .run(tauri::generate_context!())
             .expect("Karma administration console failed to start");
@@ -665,6 +814,10 @@ mod service_backend {
         RequestDenied,
         #[error("保护服务返回了无效响应")]
         InvalidResponse,
+        #[error("无法写入导出文件")]
+        ExportFailed,
+        #[error("备份文件无法读取或格式不正确")]
+        InvalidBackup,
     }
 
     impl serde::Serialize for ConsoleError {
@@ -770,6 +923,35 @@ mod service_backend {
             new_password,
         })?;
         acknowledged(result)
+    }
+
+    #[tauri::command]
+    fn export_settings(session_token: String, path: String) -> Result<(), ConsoleError> {
+        let policy = match request(ServiceRequest::GetPolicy { session_token })? {
+            ServiceResult::Policy { policy, .. } => policy,
+            _ => return Err(ConsoleError::InvalidResponse),
+        };
+        let bytes = serde_json::to_vec(&super::build_export_document(policy))
+            .map_err(|_| ConsoleError::InvalidResponse)?;
+        std::fs::write(path, bytes).map_err(|_| ConsoleError::ExportFailed)
+    }
+
+    #[tauri::command]
+    fn import_settings(
+        runtime: State<'_, ServiceUiRuntime>,
+        session_token: String,
+        path: String,
+    ) -> Result<Value, ConsoleError> {
+        if !runtime
+            .0
+            .lock()
+            .map_err(|_| ConsoleError::InvalidResponse)?
+            .contains_key(&session_token)
+        {
+            return Err(ConsoleError::SessionExpired);
+        }
+        let bytes = std::fs::read(path).map_err(|_| ConsoleError::InvalidBackup)?;
+        super::parse_import_document(&bytes).ok_or(ConsoleError::InvalidBackup)
     }
 
     fn session_from(result: ServiceResult) -> Result<String, ConsoleError> {
@@ -966,7 +1148,9 @@ mod service_backend {
                 lock,
                 load_console,
                 save_console,
-                reveal_evidence
+                reveal_evidence,
+                export_settings,
+                import_settings
             ])
             .run(tauri::generate_context!())
             .expect("Karma administration console failed to start");
