@@ -217,6 +217,13 @@ const zh = {
   "settings.autostartToggle": "登录后自动启动 Karma 管理控制台",
   "settings.languageTitle": "语言与显示",
   "settings.languageSubtitle": "控制台偏好",
+  "settings.passwordTitle": "修改管理员密码",
+  "settings.passwordDescription": "验证当前密码后设置新密码；新密码至少 10 个字符，修改立即生效。",
+  "settings.currentPassword": "当前密码",
+  "settings.newPassword": "新密码",
+  "settings.confirmNewPassword": "确认新密码",
+  "settings.changePassword": "修改密码",
+  "settings.passwordChanged": "管理员密码已更新",
   "settings.capabilities": "保护能力",
   "settings.progress": "当前仓库实现进度",
   "settings.capability1": "多显示器采集与本地 ONNX",
@@ -474,6 +481,13 @@ const en: Record<MessageKey, string> = {
   "settings.autostartToggle": "Launch the Karma administration console at login",
   "settings.languageTitle": "Language & display",
   "settings.languageSubtitle": "Console preferences",
+  "settings.passwordTitle": "Change administrator password",
+  "settings.passwordDescription": "Verify the current password to set a new one; the new password must be at least 10 characters and takes effect immediately.",
+  "settings.currentPassword": "Current password",
+  "settings.newPassword": "New password",
+  "settings.confirmNewPassword": "Confirm new password",
+  "settings.changePassword": "Change password",
+  "settings.passwordChanged": "Administrator password updated",
   "settings.capabilities": "Protection capabilities",
   "settings.progress": "Current implementation status",
   "settings.capability1": "Multi-monitor capture and local ONNX",
@@ -515,11 +529,13 @@ const en: Record<MessageKey, string> = {
 
 const messages: Record<Locale, Record<MessageKey, string>> = { "zh-CN": zh, en };
 
+const sessionExpiredMessage = "管理会话已失效，请重新解锁";
+
 const errorKeys = new Map<string, MessageKey>([
   ["管理员密码至少需要 10 个字符", "auth.passwordTooShort"],
   ["管理员密码不正确", "error.incorrectPassword"],
   ["验证失败次数过多，请稍后重试", "error.rateLimited"],
-  ["管理会话已失效，请重新解锁", "error.sessionExpired"],
+  [sessionExpiredMessage, "error.sessionExpired"],
   ["控制台已经完成初始化", "error.alreadyInitialized"],
   ["控制台尚未设置管理员密码", "error.notInitialized"],
   ["设置数据超出大小限制", "error.dataTooLarge"],
@@ -531,6 +547,11 @@ const errorKeys = new Map<string, MessageKey>([
   ["保护服务返回了无效响应", "error.invalidResponse"],
   ["开发模式中没有已加密的证据原图", "error.noDevelopmentEvidence"],
 ]);
+
+export function isSessionExpiredError(reason: unknown): boolean {
+  const message = reason instanceof Error ? reason.message : String(reason);
+  return message === sessionExpiredMessage;
+}
 
 export function getInitialLocale(): Locale {
   try {

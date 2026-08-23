@@ -58,6 +58,13 @@ export async function unlock(password: string): Promise<string> {
   return "browser-development-session";
 }
 
+export async function changePassword(sessionToken: string, currentPassword: string, newPassword: string): Promise<void> {
+  if (isTauri()) return invoke("change_password", { sessionToken, currentPassword, newPassword });
+  if (localStorage.getItem(browserPasswordKey) !== await browserPasswordDigest(currentPassword)) throw new Error("管理员密码不正确");
+  if (newPassword.length < 10) throw new Error("管理员密码至少需要 10 个字符");
+  localStorage.setItem(browserPasswordKey, await browserPasswordDigest(newPassword));
+}
+
 export async function lock(sessionToken: string): Promise<void> {
   if (isTauri()) await invoke("lock", { sessionToken });
 }

@@ -68,6 +68,11 @@ pub enum ServiceRequest {
     Authenticate {
         password: String,
     },
+    ChangePassword {
+        session_token: String,
+        current_password: String,
+        new_password: String,
+    },
     LockSession {
         session_token: String,
     },
@@ -134,7 +139,8 @@ impl ServiceRequest {
             | Self::PutPolicy { .. }
             | Self::ListEvidence { .. }
             | Self::RevealEvidence { .. }
-            | Self::DeleteEvidence { .. } => client == ClientKind::Ui,
+            | Self::DeleteEvidence { .. }
+            | Self::ChangePassword { .. } => client == ClientKind::Ui,
             Self::AgentHeartbeat { .. }
             | Self::AgentObservation { .. }
             | Self::AgentContextObservation { .. }
@@ -155,6 +161,17 @@ impl ServiceRequest {
                     return Err(ProtocolError::InvalidField);
                 }
             }
+            Self::ChangePassword {
+                current_password,
+                new_password,
+                ..
+            } => {
+                for password in [current_password, new_password] {
+                    if password.is_empty() || password.chars().count() > MAX_PASSWORD_CHARS {
+                        return Err(ProtocolError::InvalidField);
+                    }
+                }
+            }
             _ => {}
         }
         match self {
@@ -164,7 +181,8 @@ impl ServiceRequest {
             | Self::PutPolicy { session_token, .. }
             | Self::ListEvidence { session_token }
             | Self::RevealEvidence { session_token, .. }
-            | Self::DeleteEvidence { session_token, .. } => {
+            | Self::DeleteEvidence { session_token, .. }
+            | Self::ChangePassword { session_token, .. } => {
                 validate_opaque(session_token, MAX_SESSION_TOKEN_CHARS)?;
             }
             Self::AgentHeartbeat { agent_token, .. }
@@ -668,6 +686,43 @@ mod tests {
         );
         let debug = format!("client={:?}", request.client);
         assert!(!debug.contains("sensitive-secret"));
+    }
+
+    #[test]
+    fn change_password_is_ui_only_and_requires_both_secrets() {
+        let change = |client| {
+            request(
+                ServiceRequest::ChangePassword {
+                    session_token: "session-1".into(),
+                    current_password: "current-secret".into(),
+                    new_password: "replacement-secret".into(),
+                },
+                client,
+            )
+        };
+        assert!(change(ClientKind::Ui).validate().is_ok());
+        assert_eq!(
+            change(ClientKind::Agent).validate(),
+            Err(ProtocolError::ClientRoleDenied)
+        );
+        let empty_new = request(
+            ServiceRequest::ChangePassword {
+                session_token: "session-1".into(),
+                current_password: "current-secret".into(),
+                new_password: String::new(),
+            },
+            ClientKind::Ui,
+        );
+        assert_eq!(empty_new.validate(), Err(ProtocolError::InvalidField));
+        let stale_session = request(
+            ServiceRequest::ChangePassword {
+                session_token: "bad session".into(),
+                current_password: "current-secret".into(),
+                new_password: "replacement-secret".into(),
+            },
+            ClientKind::Ui,
+        );
+        assert_eq!(stale_session.validate(), Err(ProtocolError::InvalidField));
     }
 
     #[test]

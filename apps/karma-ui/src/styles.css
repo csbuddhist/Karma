@@ -223,6 +223,13 @@ select, .field input, .toolbar input { height: 39px; padding: 0 11px; color: var
 
 .field { display: block; margin-top: 15px; }
 .field input, .field select { width: 100%; }
+.password-form { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 14px; }
+.password-form .field { margin-top: 13px; }
+.password-form-footer { grid-column: 1 / -1; display: flex; align-items: center; gap: 11px; margin-top: 15px; }
+.password-form-footer .form-error, .password-form-footer .form-success { flex: 1; }
+.password-form-footer .primary-button { flex: 0 0 auto; }
+.form-success { display: flex; align-items: center; gap: 8px; padding: 10px 12px; color: var(--green); font-size: 12px; background: var(--green-soft); border-radius: 10px; }
+.save-error-message { display: flex; align-items: center; gap: 5px; margin-right: 5px; color: var(--danger); font-size: 12px; }
 .modal-submit { width: 100%; margin-top: 20px; }
 .day-picker { display: flex; gap: 7px; }
 .day-picker button { width: 35px; height: 35px; border: 1px solid #d9dbd3; border-radius: 9px; background: #fafaf7; font-size: 11px; cursor: pointer; }
@@ -306,6 +313,8 @@ select, .field input, .toolbar input { height: 39px; padding: 0 11px; color: var
   .header-actions .primary-button { margin-left: auto; }
   .page-content { padding: 18px; }
   .metric-grid, .monitor-grid, .evidence-grid { grid-template-columns: 1fr; }
+  .password-form { grid-template-columns: 1fr; }
+  .password-form-footer { flex-wrap: wrap; }
   .toolbar { align-items: stretch; flex-direction: column; }
   .table-head { display: none; }
   .table-row { grid-template-columns: 1fr auto auto; }

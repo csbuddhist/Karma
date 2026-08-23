@@ -183,7 +183,7 @@ score >= 0.95                         → 立即处置
 
 Windows 当前通过 UI Automation 支持 Chrome、Edge、Firefox、Brave、Opera/Opera GX、Vivaldi 和 Arc 的浏览器域名发现。规则只匹配域名（并覆盖子域名），不匹配 URL 路径。如果浏览器隐藏地址栏或未向辅助功能公开地址栏，Karma 无法识别该窗口是否命中网址白名单/黑名单；标题与图像规则仍继续工作。
 
-管理界面位于 [`apps/karma-ui/`](apps/karma-ui/)：Windows 构建已通过支持并发客户端的本机命名管道连接 `KarmaService`，管理员密码、会话、实时 Agent/显示器状态、策略 revision 和证据查看均由 Service 掌控；连接失败时 GUI 会显示明确的 Service 连接错误，不会再把未知认证状态误显示为密码解锁页。非 Windows 开发构建仍使用隔离的本地后端。
+管理界面位于 [`apps/karma-ui/`](apps/karma-ui/)：Windows 构建已通过支持并发客户端的本机命名管道连接 `KarmaService`，管理员密码、会话、实时 Agent/显示器状态、策略 revision 和证据查看均由 Service 掌控；系统设置中可在复验当前密码后修改管理员密码。Service 会话仅保存在内存中：KarmaService 停止再启动后，控制台会检测到会话失效并回到解锁页，重新解锁即恢复连接，不会一直停留在“服务尚未连接”状态；连接失败时 GUI 会显示明确的 Service 连接错误，不会再把未知认证状态误显示为密码解锁页。非 Windows 开发构建仍使用隔离的本地后端。
 
 macOS 开发机上的测试和 `x86_64-pc-windows-msvc` 交叉编译只证明便携算法、Rust 类型约束和 Windows API 签名正确；GPU 驱动行为、实际帧颜色、资源释放及多屏性能必须按 [Windows 帧管线真机验收清单](docs/windows-frame-pipeline-acceptance.md) 与 [Windows ONNX 真机验收清单](docs/windows-onnx-acceptance.md) 在 Windows 10 22H2/Windows 11 上验证，未记录该证据前不视为运行时验收完成。
 

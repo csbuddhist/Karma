@@ -373,6 +373,47 @@ mod local_backend {
         new_session(&runtime)
     }
 
+    fn apply_password_change(
+        runtime: &ConsoleRuntime,
+        stored: &mut StoredConsole,
+        current_password: Zeroizing<String>,
+        new_password: Zeroizing<String>,
+    ) -> Result<(), ConsoleError> {
+        verify_password(runtime, stored, current_password)?;
+        if new_password.chars().count() < 10 {
+            return Err(ConsoleError::PasswordTooShort);
+        }
+        let salt = SaltString::generate(&mut PasswordOsRng);
+        stored.password_hash = Argon2::default()
+            .hash_password(new_password.as_bytes(), &salt)
+            .map_err(|_| ConsoleError::StorageUnavailable)?
+            .to_string();
+        Ok(())
+    }
+
+    #[tauri::command]
+    fn change_password(
+        app: AppHandle,
+        runtime: State<'_, ConsoleRuntime>,
+        session_token: String,
+        current_password: String,
+        new_password: String,
+    ) -> Result<(), ConsoleError> {
+        authorize(&runtime, &session_token)?;
+        if new_password.chars().count() < 10 {
+            return Err(ConsoleError::PasswordTooShort);
+        }
+        let path = config_path(&app)?;
+        let mut stored = load_stored(&path)?;
+        apply_password_change(
+            &runtime,
+            &mut stored,
+            Zeroizing::new(current_password),
+            Zeroizing::new(new_password),
+        )?;
+        save_stored(&path, &stored)
+    }
+
     #[tauri::command]
     fn lock(runtime: State<'_, ConsoleRuntime>, session_token: String) -> Result<(), ConsoleError> {
         let mut auth = runtime
@@ -444,6 +485,7 @@ mod local_backend {
                 auth_status,
                 enroll,
                 unlock,
+                change_password,
                 lock,
                 load_console,
                 save_console,
@@ -514,6 +556,61 @@ mod local_backend {
         }
 
         #[test]
+        fn password_change_keeps_old_secret_until_current_secret_verifies() {
+            let salt = SaltString::generate(&mut PasswordOsRng);
+            let mut stored = StoredConsole {
+                schema_version: 1,
+                password_hash: Argon2::default()
+                    .hash_password(b"correct-password", &salt)
+                    .unwrap()
+                    .to_string(),
+                state: default_console_state(),
+            };
+            let runtime = ConsoleRuntime::default();
+            assert!(matches!(
+                apply_password_change(
+                    &runtime,
+                    &mut stored,
+                    Zeroizing::new("wrong-password".into()),
+                    Zeroizing::new("replacement-password".into()),
+                ),
+                Err(ConsoleError::InvalidPassword)
+            ));
+            assert!(matches!(
+                apply_password_change(
+                    &runtime,
+                    &mut stored,
+                    Zeroizing::new("correct-password".into()),
+                    Zeroizing::new("short".into()),
+                ),
+                Err(ConsoleError::PasswordTooShort)
+            ));
+            assert!(
+                verify_password(&runtime, &stored, Zeroizing::new("correct-password".into()))
+                    .is_ok()
+            );
+            apply_password_change(
+                &runtime,
+                &mut stored,
+                Zeroizing::new("correct-password".into()),
+                Zeroizing::new("replacement-password".into()),
+            )
+            .unwrap();
+            assert!(matches!(
+                verify_password(&runtime, &stored, Zeroizing::new("correct-password".into())),
+                Err(ConsoleError::InvalidPassword)
+            ));
+            assert!(
+                verify_password(
+                    &runtime,
+                    &stored,
+                    Zeroizing::new("replacement-password".into())
+                )
+                .is_ok()
+            );
+        }
+
+        #[test]
         fn stored_console_round_trips_without_plaintext_password() {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("console.json");
@@ -548,6 +645,8 @@ mod service_backend {
     enum ConsoleError {
         #[error("KarmaService 尚未运行或命名管道不可用")]
         ServiceUnavailable,
+        #[error("管理员密码至少需要 10 个字符")]
+        PasswordTooShort,
         #[error("管理员密码不正确")]
         InvalidPassword,
         #[error("验证失败次数过多，请稍后重试")]
@@ -654,6 +753,23 @@ mod service_backend {
     #[tauri::command]
     fn unlock(password: String) -> Result<String, ConsoleError> {
         session_from(request(ServiceRequest::Authenticate { password })?)
+    }
+
+    #[tauri::command]
+    fn change_password(
+        session_token: String,
+        current_password: String,
+        new_password: String,
+    ) -> Result<(), ConsoleError> {
+        if new_password.chars().count() < 10 {
+            return Err(ConsoleError::PasswordTooShort);
+        }
+        let result = request(ServiceRequest::ChangePassword {
+            session_token,
+            current_password,
+            new_password,
+        })?;
+        acknowledged(result)
     }
 
     fn session_from(result: ServiceResult) -> Result<String, ConsoleError> {
@@ -846,6 +962,7 @@ mod service_backend {
                 auth_status,
                 enroll,
                 unlock,
+                change_password,
                 lock,
                 load_console,
                 save_console,

@@ -39,6 +39,7 @@ import {
 } from "lucide-react";
 import {
   authStatus,
+  changePassword,
   configureLaunchAtStartup,
   defaultConsoleState,
   enroll,
@@ -51,6 +52,7 @@ import {
 import {
   createTranslator,
   getInitialLocale,
+  isSessionExpiredError,
   localizeError,
   persistLocale,
 } from "./i18n";
@@ -427,9 +429,53 @@ function Audit({ state }: { state: ConsoleState }) {
   return <Card>{state.audit.length ? <div className="audit-list">{state.audit.map((item) => <div key={item.id}><span className={`audit-icon ${item.outcome}`}>{item.outcome === "success" ? <Check /> : <CircleAlert />}</span><div><strong>{item.detail}</strong><small>{item.kind} · {item.occurredAt}</small></div><StatusPill tone={item.outcome === "success" ? "good" : item.outcome === "warning" ? "warn" : "danger"}>{t(item.outcome === "success" ? "audit.success" : item.outcome === "warning" ? "audit.warning" : "audit.denied")}</StatusPill></div>)}</div> : <EmptyState icon={<FileClock />} title={t("audit.emptyTitle")} text={t("audit.emptyDescription")} />}</Card>;
 }
 
-function SettingsPage({ state, update }: { state: ConsoleState; update: (state: ConsoleState) => void }) {
+function PasswordChangeCard({ sessionToken }: { sessionToken: string }) {
   const { t } = useI18n();
-  return <div className="settings-grid"><Card className="full-span"><div className="setting-row"><div className="setting-icon green"><KarmaShieldIcon /></div><div><strong>{t("settings.protectionTitle")}</strong><p>{t("settings.protectionDescription")}</p></div><Toggle checked={state.protectionEnabled} onChange={(value) => update({ ...state, protectionEnabled: value })} label={t("settings.protectionToggle")} /></div></Card><Card className="full-span"><div className="setting-row"><div className="setting-icon violet"><Power /></div><div><strong>{t("settings.autostartTitle")}</strong><p>{t("settings.autostartDescription")}</p></div><Toggle checked={state.launchAtStartup} onChange={(value) => update({ ...state, launchAtStartup: value })} label={t("settings.autostartToggle")} /></div></Card><Card className="full-span language-card"><div className="setting-row"><div className="setting-icon blue"><Globe2 /></div><div><strong>{t("settings.languageTitle")}</strong><p>{t("language.description")}</p></div><LanguageSelect /></div></Card><Card><div className="card-heading"><div><h2>{t("settings.capabilities")}</h2><p>{t("settings.progress")}</p></div></div><div className="capability-list"><div><Check />{t("settings.capability1")}</div><div><Check />{t("settings.capability2")}</div><div><Check />{t("settings.capability3")}</div><div><Check />{t("settings.capability4")}</div><div><Check />{t("settings.capability5")}</div><div className="pending"><CircleAlert />{t("settings.capabilityPending")}</div></div></Card><Card><div className="card-heading"><div><h2>{t("settings.security")}</h2><p>{t("settings.securitySubtitle")}</p></div></div><div className="security-note"><Lock /><p>{t("settings.securityDescription")}</p></div></Card></div>;
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [saved, setSaved] = useState(false);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setError("");
+    setSaved(false);
+    if (newPassword.length < 10) return setError(t("auth.passwordTooShort"));
+    if (newPassword !== confirmPassword) return setError(t("auth.passwordMismatch"));
+    setBusy(true);
+    try {
+      await changePassword(sessionToken, currentPassword, newPassword);
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+      setSaved(true);
+    } catch (reason) {
+      setError(localizeError(reason, t));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return <Card className="full-span">
+    <div className="card-heading"><div><h2>{t("settings.passwordTitle")}</h2><p>{t("settings.passwordDescription")}</p></div></div>
+    <form className="password-form" onSubmit={submit}>
+      <label className="field"><span>{t("settings.currentPassword")}</span><input type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => { setCurrentPassword(event.target.value); setSaved(false); }} /></label>
+      <label className="field"><span>{t("settings.newPassword")}</span><input type="password" autoComplete="new-password" value={newPassword} onChange={(event) => { setNewPassword(event.target.value); setSaved(false); }} /></label>
+      <label className="field"><span>{t("settings.confirmNewPassword")}</span><input type="password" autoComplete="new-password" value={confirmPassword} onChange={(event) => { setConfirmPassword(event.target.value); setSaved(false); }} /></label>
+      <div className="password-form-footer">
+        {error && <div className="form-error"><CircleAlert size={16} />{error}</div>}
+        {saved && !error && <div className="form-success"><Check size={16} />{t("settings.passwordChanged")}</div>}
+        <button className="primary-button" disabled={busy || !currentPassword || !newPassword || !confirmPassword} type="submit"><KeyRound size={17} />{t(busy ? "common.saving" : "settings.changePassword")}</button>
+      </div>
+    </form>
+  </Card>;
+}
+
+function SettingsPage({ state, update, sessionToken }: { state: ConsoleState; update: (state: ConsoleState) => void; sessionToken: string }) {
+  const { t } = useI18n();
+  return <div className="settings-grid"><Card className="full-span"><div className="setting-row"><div className="setting-icon green"><KarmaShieldIcon /></div><div><strong>{t("settings.protectionTitle")}</strong><p>{t("settings.protectionDescription")}</p></div><Toggle checked={state.protectionEnabled} onChange={(value) => update({ ...state, protectionEnabled: value })} label={t("settings.protectionToggle")} /></div></Card><Card className="full-span"><div className="setting-row"><div className="setting-icon violet"><Power /></div><div><strong>{t("settings.autostartTitle")}</strong><p>{t("settings.autostartDescription")}</p></div><Toggle checked={state.launchAtStartup} onChange={(value) => update({ ...state, launchAtStartup: value })} label={t("settings.autostartToggle")} /></div></Card><Card className="full-span language-card"><div className="setting-row"><div className="setting-icon blue"><Globe2 /></div><div><strong>{t("settings.languageTitle")}</strong><p>{t("language.description")}</p></div><LanguageSelect /></div></Card><PasswordChangeCard sessionToken={sessionToken} /><Card><div className="card-heading"><div><h2>{t("settings.capabilities")}</h2><p>{t("settings.progress")}</p></div></div><div className="capability-list"><div><Check />{t("settings.capability1")}</div><div><Check />{t("settings.capability2")}</div><div><Check />{t("settings.capability3")}</div><div><Check />{t("settings.capability4")}</div><div><Check />{t("settings.capability5")}</div><div className="pending"><CircleAlert />{t("settings.capabilityPending")}</div></div></Card><Card><div className="card-heading"><div><h2>{t("settings.security")}</h2><p>{t("settings.securitySubtitle")}</p></div></div><div className="security-note"><Lock /><p>{t("settings.securityDescription")}</p></div></Card></div>;
 }
 
 function Modal({ title, children, onClose, wide = false }: { title: string; children: ReactNode; onClose: () => void; wide?: boolean }) {
@@ -447,6 +493,7 @@ function AppContent() {
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState("");
+  const [saveError, setSaveError] = useState("");
   const [startupError, setStartupError] = useState("");
 
   async function refreshAuthStatus() { setLoading(true); setStartupError(""); try { setAuthMode(await authStatus()); } catch (reason) { setStartupError(reason instanceof Error ? reason.message : String(reason)); } finally { setLoading(false); } }
@@ -462,14 +509,47 @@ function AppContent() {
   }, [authMode, sessionToken]);
   useEffect(() => {
     if (authMode !== "unlocked" || !sessionToken || dirty) return;
-    const refresh = () => void loadConsole(sessionToken).then(setState).catch(() => setState((current) => ({ ...current, serviceConnected: false, agentConnected: false, monitors: [] })));
+    const refresh = () => {
+      void loadConsole(sessionToken).then(setState).catch((reason) => {
+        // A restarted service invalidates every in-memory session; return to the
+        // unlock screen so a fresh token is issued instead of reporting offline.
+        if (isSessionExpiredError(reason)) { void signOut(); return; }
+        setState((current) => ({ ...current, serviceConnected: false, agentConnected: false, monitors: [] }));
+      });
+    };
     const interval = window.setInterval(refresh, 5000);
     return () => window.clearInterval(interval);
   }, [authMode, sessionToken, dirty]);
   async function authenticated(token: string) { setSessionToken(token); setLoading(true); try { const next = await loadConsole(token); setState(next); setAuthMode("unlocked"); void configureLaunchAtStartup(next.launchAtStartup).catch((reason) => console.error("Failed to synchronize autostart", reason)); } finally { setLoading(false); } }
-  function update(next: ConsoleState) { setState(next); setDirty(true); setSaveMessage(""); }
-  async function save() { setSaving(true); try { const next = { ...state, recognition: { ...state.recognition, immediateThreshold: state.recognition.sensitivity } }; await configureLaunchAtStartup(next.launchAtStartup); await saveConsole(sessionToken, next); setState(next); setDirty(false); setSaveMessage(t("common.settingsSaved")); window.setTimeout(() => setSaveMessage(""), 2200); } finally { setSaving(false); } }
-  async function signOut() { await lock(sessionToken); setSessionToken(""); setState(defaultConsoleState); setAuthMode("locked"); setPage("overview"); }
+  function update(next: ConsoleState) { setState(next); setDirty(true); setSaveMessage(""); setSaveError(""); }
+  async function save() {
+    setSaving(true);
+    setSaveError("");
+    try {
+      const next = { ...state, recognition: { ...state.recognition, immediateThreshold: state.recognition.sensitivity } };
+      await configureLaunchAtStartup(next.launchAtStartup);
+      await saveConsole(sessionToken, next);
+      setState(next);
+      setDirty(false);
+      setSaveMessage(t("common.settingsSaved"));
+      window.setTimeout(() => setSaveMessage(""), 2200);
+    } catch (reason) {
+      if (isSessionExpiredError(reason)) { await signOut(); return; }
+      setSaveError(localizeError(reason, t));
+    } finally {
+      setSaving(false);
+    }
+  }
+  async function signOut() {
+    // The service may be down or the session already invalid; always reset locally.
+    await lock(sessionToken).catch(() => undefined);
+    setSessionToken("");
+    setState(defaultConsoleState);
+    setAuthMode("locked");
+    setPage("overview");
+    setSaveMessage("");
+    setSaveError("");
+  }
 
   const content = useMemo(() => {
     if (page === "overview") return <Overview state={state} />;
@@ -481,14 +561,14 @@ function AppContent() {
     if (page === "schedule") return <Schedule state={state} update={update} />;
     if (page === "evidence") return <Evidence state={state} sessionToken={sessionToken} />;
     if (page === "audit") return <Audit state={state} />;
-    return <SettingsPage state={state} update={update} />;
+    return <SettingsPage state={state} update={update} sessionToken={sessionToken} />;
   }, [page, state, sessionToken, locale]);
 
   if (loading) return <div className="loading-screen"><div className="brand-mark"><KarmaShieldIcon /></div><span>{t("common.loading")}</span></div>;
   if (startupError) return <ServiceConnectionError detail={localizeError(startupError, t)} onRetry={() => void refreshAuthStatus()} />;
   if (authMode !== "unlocked") return <PasswordGate mode={authMode} onAuthenticated={authenticated} />;
   const meta = pageMeta[page];
-  return <div className="app-shell"><aside className="sidebar"><div className="brand-lockup sidebar-brand"><div className="brand-mark"><KarmaShieldIcon /></div><div><strong>KARMA</strong><span>{t("brand.short")}</span></div></div><nav>{navItems.map((item) => { const Icon = item.icon; return <button className={page === item.key ? "active" : ""} key={item.key} onClick={() => setPage(item.key)}><Icon size={19} /><span>{t(item.label)}</span>{item.key === "evidence" && state.evidence.length > 0 && <b>{state.evidence.length}</b>}</button>; })}</nav><div className="sidebar-foot"><div className="mini-health"><span className={state.serviceConnected ? "online" : "offline"} /><div><strong>{t(state.serviceConnected ? "sidebar.serviceOnline" : "sidebar.serviceOffline")}</strong><small>{t(state.agentConnected ? "sidebar.agentOnline" : "sidebar.consoleOnly")}</small></div></div><button onClick={signOut}><LogOut size={18} /><span>{t("common.lockConsole")}</span></button></div></aside><main className="main"><header><div><span className="eyebrow">KARMA CONTROL</span><h1>{t(meta.title)}</h1><p>{t(meta.subtitle)}</p></div><div className="header-actions">{saveMessage && <span className="saved-message"><Check size={15} />{saveMessage}</span>}<button className="secondary-button" onClick={signOut}><Lock size={16} />{t("common.lock")}</button><button className="primary-button" disabled={!dirty || saving} onClick={save}><Save size={17} />{t(saving ? "common.saving" : "common.saveSettings")}</button></div></header><div className="page-content">{content}</div></main></div>;
+  return <div className="app-shell"><aside className="sidebar"><div className="brand-lockup sidebar-brand"><div className="brand-mark"><KarmaShieldIcon /></div><div><strong>KARMA</strong><span>{t("brand.short")}</span></div></div><nav>{navItems.map((item) => { const Icon = item.icon; return <button className={page === item.key ? "active" : ""} key={item.key} onClick={() => setPage(item.key)}><Icon size={19} /><span>{t(item.label)}</span>{item.key === "evidence" && state.evidence.length > 0 && <b>{state.evidence.length}</b>}</button>; })}</nav><div className="sidebar-foot"><div className="mini-health"><span className={state.serviceConnected ? "online" : "offline"} /><div><strong>{t(state.serviceConnected ? "sidebar.serviceOnline" : "sidebar.serviceOffline")}</strong><small>{t(state.agentConnected ? "sidebar.agentOnline" : "sidebar.consoleOnly")}</small></div></div><button onClick={signOut}><LogOut size={18} /><span>{t("common.lockConsole")}</span></button></div></aside><main className="main"><header><div><span className="eyebrow">KARMA CONTROL</span><h1>{t(meta.title)}</h1><p>{t(meta.subtitle)}</p></div><div className="header-actions">{saveMessage && <span className="saved-message"><Check size={15} />{saveMessage}</span>}{saveError && <span className="save-error-message"><CircleAlert size={15} />{saveError}</span>}<button className="secondary-button" onClick={signOut}><Lock size={16} />{t("common.lock")}</button><button className="primary-button" disabled={!dirty || saving} onClick={save}><Save size={17} />{t(saving ? "common.saving" : "common.saveSettings")}</button></div></header><div className="page-content">{content}</div></main></div>;
 }
 
 export function App() {

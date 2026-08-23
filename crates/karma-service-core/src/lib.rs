@@ -227,6 +227,27 @@ impl ServiceCore {
                 self.persist(&runtime.stored)?;
                 Ok(new_session(runtime, now_ms))
             }
+            ServiceRequest::ChangePassword {
+                session_token,
+                current_password,
+                new_password,
+            } => {
+                authorize(runtime, &session_token, now_ms)?;
+                self.authenticate(runtime, current_password, now_ms)?;
+                let new_password = Zeroizing::new(new_password);
+                if new_password.chars().count() < 10 {
+                    return Err(ServiceErrorCode::InvalidRequest);
+                }
+                let salt = SaltString::generate(&mut PasswordOsRng);
+                let hash = Argon2::default()
+                    .hash_password(new_password.as_bytes(), &salt)
+                    .map_err(|_| ServiceErrorCode::Internal)?
+                    .to_string();
+                runtime.stored.password_hash = Some(hash);
+                audit(runtime, now_ms, "administrator_password_changed", "success");
+                self.persist(&runtime.stored)?;
+                Ok(ServiceResult::Acknowledged)
+            }
             ServiceRequest::LockSession { session_token } => {
                 runtime.sessions.remove(&session_token);
                 Ok(ServiceResult::Acknowledged)
@@ -959,6 +980,102 @@ mod tests {
             }
             _ => panic!("unexpected response"),
         }
+    }
+
+    #[test]
+    fn password_change_requires_current_secret_and_persists_new_hash() {
+        let directory = tempfile::tempdir().unwrap();
+        let core = open_core(directory.path(), 100);
+        let session = match success(core.handle(
+            request(
+                "1",
+                "n1",
+                ServiceRequest::EnrollAdministrator {
+                    password: "long-test-password".into(),
+                },
+            ),
+            101,
+        )) {
+            ServiceResult::Session { session_token, .. } => session_token,
+            _ => panic!("unexpected response"),
+        };
+        let change = |nonce: &str, current: &str, new: &str, now: i64| {
+            core.handle(
+                request(
+                    &format!("change-{nonce}"),
+                    nonce,
+                    ServiceRequest::ChangePassword {
+                        session_token: session.clone(),
+                        current_password: current.into(),
+                        new_password: new.into(),
+                    },
+                ),
+                now,
+            )
+        };
+        assert_eq!(
+            change("n2", "wrong-password", "replacement-password", 102)
+                .result
+                .unwrap_err()
+                .code,
+            ServiceErrorCode::AuthenticationFailed
+        );
+        assert_eq!(
+            change("n3", "long-test-password", "short", 103)
+                .result
+                .unwrap_err()
+                .code,
+            ServiceErrorCode::InvalidRequest
+        );
+        assert!(matches!(
+            success(change(
+                "n4",
+                "long-test-password",
+                "replacement-password",
+                104
+            )),
+            ServiceResult::Acknowledged
+        ));
+        assert_eq!(
+            core.handle(
+                request(
+                    "5",
+                    "n5",
+                    ServiceRequest::Authenticate {
+                        password: "long-test-password".into(),
+                    },
+                ),
+                105,
+            )
+            .result
+            .unwrap_err()
+            .code,
+            ServiceErrorCode::AuthenticationFailed
+        );
+        drop(core);
+        let reopened = open_core(directory.path(), 200);
+        assert!(matches!(
+            success(reopened.handle(
+                request(
+                    "6",
+                    "n6",
+                    ServiceRequest::Authenticate {
+                        password: "replacement-password".into(),
+                    },
+                ),
+                201,
+            )),
+            ServiceResult::Session { .. }
+        ));
+        let state: StoredState =
+            serde_json::from_slice(&fs::read(directory.path().join("service.json")).unwrap())
+                .unwrap();
+        assert!(
+            state
+                .audit
+                .iter()
+                .any(|record| record.kind == "administrator_password_changed")
+        );
     }
 
     #[test]
