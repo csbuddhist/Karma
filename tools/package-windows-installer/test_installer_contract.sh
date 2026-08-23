@@ -57,6 +57,10 @@ assert_before 'MessageBox MB_YESNO.*是否先卸载现有版本并继续安装' 
   'installer must obtain confirmation before invoking the existing uninstaller'
 assert_before 'ExecWait .*Uninstall-Karma-Launcher\.exe.* /S' '\$2 != 0' "$installer" \
   'installer must wait for and validate the existing uninstaller result'
+assert_contains '^wait_for_existing_service_removal:' "$installer" \
+  'installer must poll for the existing service to disappear after uninstall succeeds'
+assert_before '^wait_for_existing_service_removal:' '现有 KarmaService .*未能移除' "$installer" \
+  'installer must wait for confirmed service removal before reporting failure'
 if rg -q '请先运行现有安装目录中的 Uninstall-Karma-Launcher\.exe' "$installer"; then
   echo 'installer must not require the user to launch the existing uninstaller manually' >&2
   contract_failed=1
@@ -69,6 +73,16 @@ assert_before 'if \(\$LASTEXITCODE -ne 0\)' 'sc\.exe delete KarmaService' "$unin
   'uninstaller must authenticate successfully before deleting the service'
 assert_before 'if \(\$LASTEXITCODE -ne 0\)' 'Remove-Item -LiteralPath \$destination' "$uninstall_script" \
   'uninstaller must authenticate successfully before deleting installed files'
+assert_contains "Get-Process -Name 'karma-ui'" "$uninstall_script" \
+  'uninstaller must locate the installed administration console before deleting its executable'
+assert_before 'if \(\$LASTEXITCODE -ne 0\)' 'Stop-Process -Id' "$uninstall_script" \
+  'uninstaller must authenticate successfully before stopping the administration console'
+assert_before 'Stop-Process -Id' 'Remove-Item -LiteralPath \$destination' "$uninstall_script" \
+  'uninstaller must stop the installed administration console before deleting installed files'
+assert_before '\$service\.Dispose\(\)' 'sc\.exe delete KarmaService' "$uninstall_script" \
+  'uninstaller must release its service handle before deleting KarmaService'
+assert_contains '\$deleteExitCode -notin @\(0, 1060, 1072\)' "$uninstall_script" \
+  'uninstaller must allow retrying a service that is absent or already marked for deletion'
 rg -q 'Uninstall-Karma-Launcher\.exe' "$installer"
 rg -q 'SYSTEM\\CurrentControlSet\\Services\\KarmaService' "$installer"
 rg -q -- '-NonInteractive -ExecutionPolicy Bypass' "$installer"

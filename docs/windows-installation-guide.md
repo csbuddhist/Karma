@@ -77,10 +77,10 @@
 
 ### 3.1 单文件安装器（推荐）
 
-新用户从 [v0.1.7 Windows Test Build](https://github.com/DrWeiZhou/Karma/releases/tag/v0.1.7) 下载：
+新用户从 [v0.1.8 Windows Test Build](https://github.com/DrWeiZhou/Karma/releases/tag/v0.1.8) 下载：
 
 ```text
-Karma-windows-x64-test-v0.1.7-setup.exe
+Karma-windows-x64-test-v0.1.8-setup.exe
 ```
 
 安装第 2.2 节所述 Microsoft Visual C++ Redistributable 后，右键安装器并选择“以管理员身份运行”。安装器会：
@@ -92,7 +92,7 @@ Karma-windows-x64-test-v0.1.7-setup.exe
 - 创建桌面和开始菜单管理控制台快捷方式；
 - 在 Windows“已安装的应用”中注册卸载入口。卸载仍需输入 Karma 管理员密码。
 
-如果安装器检测到现有版本，会先询问是否卸载。选择“是”后，安装器自动启动现有卸载器并要求输入 Karma 管理员密码；只有密码验证和卸载均成功后才继续安装。选择“否”、密码验证失败或卸载失败时，本次安装会取消，不再要求用户手动打开卸载程序。
+如果安装器检测到现有版本，会先询问是否卸载。选择“是”后，安装器自动启动现有卸载器并要求输入 Karma 管理员密码；验证通过后会关闭已安装的管理控制台、停止 Agent 和 Service，并等待 Service 确认移除后继续安装。选择“否”、密码验证失败或卸载失败时，本次安装会取消，不再要求用户手动打开卸载程序。
 
 安装器和内部 EXE 当前均未签名，SmartScreen 可能显示“未知发布者”。不要因此永久关闭 Windows Defender。
 
@@ -526,13 +526,13 @@ cp -L target/x86_64-pc-windows-msvc/release/DirectML.dll \
 ```bash
 brew install nsis
 bash tools/package-windows-installer/test_installer_contract.sh
-bash tools/package-windows-installer/build_installer.sh 0.1.7
+bash tools/package-windows-installer/build_installer.sh 0.1.8
 ```
 
 生成文件：
 
 ```text
-target/release-artifacts/Karma-windows-x64-test-v0.1.7-setup.exe
+target/release-artifacts/Karma-windows-x64-test-v0.1.8-setup.exe
 ```
 
 安装器自身包含 CRC，安装阶段还会运行包内 SHA-256 校验；两者均不能替代正式发布所需的 Authenticode 代码签名。

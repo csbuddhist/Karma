@@ -85,12 +85,19 @@ uninstall_existing:
       Abort
     ${EndIf}
 
+    StrCpy $4 0
+wait_for_existing_service_removal:
     ReadRegStr $3 HKLM "SYSTEM\CurrentControlSet\Services\KarmaService" "ImagePath"
-    ${If} $3 != ""
-      MessageBox MB_OK|MB_ICONSTOP "现有 KarmaService 未能移除，安装已取消。"
-      Abort
+    ${If} $3 == ""
+      Goto existing_uninstall_done
     ${EndIf}
-    Goto existing_uninstall_done
+    IntOp $4 $4 + 1
+    ${If} $4 < 60
+      Sleep 500
+      Goto wait_for_existing_service_removal
+    ${EndIf}
+    MessageBox MB_OK|MB_ICONSTOP "现有 KarmaService 在 30 秒内未能移除。请关闭“服务”管理器或其他可能占用该 Service 的工具后重试。安装已取消。"
+    Abort
 
 existing_uninstaller_missing:
     MessageBox MB_OK|MB_ICONSTOP "找不到现有版本的 Uninstall-Karma-Launcher.exe，无法自动卸载。安装已取消。"

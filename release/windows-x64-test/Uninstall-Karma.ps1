@@ -34,11 +34,46 @@ try {
     [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
 }
 
+$consolePath = [IO.Path]::GetFullPath((Join-Path $destination 'karma-ui.exe'))
+$consoleProcesses = @(Get-Process -Name 'karma-ui' -ErrorAction SilentlyContinue)
+foreach ($process in $consoleProcesses) {
+    try {
+        $processPath = [IO.Path]::GetFullPath($process.Path)
+    } catch {
+        continue
+    }
+    if ($processPath -ine $consolePath) {
+        continue
+    }
+    try {
+        if (-not $process.HasExited) {
+            Stop-Process -Id $process.Id -Force -ErrorAction Stop
+            $process.WaitForExit(5000) | Out-Null
+        }
+    } catch {
+        if (-not $process.HasExited) {
+            throw '无法关闭 Karma 管理控制台，卸载已取消。'
+        }
+    } finally {
+        $process.Dispose()
+    }
+}
+
+$autoStartName = 'Karma Family Protection'
+Remove-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name $autoStartName -ErrorAction SilentlyContinue
+Remove-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run' -Name $autoStartName -ErrorAction SilentlyContinue
+
 $service = Get-Service -Name 'KarmaService' -ErrorAction SilentlyContinue
 if ($null -ne $service) {
-    $service.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(20))
+    try {
+        $service.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(20))
+    } finally {
+        $service.Dispose()
+        $service = $null
+    }
     & sc.exe delete KarmaService | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw '删除 KarmaService 注册失败。' }
+    $deleteExitCode = $LASTEXITCODE
+    if ($deleteExitCode -notin @(0, 1060, 1072)) { throw '删除 KarmaService 注册失败。' }
 }
 
 if (Test-Path -LiteralPath $destination) {
