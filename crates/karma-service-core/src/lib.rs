@@ -19,7 +19,10 @@ use karma_ipc::{
     BootstrapStatus, EvidenceMetadata, RequestEnvelope, ResponseEnvelope, ServiceErrorCode,
     ServiceFailure, ServiceRequest, ServiceResult, ServiceStatus,
 };
-use karma_policy::{ApplicationEffect, ApplicationPolicy, ContextPolicy};
+use karma_policy::{
+    ApplicationEffect, ApplicationPolicy, ContextPolicy, StrikeRecord, is_banned,
+    normalize_executable, record_closure,
+};
 use rand::{RngCore, rngs::OsRng};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -65,6 +68,8 @@ struct StoredState {
     policy: Value,
     audit: Vec<AuditRecord>,
     evidence: Vec<StoredEvidence>,
+    #[serde(default)]
+    repeat_offenders: Vec<StrikeRecord>,
 }
 
 impl Default for StoredState {
@@ -76,6 +81,7 @@ impl Default for StoredState {
             policy: json!({}),
             audit: Vec::new(),
             evidence: Vec::new(),
+            repeat_offenders: Vec::new(),
         }
     }
 }
@@ -344,6 +350,11 @@ impl ServiceCore {
                 let Some(target) = observation.source else {
                     return Ok(ServiceResult::Acknowledged);
                 };
+                if protection_enabled
+                    && repeat_offender_banned(runtime, &target.executable_name, now_ms)
+                {
+                    return Ok(disposition_required(runtime, observation.event_id, target));
+                }
                 let context_policy = ContextPolicy::from_value(&runtime.stored.policy)
                     .map_err(|_| ServiceErrorCode::Internal)?;
                 if context_policy.allows_host(observation.browser_host.as_deref()) {
@@ -359,14 +370,7 @@ impl ServiceCore {
                 if !protection_enabled || !image_enabled || observation.risk_millis < threshold {
                     return Ok(ServiceResult::Acknowledged);
                 }
-                runtime
-                    .pending_dispositions
-                    .insert(observation.event_id.clone(), target.clone());
-                Ok(ServiceResult::DispositionRequired {
-                    event_id: observation.event_id,
-                    target,
-                    grace_period_ms: DISPOSITION_GRACE_MS,
-                })
+                Ok(disposition_required(runtime, observation.event_id, target))
             }
             ServiceRequest::AgentContextObservation {
                 agent_token,
@@ -387,6 +391,13 @@ impl ServiceCore {
                 if !protection_enabled {
                     return Ok(ServiceResult::Acknowledged);
                 }
+                if repeat_offender_banned(runtime, &observation.source.executable_name, now_ms) {
+                    return Ok(disposition_required(
+                        runtime,
+                        observation.event_id,
+                        observation.source,
+                    ));
+                }
                 let context_policy = ContextPolicy::from_value(&runtime.stored.policy)
                     .map_err(|_| ServiceErrorCode::Internal)?;
                 let application_policy = ApplicationPolicy::from_value(&runtime.stored.policy)
@@ -400,14 +411,11 @@ impl ServiceCore {
                 if !karma_policy::context_enforcement(verdict, application_effect) {
                     return Ok(ServiceResult::Acknowledged);
                 }
-                runtime
-                    .pending_dispositions
-                    .insert(observation.event_id.clone(), observation.source.clone());
-                Ok(ServiceResult::DispositionRequired {
-                    event_id: observation.event_id,
-                    target: observation.source,
-                    grace_period_ms: DISPOSITION_GRACE_MS,
-                })
+                Ok(disposition_required(
+                    runtime,
+                    observation.event_id,
+                    observation.source,
+                ))
             }
             ServiceRequest::SubmitEvidence {
                 agent_token,
@@ -673,6 +681,29 @@ fn audit(runtime: &mut RuntimeState, occurred_at_ms: i64, kind: &str, outcome: &
     }
 }
 
+fn repeat_offender_banned(runtime: &RuntimeState, executable_name: &str, now_ms: i64) -> bool {
+    is_banned(
+        &runtime.stored.repeat_offenders,
+        &normalize_executable(executable_name),
+        now_ms,
+    )
+}
+
+fn disposition_required(
+    runtime: &mut RuntimeState,
+    event_id: String,
+    target: karma_ipc::ProcessIdentity,
+) -> ServiceResult {
+    runtime
+        .pending_dispositions
+        .insert(event_id.clone(), target.clone());
+    ServiceResult::DispositionRequired {
+        event_id,
+        target,
+        grace_period_ms: DISPOSITION_GRACE_MS,
+    }
+}
+
 fn record_disposition(
     runtime: &mut RuntimeState,
     report: &karma_ipc::DispositionReport,
@@ -685,6 +716,7 @@ fn record_disposition(
     if expected.process_id != report.process_id || expected.started_at_ms != report.started_at_ms {
         return Err(ServiceErrorCode::InvalidRequest);
     }
+    let executable_name = expected.executable_name.clone();
     runtime.pending_dispositions.remove(&report.event_id);
     let outcome = match report.outcome {
         karma_ipc::DispositionOutcome::ClosedGracefully => "closed_gracefully",
@@ -694,6 +726,21 @@ fn record_disposition(
         karma_ipc::DispositionOutcome::SourceUncertain => "source_uncertain",
     };
     audit(runtime, now_ms, "application_disposition", outcome);
+    if matches!(
+        report.outcome,
+        karma_ipc::DispositionOutcome::ClosedGracefully | karma_ipc::DispositionOutcome::Terminated
+    ) {
+        let executable = normalize_executable(&executable_name);
+        if record_closure(
+            &mut runtime.stored.repeat_offenders,
+            &executable,
+            report.process_id,
+            report.started_at_ms,
+            now_ms,
+        ) {
+            audit(runtime, now_ms, "repeat_offender_banned", &executable);
+        }
+    }
     Ok(())
 }
 
@@ -820,6 +867,210 @@ mod tests {
             window_title: title.into(),
             browser_host: browser_host.map(str::to_owned),
         }
+    }
+
+    fn context_observation_at(
+        event_id: &str,
+        occurred_at_ms: i64,
+        title: &str,
+        browser_host: Option<&str>,
+        process_id: u32,
+    ) -> AgentContextObservation {
+        let mut observation = context_observation(event_id, title, browser_host);
+        observation.occurred_at_ms = occurred_at_ms;
+        observation.source.process_id = process_id;
+        observation
+    }
+
+    fn submit_context_at(
+        core: &ServiceCore,
+        nonce: &str,
+        observation: AgentContextObservation,
+        now_ms: i64,
+    ) -> ServiceResult {
+        success(core.handle(
+            RequestEnvelope::new(
+                format!("request-{nonce}"),
+                nonce,
+                ClientKind::Agent,
+                ServiceRequest::AgentContextObservation {
+                    agent_token: "agent-secret".into(),
+                    observation,
+                },
+            ),
+            now_ms,
+        ))
+    }
+
+    fn repeat_offender_policy() -> Value {
+        json!({
+            "protectionEnabled": true,
+            "recognition": {"imageEnabled": false, "titleMatchingEnabled": true},
+            "websites": [
+                {"id":"blocked","pattern":"blocked.example","action":"block","enabled":true},
+                {"id":"allowed","pattern":"safe.example","action":"allow","enabled":true}
+            ],
+            "applications": [
+                {"id":"browser","name":"浏览器","executable":"chrome.exe","category":"browser","action":"allow","enabled":true}
+            ]
+        })
+    }
+
+    fn establish_repeat_offender_ban(core: &ServiceCore, base_ms: i64) {
+        for index in 0..3_u32 {
+            let at = base_ms + i64::from(index) * 1_000;
+            let event_id = format!("strike-{index}");
+            let observation =
+                context_observation_at(&event_id, at, "", Some("www.blocked.example"), 100 + index);
+            match submit_context_at(core, &format!("strike-nonce-{index}"), observation, at + 1) {
+                ServiceResult::DispositionRequired {
+                    event_id: struck, ..
+                } => {
+                    assert_eq!(struck, event_id);
+                }
+                _ => panic!("strike disposition should be required"),
+            }
+            core.record_disposition(
+                &DispositionReport {
+                    event_id,
+                    process_id: 100 + index,
+                    started_at_ms: 77,
+                    outcome: DispositionOutcome::Terminated,
+                },
+                at + 2,
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn third_closed_program_is_terminated_on_sight_for_one_hour() {
+        let directory = tempfile::tempdir().unwrap();
+        let core = open_core(directory.path(), 0);
+        configure_policy(&core, repeat_offender_policy());
+        let base = 10_000_i64;
+        establish_repeat_offender_ban(&core, base);
+
+        // A benign relaunch on an allowlisted site of an allowed app is
+        // still terminated immediately: the ban outranks all exemptions.
+        let now = base + 30 * 60 * 1000;
+        let relaunch = context_observation_at(
+            "relaunch",
+            now - 1,
+            "项目进度评审会议",
+            Some("safe.example"),
+            200,
+        );
+        assert!(matches!(
+            submit_context_at(&core, "relaunch-nonce", relaunch, now),
+            ServiceResult::DispositionRequired { event_id, grace_period_ms: 0, .. }
+                if event_id == "relaunch"
+        ));
+
+        // One hour after the third closure the program may run again.
+        let now = base + 2_000 + 60 * 60 * 1000 + 5;
+        let after_ban = context_observation_at(
+            "after-ban",
+            now - 1,
+            "项目进度评审会议",
+            Some("safe.example"),
+            300,
+        );
+        assert!(matches!(
+            submit_context_at(&core, "after-ban-nonce", after_ban, now),
+            ServiceResult::Acknowledged
+        ));
+    }
+
+    #[test]
+    fn repeat_offender_ban_survives_restart_and_is_audited() {
+        let directory = tempfile::tempdir().unwrap();
+        let base = 10_000_i64;
+        {
+            let core = open_core(directory.path(), 0);
+            configure_policy(&core, repeat_offender_policy());
+            establish_repeat_offender_ban(&core, base);
+        }
+        let reopened = open_core(directory.path(), base + 60 * 60 * 1000);
+        let now = base + 30 * 60 * 1000;
+        let relaunch = context_observation_at(
+            "relaunch",
+            now - 1,
+            "项目进度评审会议",
+            Some("safe.example"),
+            200,
+        );
+        assert!(matches!(
+            submit_context_at(&reopened, "relaunch-nonce", relaunch, now),
+            ServiceResult::DispositionRequired { event_id, .. } if event_id == "relaunch"
+        ));
+        let state: StoredState =
+            serde_json::from_slice(&fs::read(directory.path().join("service.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            state
+                .audit
+                .iter()
+                .find(|record| record.kind == "repeat_offender_banned")
+                .map(|record| record.outcome.as_str()),
+            Some(r"c:\browser\chrome.exe")
+        );
+        assert!(
+            state
+                .repeat_offenders
+                .iter()
+                .any(|record| record.executable == r"c:\browser\chrome.exe")
+        );
+    }
+
+    #[test]
+    fn disabled_protection_suspends_repeat_offender_enforcement() {
+        let directory = tempfile::tempdir().unwrap();
+        let core = open_core(directory.path(), 0);
+        configure_policy(&core, repeat_offender_policy());
+        let base = 10_000_i64;
+        establish_repeat_offender_ban(&core, base);
+
+        let session = match success(core.handle(
+            request(
+                "auth",
+                "auth-nonce",
+                ServiceRequest::Authenticate {
+                    password: "long-test-password".into(),
+                },
+            ),
+            base + 100,
+        )) {
+            ServiceResult::Session { session_token, .. } => session_token,
+            _ => panic!("unexpected response"),
+        };
+        let mut disabled = repeat_offender_policy();
+        disabled["protectionEnabled"] = json!(false);
+        success(core.handle(
+            request(
+                "disable",
+                "disable-nonce",
+                ServiceRequest::PutPolicy {
+                    session_token: session,
+                    expected_revision: 1,
+                    policy: disabled,
+                },
+            ),
+            base + 101,
+        ));
+
+        let now = base + 30 * 60 * 1000;
+        let relaunch = context_observation_at(
+            "relaunch",
+            now - 1,
+            "项目进度评审会议",
+            Some("blocked.example"),
+            200,
+        );
+        assert!(matches!(
+            submit_context_at(&core, "relaunch-nonce", relaunch, now),
+            ServiceResult::Acknowledged
+        ));
     }
 
     fn submit_context(

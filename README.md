@@ -244,6 +244,8 @@ Application control borrows the idea of “continuous process monitoring, immedi
 
 After a browser match, the corresponding browser process group is closed by default. For browsers with multiple profiles, the implementation should identify the process owning the window whenever possible. Media players, image viewers, and games can be handled directly by their main processes.
 
+Repeat-offender cooldown (implemented on Windows): once the same executable is closed three times within one hour, it is banned for one hour. During the ban, any observation of that executable is terminated immediately with no grace period, superseding website allow rules and application allow rules. Enforcement kills during a ban do not extend it. The ban is persisted in the service state, survives service restarts and reboots, and is recorded in the audit log as `repeat_offender_banned`; turning protection off (`protectionEnabled`) suspends enforcement.
+
 ### Windows Application Control
 
 Basic mode:
