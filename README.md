@@ -484,6 +484,10 @@ C# can be used to quickly validate WGC or develop management tools, but the prod
 
 Karma should be used only for content protection by device owners, guardians, or organizations acting within the scope of lawful authorization. Installation must clearly disclose screen monitoring, application enforcement, logging scope, and the uninstall process. The product must not conceal the fact that monitoring occurs, collect keyboard input, use screenshots for training, or use technical means to bypass operating-system privacy prompts or device-owner permissions.
 
+## Protection control
+
+The master switch at the top of Protection Overview lets an authenticated administrator stop or resume protection. Toggle it, then click **Save settings** to apply the change; System Settings exposes the same switch.
+
 ## Repository and License
 
 The canonical repository is [csbuddhist/Karma](https://github.com/csbuddhist/Karma). Use this repository for future pulls, pushes, and releases.

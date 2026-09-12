@@ -309,7 +309,7 @@ function ServiceConnectionError({ detail, onRetry }: { detail: string; onRetry: 
   );
 }
 
-function Overview({ state }: { state: ConsoleState }) {
+function Overview({ state, update }: { state: ConsoleState; update: (next: ConsoleState) => void }) {
   const { t } = useI18n();
   const healthyMonitors = state.monitors.filter((monitor) => monitor.state === "healthy").length;
   const criticalEvents = state.evidence.filter((item) => item.risk === "critical").length;
@@ -318,6 +318,13 @@ function Overview({ state }: { state: ConsoleState }) {
       {!state.serviceConnected && (
         <div className="notice warning"><WifiOff size={19} /><div><strong>{t("overview.serviceDisconnected")}</strong><span>{t("overview.serviceDisconnectedDescription")}</span></div></div>
       )}
+      <Card>
+        <div className="setting-row">
+          <div className="setting-icon green"><Power /></div>
+          <div><strong>{t("settings.protectionTitle")}</strong><p>{t("overview.protectionSwitchDescription")}</p></div>
+          <Toggle checked={state.protectionEnabled} onChange={(value) => update({ ...state, protectionEnabled: value })} label={t("settings.protectionToggle")} />
+        </div>
+      </Card>
       <div className="metric-grid">
         <Card className="metric-card primary"><div className="metric-icon"><KarmaShieldIcon /></div><div><span>{t("overview.protectionStatus")}</span><strong>{t(state.protectionEnabled ? "overview.enabled" : "overview.paused")}</strong><small>{t(state.protectionEnabled ? "overview.policyOnConnect" : "overview.noProtectionActions")}</small></div></Card>
         <Card className="metric-card"><div className="metric-icon green"><Monitor /></div><div><span>{t("overview.activeMonitors")}</span><strong>{state.monitors.length}</strong><small>{t(healthyMonitors === 1 ? "overview.healthyMonitor" : "overview.healthyMonitors", { count: healthyMonitors })}</small></div></Card>
@@ -758,7 +765,7 @@ function AppContent() {
   }
 
   const content = useMemo(() => {
-    if (page === "overview") return <Overview state={state} />;
+    if (page === "overview") return <Overview state={state} update={update} />;
     if (page === "monitors") return <Monitors state={state} />;
     if (page === "recognition") return <Recognition state={state} update={update} />;
     if (page === "keywords") return <Keywords state={state} update={update} />;
