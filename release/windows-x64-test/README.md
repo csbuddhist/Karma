@@ -34,3 +34,9 @@ C:\Program Files\Karma\Uninstall-Karma.ps1
 - 浏览器域名发现依赖 UI Automation 读取地址栏；浏览器未公开地址栏时，网址规则不可用，但标题与图像规则仍会工作。连续帧风险融合仍未接入。
 - 应用时段限制、网络过滤和多用户同时登录会话尚未完成；watchdog 当前跟随活动控制台会话。
 - 这是用户态家长控制。管理员仍可接管文件、服务配置或脱机修改系统；没有 ELAM/PPL/内核驱动时，不能诚实承诺对 Windows 管理员绝对不可终止。
+
+## v0.1.13 / Version 0.1.13
+
+保护总览顶部新增总保护开关。解锁后关闭开关并点击“保存设置”停止保护；重新打开并保存恢复。项目代码采用 GPL-3.0-only，见 LICENSE；第三方资源保留各自许可证。
+
+Protection Overview now includes the master protection switch. Unlock the console, turn it off, and click Save settings to stop protection; turn it on and save to resume. Project code is licensed under GPL-3.0-only; see LICENSE. Third-party assets retain their own licenses.
