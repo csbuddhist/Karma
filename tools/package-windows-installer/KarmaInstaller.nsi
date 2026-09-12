@@ -45,7 +45,7 @@ VIAddVersionKey /LANG=2052 "CompanyName" "${PRODUCT_PUBLISHER}"
 VIAddVersionKey /LANG=2052 "FileDescription" "Karma Windows x64 安装程序"
 VIAddVersionKey /LANG=2052 "FileVersion" "${VERSION}"
 VIAddVersionKey /LANG=2052 "ProductVersion" "${VERSION}"
-VIAddVersionKey /LANG=2052 "LegalCopyright" "MIT License"
+VIAddVersionKey /LANG=2052 "LegalCopyright" "GNU GPL v3.0"
 
 !define MUI_ABORTWARNING
 !define MUI_ICON "${ICON_FILE}"

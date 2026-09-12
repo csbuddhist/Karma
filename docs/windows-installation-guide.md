@@ -77,7 +77,7 @@
 
 ### 3.1 单文件安装器（推荐）
 
-新用户从 [v0.1.12 Windows Test Build](https://github.com/DrWeiZhou/Karma/releases/tag/v0.1.12) 下载：
+新用户从 [v0.1.12 Windows Test Build](https://github.com/csbuddhist/Karma/releases/tag/v0.1.12) 下载：
 
 ```text
 Karma-windows-x64-test-v0.1.12-setup.exe
