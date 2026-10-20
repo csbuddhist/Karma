@@ -35,6 +35,14 @@ C:\Program Files\Karma\Uninstall-Karma.ps1
 - 应用时段限制和多用户同时登录会话尚未完成；watchdog 当前跟随活动控制台会话。
 - 这是用户态家长控制。管理员仍可接管文件、服务配置或脱机修改系统；没有 ELAM/PPL/内核驱动时，不能诚实承诺对 Windows 管理员绝对不可终止。
 
+## v0.2.2 / Version 0.2.2
+
+Service 状态改为保存在事务型 SQLite 数据库 `service-state.db` 中（WAL、`synchronous=FULL`），每次修改原子提交，崩溃或断电不再可能留下写到一半的状态文件。首次启动会自动导入旧的 `service-state.json`，并保留为 `service-state.json.migrated`。已记住的窗口标题、域名和程序路径使用 AES-256-GCM 加密保存，上限由 200 条提高到 5000 条；Agent 只接收 128 位摘要。控制台“内容识别”页支持分页和搜索已记住的标题。审计记录上限由 5000 条提高到 50000 条。不支持降级到 v0.2.1 及更早版本（旧版本会进入首次设置）。
+
+Service state now lives in the transactional SQLite database `service-state.db` (WAL, `synchronous=FULL`); every change commits atomically, so a crash or power loss can no longer leave a half-written state file. On first start the old `service-state.json` is imported automatically and kept as `service-state.json.migrated`. Remembered window titles, hosts, and executable paths are encrypted with AES-256-GCM, and the cap rises from 200 to 5,000; the Agent receives only 128-bit digests. The Content Recognition page pages through and searches remembered titles. The audit cap rises from 5,000 to 50,000 entries. Downgrading to v0.2.1 or earlier is not supported (the older build would start with first-time setup).
+
+**Windows 真机验收待完成 / Windows hardware acceptance pending.** 需验证：从 v0.2.1 升级后密码、策略、封禁和已记住标题均保留；`service-state.json.migrated` 已生成；重启服务后状态不变；`service-state.db` 的 ACL 仅允许 SYSTEM 和 Administrators。Verify that upgrading from v0.2.1 keeps the password, policy, bans, and remembered titles; `service-state.json.migrated` exists; state survives a service restart; and the ACL on `service-state.db` grants only SYSTEM and Administrators.
+
 ## v0.2.1 / Version 0.2.1
 
 图像色情识别关闭应用后，记住当时的窗口标题（浏览器即网页标题）和域名；以后同一应用再显示相同标题时直接关闭，网站白名单和“允许使用”的应用除外。控制台“内容识别”页可查看、删除已记住的标题或关闭此功能；标题仅保存在本机 Service 状态中（最多 200 条），不写入审计日志。重复关闭限制默认改为“20 分钟内被关闭 5 次即禁止打开 1 小时”，时间与次数可在“应用管控”页设置，当前被限制的应用也会显示在该页。Service 现在把封禁和已记住的标题下发给 Agent，重新打开被封禁的程序会立即被关闭（此前仅在程序再次触发识别时才关闭）。

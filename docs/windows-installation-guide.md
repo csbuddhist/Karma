@@ -80,10 +80,10 @@ Windows network schedules now have WFP enforcement for browsers, selected apps, 
 
 ### 3.1 单文件安装器（推荐）
 
-新用户从 [v0.2.1 Windows Test Build](https://github.com/csbuddhist/Karma/releases/tag/v0.2.1) 下载：
+新用户从 [v0.2.2 Windows Test Build](https://github.com/csbuddhist/Karma/releases/tag/v0.2.2) 下载：
 
 ```text
-Karma-windows-x64-test-v0.2.1-setup.exe
+Karma-windows-x64-test-v0.2.2-setup.exe
 ```
 
 安装第 2.2 节所述 Microsoft Visual C++ Redistributable 后，右键安装器并选择“以管理员身份运行”。安装器会：
@@ -466,7 +466,11 @@ C:\Program Files\Karma\Uninstall-Karma.ps1
 C:\ProgramData\Karma
 ```
 
+其中 `service-state.db` 是保存策略、审计记录、封禁和加密窗口标题的 SQLite 数据库（`-wal`/`-shm` 为其日志文件）；从 v0.2.1 及更早版本升级时，旧的 `service-state.json` 会在首次启动时自动导入并改名为 `service-state.json.migrated`。不支持降级到 v0.2.1 及更早版本，旧版本会进入首次设置。
+
 如确认不需要策略、审计记录、DPAPI 密钥和加密证据，可执行 `Uninstall-Karma.ps1 -PurgeData`。此操作不可恢复。
+
+`service-state.db` is the SQLite database holding policy, audit records, bans, and encrypted window titles (`-wal`/`-shm` are its journal files). When upgrading from v0.2.1 or earlier, the old `service-state.json` is imported on first start and renamed to `service-state.json.migrated`. Downgrading to v0.2.1 or earlier is not supported; the older build would start with first-time setup.
 
 ## 11. 在 Mac 上重新生成 Windows EXE
 
@@ -529,13 +533,13 @@ cp -L target/x86_64-pc-windows-msvc/release/DirectML.dll \
 ```bash
 brew install nsis
 bash tools/package-windows-installer/test_installer_contract.sh
-bash tools/package-windows-installer/build_installer.sh 0.2.1
+bash tools/package-windows-installer/build_installer.sh 0.2.2
 ```
 
 生成文件：
 
 ```text
-target/release-artifacts/Karma-windows-x64-test-v0.2.1-setup.exe
+target/release-artifacts/Karma-windows-x64-test-v0.2.2-setup.exe
 ```
 
 安装器自身包含 CRC，安装阶段还会运行包内 SHA-256 校验；两者均不能替代正式发布所需的 Authenticode 代码签名。
