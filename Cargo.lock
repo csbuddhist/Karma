@@ -2096,9 +2096,11 @@ version = "0.1.0"
 dependencies = [
  "karma-disposition",
  "karma-ipc",
+ "karma-policy",
  "karma-service-core",
  "karma-windows-ipc",
  "rand 0.8.7",
+ "serde_json",
  "thiserror 2.0.19",
  "windows 0.62.2",
  "windows-service",
@@ -2107,7 +2109,7 @@ dependencies = [
 
 [[package]]
 name = "karma-ui"
-version = "0.1.14"
+version = "0.2.0"
 dependencies = [
  "argon2",
  "karma-ipc",

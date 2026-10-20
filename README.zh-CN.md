@@ -8,7 +8,7 @@ Karma 是一套面向 macOS 和 Windows 的本地色情内容防护与数字健�
 
 ## Windows 测试安装包
 
-新用户可从 [v0.1.14 Windows Test Build](https://github.com/csbuddhist/Karma/releases/tag/v0.1.14) 下载单文件 `Karma-windows-x64-test-v0.1.14-setup.exe`，在 Windows 10 22H2 或 Windows 11 x64 上以管理员身份运行即可完成文件安装、哈希校验、Service 注册和快捷方式创建。安装前仍需安装 Microsoft Visual C++ 2015–2022 x64 Redistributable。
+新用户可从 [v0.2.0 Windows Test Build](https://github.com/csbuddhist/Karma/releases/tag/v0.2.0) 下载单文件 `Karma-windows-x64-test-v0.2.0-setup.exe`，在 Windows 10 22H2 或 Windows 11 x64 上以管理员身份运行即可完成文件安装、哈希校验、Service 注册和快捷方式创建。安装前仍需安装 Microsoft Visual C++ 2015–2022 x64 Redistributable。
 
 `main` 同时保留可审查的 **cloneable Windows test bundle**：[`release/windows-x64-test/`](release/windows-x64-test/)，用于诊断和复现打包。安装器检测到现有版本时会询问是否卸载，同步运行现有安装目录中要求输入 Karma 管理员密码的卸载脚本，结束旧控制台与 Agent 进程并等待其退出、删除 Service 与安装目录，再强制清理遗留进程后继续全新安装；密码验证失败或清理失败都会中止安装并说明原因。管理控制台默认在用户登录后后台启动，可在“系统设置”中关闭；保护 Service 则独立随 Windows 启动。该安装器仍是未签名的开发/测试软件，卸载继续要求 Karma 管理员密码；它不是正式签名的生产安装器。详细步骤见 [Windows 安装与测试指南](docs/windows-installation-guide.md)。
 
@@ -304,14 +304,15 @@ macOS：
 
 网络管控只负责“哪些应用在什么时间可以联网”，色情画面判定仍由屏幕 AI 完成。
 
-当前进度：控制台“断网时段”页面可以为周一至周日每天分别设置任意多个时间段（支持跨午夜），每条规则选择一种断网对象：浏览器软件（常见浏览器及“应用管理”中分类为浏览器的程序）、指定软件或全部联网应用；早期版本保存的单段时间规则会自动迁移。`KarmaService` 会校验全部时段规则，按设备本地时区计算，报告当前是否处于断网时间段及结束时间，并把每次断网时段的开始和结束写入审计日志。时间段内只能在控制台再次输入管理员密码提前恢复网络；恢复持续到当前时间段结束，Service 重启后依然有效，并写入审计日志。把 `ServiceCore::network_enforcement` 下发到系统的 WFP 执行层尚未实现，因此当前版本只计算和显示时段状态，还不会实际阻断网络。
+当前进度：控制台“断网时段”页面可以为周一至周日每天分别设置任意多个时间段（支持跨午夜），每条规则选择一种断网对象：浏览器软件（常见浏览器及“应用管理”中分类为浏览器的程序）、指定软件或全部联网应用；早期版本保存的单段时间规则会自动迁移。`KarmaService` 会校验全部时段规则，按设备本地时区计算，报告当前是否处于断网时间段及结束时间，并把每次断网时段的开始和结束写入审计日志。时间段内只能在控制台再次输入管理员密码提前恢复网络；恢复持续到当前时间段结束，Service 重启后依然有效，并写入审计日志。Windows 服务现已通过持久 WFP 过滤器执行 `ServiceCore::network_enforcement`：启动时立即同步，此后每 60 秒读取一次。时段变化、策略修改和提前恢复会在下一次轮询生效（最长约 60 秒）。Windows 真机验收待完成，见[网络执行验收清单](docs/windows-network-enforcement-acceptance.md)。
 
 ### Windows
 
-- 使用 WFP ALE connect/accept 层按应用路径、用户和协议建立持久过滤器。
-- 时间段变化时原子切换过滤器集合。
-- 服务崩溃时由持久规则维持最后一次安全状态。
-- 基础版本可先使用 Windows Firewall API，复杂场景再增加 WFP callout。
+- 持久 WFP 过滤器覆盖 IPv4/IPv6 的 ALE connect 和 receive/accept 层，不限定协议。浏览器和指定应用规则按可执行文件名、末尾路径组件或完整应用标识匹配，覆盖规则安装后新启动的程序；规则适用于所有用户。
+- 每次更新只原子替换 Karma 自己的过滤器；失败保留上一组规则，在下一次 60 秒轮询重试，并将失败与恢复状态变化写入审计日志。
+- 全部断网时保留 Karma 安装位置中的准确路径以及 Windows 核心联网基础设施（`System` 和系统目录下的 `ntoskrnl.exe`、`svchost.exe`、`lsass.exe`、`services.exe`、`wininit.exe`）。不会按文件名放行任意位置的同名程序，也不会放行整个 Windows 目录。
+- 服务崩溃保留最后提交的规则，启动后按当前时段重新同步；正常停止和密码授权卸载会清理规则。管理员可执行 `KarmaService.exe --clear-network-filters`，仅删除 Karma 的 WFP 对象用于恢复；服务仍执行时段限制时不要运行恢复命令。
+- 新连接与现有 ALE 流量受 WFP 授权/重新授权控制。真机需验证 TCP、UDP/QUIC、IPv6、既有流媒体连接及 VPN/代理共存；经代理或服务代发的流量可能使用中间进程身份。
 
 ### macOS
 

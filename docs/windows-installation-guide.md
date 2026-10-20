@@ -2,7 +2,7 @@
 
 本文档说明当前未签名 Windows x64 开发测试版的安装、验证和卸载。当前包已经包含 Windows Service、管理 GUI、会话 Agent、本地模型、认证命名管道、策略持久化、Agent watchdog、身份绑定进程处置执行端和加密证据库。
 
-> 当前版本仍不是可用于家庭正式部署的完整产品。高风险图像的来源窗口观察和进程处置已经接入，但连续帧风险融合、应用时段限制及网络过滤仍未完成。没有 ELAM、PPL 或签名内核驱动时，本项目不能保证拥有 Windows 管理员权限的用户绝对无法终止或篡改它。
+> 当前版本仍不是可用于家庭正式部署的完整产品。高风险图像的来源窗口观察和进程处置已经接入，Windows WFP 网络时段执行已接入且每 60 秒同步，真机验收待完成；连续帧风险融合和应用启动时段限制仍未完成。没有 ELAM、PPL 或签名内核驱动时，本项目不能保证拥有 Windows 管理员权限的用户绝对无法终止或篡改它。
 
 ## 1. 当前可测试范围
 
@@ -29,11 +29,14 @@
 当前版本不会：
 
 - 执行基于连续帧融合结果的处置阈值；
-- 限制上网时段或阻止应用启动；
+- 按应用启动时段阻止应用启动；
 - 根据 OCR 摘要或连续帧风险状态机触发来源进程处置；
-- 执行应用时段限制或网络过滤；
 - 同时管理多个已登录但非活动的 Windows 会话；
 - 提供正式签名的生产 MSI 或安装 EXE。当前只提供未签名的单文件测试安装器。
+
+Windows 网络时段执行已实现：浏览器、指定应用及全部断网，覆盖 IPv4/IPv6 的 ALE connect/accept；启动时同步，此后每 60 秒更新。规则原子切换，异常退出保留持久规则，正常停止及卸载清理。真机测试请按[网络执行验收清单](windows-network-enforcement-acceptance.md)进行，GUI 时段状态不能代替实际联网测试。
+
+Windows network schedules now have WFP enforcement for browsers, selected apps, and all-network blocks across IPv4/IPv6 ALE connect/accept. The service synchronizes at startup and every 60 seconds, switches rules atomically, retains persistent rules on a crash, and cleans them on normal stop/uninstall. Hardware acceptance is pending; follow [the network checklist](windows-network-enforcement-acceptance.md). GUI schedule status is not evidence of actual filtering. Continuous-frame fusion and application launch-time restrictions remain incomplete.
 
 ## 2. 系统要求
 
@@ -77,10 +80,10 @@
 
 ### 3.1 单文件安装器（推荐）
 
-新用户从 [v0.1.14 Windows Test Build](https://github.com/csbuddhist/Karma/releases/tag/v0.1.14) 下载：
+新用户从 [v0.2.0 Windows Test Build](https://github.com/csbuddhist/Karma/releases/tag/v0.2.0) 下载：
 
 ```text
-Karma-windows-x64-test-v0.1.14-setup.exe
+Karma-windows-x64-test-v0.2.0-setup.exe
 ```
 
 安装第 2.2 节所述 Microsoft Visual C++ Redistributable 后，右键安装器并选择“以管理员身份运行”。安装器会：
@@ -526,13 +529,13 @@ cp -L target/x86_64-pc-windows-msvc/release/DirectML.dll \
 ```bash
 brew install nsis
 bash tools/package-windows-installer/test_installer_contract.sh
-bash tools/package-windows-installer/build_installer.sh 0.1.14
+bash tools/package-windows-installer/build_installer.sh 0.2.0
 ```
 
 生成文件：
 
 ```text
-target/release-artifacts/Karma-windows-x64-test-v0.1.14-setup.exe
+target/release-artifacts/Karma-windows-x64-test-v0.2.0-setup.exe
 ```
 
 安装器自身包含 CRC，安装阶段还会运行包内 SHA-256 校验；两者均不能替代正式发布所需的 Authenticode 代码签名。

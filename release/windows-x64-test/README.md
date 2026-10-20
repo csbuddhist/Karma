@@ -32,8 +32,22 @@ C:\Program Files\Karma\Uninstall-Karma.ps1
 - 已实现 Service、认证 IPC、心跳、策略、身份绑定处置执行端、DPAPI + AES-GCM 证据库和 Agent watchdog。启用“保存事件证据”后，达到立即处置阈值的缩放推理帧会自动加密保存并可在 GUI 中查看。
 - 已接入前台来源窗口观察、浏览器域名白名单/黑名单以及英语、汉语、日语和俄语窗口标题匹配。策略优先级为“网址白名单 > 网址黑名单 > 标题关键词 > 图像阈值”，命中后由 Service 独立复核并关闭身份绑定的来源进程。
 - 浏览器域名发现依赖 UI Automation 读取地址栏；浏览器未公开地址栏时，网址规则不可用，但标题与图像规则仍会工作。连续帧风险融合仍未接入。
-- 应用时段限制、网络过滤和多用户同时登录会话尚未完成；watchdog 当前跟随活动控制台会话。
+- 应用时段限制和多用户同时登录会话尚未完成；watchdog 当前跟随活动控制台会话。
 - 这是用户态家长控制。管理员仍可接管文件、服务配置或脱机修改系统；没有 ELAM/PPL/内核驱动时，不能诚实承诺对 Windows 管理员绝对不可终止。
+
+## v0.2.0 / Version 0.2.0
+
+新增每周多时段断网和 Windows WFP 执行：覆盖浏览器、指定软件和全部应用的 IPv4/IPv6 TCP、UDP 等联网。服务启动即同步，之后每 60 秒读取一次状态；提前恢复、时段结束和保护开关变更最多约 60 秒生效。更新使用 WFP 事务，异常退出保留持久规则，正常停止及密码授权卸载清理规则。保留核心 Windows 联网基础设施和 Karma 自身，不放行其他位置的同名程序。失败与恢复写入审计日志。
+
+Adds weekly multi-block schedules with Windows WFP enforcement for browsers, selected software, or all applications across IPv4/IPv6 and TCP/UDP. The service synchronizes on startup and every 60 seconds; early restore, schedule end, and protection changes take effect within about 60 seconds. Updates use WFP transactions; crashes retain persistent rules, while normal stop and password-authorized uninstall clean them up. Core Windows network infrastructure and Karma itself remain exempt by exact path. Failure/recovery transitions are audited.
+
+**Windows 真机验收待完成 / Windows hardware acceptance pending.** 验收清单 / Checklist: [windows-network-enforcement-acceptance.md](https://github.com/csbuddhist/Karma/blob/v0.2.0/docs/windows-network-enforcement-acceptance.md)。需验证新连接、既有连接、UDP/QUIC、IPv6、提前恢复、重启和卸载；VPN/代理或服务代发流量可能使用中间进程身份。Verify new/existing connections, UDP/QUIC, IPv6, early restore, restart, and uninstall; VPN/proxy or service-hosted traffic may use the intermediary identity.
+
+恢复命令（以管理员运行，仅在服务停止后使用） / Recovery command (elevated, only after the service stops):
+
+```powershell
+& 'C:\Program Files\Karma\KarmaService.exe' --clear-network-filters
+```
 
 ## v0.1.14 / Version 0.1.14
 

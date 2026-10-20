@@ -124,6 +124,7 @@ $autoStartName = 'Karma Family Protection'
 Remove-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name $autoStartName -ErrorAction SilentlyContinue
 Remove-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run' -Name $autoStartName -ErrorAction SilentlyContinue
 
+$networkCleaned = $false
 $service = Get-Service -Name 'KarmaService' -ErrorAction SilentlyContinue
 if ($null -ne $service) {
     try {
@@ -137,9 +138,20 @@ if ($null -ne $service) {
         $service.Dispose()
         $service = $null
     }
+    # Clear only Karma-owned persistent WFP objects after the service has stopped.
+    # 服务停止后仅清理 Karma 自己的持久 WFP 对象，失败时保留安装文件供恢复。
+    & (Join-Path $destination 'KarmaService.exe') --clear-network-filters
+    if ($LASTEXITCODE -ne 0) { throw 'WFP cleanup failed / WFP 清理失败，卸载已取消。' }
+    $networkCleaned = $true
     & sc.exe delete KarmaService | Out-Null
     $deleteExitCode = $LASTEXITCODE
     if ($deleteExitCode -notin @(0, 1060, 1072)) { throw '删除 KarmaService 注册失败。' }
+}
+
+$networkCleaner = Join-Path $destination 'KarmaService.exe'
+if (-not $networkCleaned -and (Test-Path -LiteralPath $networkCleaner -PathType Leaf)) {
+    & $networkCleaner --clear-network-filters
+    if ($LASTEXITCODE -ne 0) { throw 'WFP cleanup failed / WFP 清理失败，卸载已取消。' }
 }
 
 if (Test-Path -LiteralPath $destination) {

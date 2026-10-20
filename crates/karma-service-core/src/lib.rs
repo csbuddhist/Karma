@@ -152,6 +152,7 @@ struct RuntimeState {
     last_heartbeat: Option<karma_ipc::AgentHeartbeat>,
     pending_dispositions: HashMap<String, karma_ipc::ProcessIdentity>,
     network_restricted: Option<bool>,
+    network_enforcement_succeeded: Option<bool>,
 }
 
 /// What the network enforcement layer must apply right now.
@@ -201,6 +202,7 @@ impl ServiceCore {
                 last_heartbeat: None,
                 pending_dispositions: HashMap::new(),
                 network_restricted: None,
+                network_enforcement_succeeded: None,
             }),
         })
     }
@@ -242,6 +244,31 @@ impl ServiceCore {
                 NetworkRestriction::default()
             },
         })
+    }
+
+    /// Records changes in the host's actual filter application result, separately
+    /// from schedule transitions. No paths or traffic data enter the audit log.
+    pub fn record_network_enforcement(
+        &self,
+        succeeded: bool,
+        now_ms: i64,
+    ) -> Result<(), CoreError> {
+        let mut runtime = self
+            .runtime
+            .lock()
+            .map_err(|_| CoreError::LockUnavailable)?;
+        if runtime.network_enforcement_succeeded != Some(succeeded) {
+            audit(
+                &mut runtime,
+                now_ms,
+                "network_enforcement",
+                if succeeded { "success" } else { "failure" },
+            );
+            self.persist(&runtime.stored)
+                .map_err(|_| CoreError::StorageUnavailable)?;
+            runtime.network_enforcement_succeeded = Some(succeeded);
+        }
+        Ok(())
     }
 
     fn evaluate_network(
@@ -985,6 +1012,25 @@ mod tests {
             started_at_ms,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn network_filter_failures_and_recovery_are_audited_without_poll_spam() {
+        let directory = tempfile::tempdir().unwrap();
+        let core = open_core(directory.path(), 0);
+        core.record_network_enforcement(true, 1).unwrap();
+        core.record_network_enforcement(true, 2).unwrap();
+        core.record_network_enforcement(false, 3).unwrap();
+        core.record_network_enforcement(false, 4).unwrap();
+        core.record_network_enforcement(true, 5).unwrap();
+        let stored = load_state(&directory.path().join("service.json")).unwrap();
+        let events = stored
+            .audit
+            .iter()
+            .filter(|event| event.kind == "network_enforcement")
+            .map(|event| (event.occurred_at_ms, event.outcome.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(events, vec![(1, "success"), (3, "failure"), (5, "success")]);
     }
 
     fn configure_policy(core: &ServiceCore, policy: Value) {

@@ -74,6 +74,12 @@ impl Drop for ConnectionSlot {
 define_windows_service!(ffi_service_main, service_main);
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
+    if env::args_os().any(|argument| argument == "--clear-network-filters") {
+        // A bounded recovery operation; WFP itself requires administrator/SYSTEM
+        // privileges. Used after the service stops during uninstall/upgrade.
+        crate::network_enforcement::windows::clear_filters()?;
+        return Ok(());
+    }
     if env::args_os().any(|argument| argument == "--console") {
         let shutdown = Arc::new(AtomicBool::new(false));
         return serve(shutdown);
@@ -157,6 +163,8 @@ fn serve(shutdown: Arc<AtomicBool>) -> Result<(), Box<dyn std::error::Error>> {
         .parent()
         .map(PathBuf::from)
         .ok_or(ServiceHostError::StorageUnavailable)?;
+    let network_worker =
+        crate::network_enforcement::windows::start(Arc::clone(&core), Arc::clone(&shutdown))?;
     let watchdog = agent_watchdog::start(
         install_directory,
         agent_secret.to_string(),
@@ -203,7 +211,12 @@ fn serve(shutdown: Arc<AtomicBool>) -> Result<(), Box<dyn std::error::Error>> {
     shutdown.store(true, Ordering::Release);
     let _ = watchdog.join();
     let _ = guardian_watchdog.join();
-    serve_result
+    let network_result = network_worker
+        .join()
+        .map_err(|_| crate::network_enforcement::windows::NetworkError::WorkerPanicked)?;
+    serve_result?;
+    network_result?;
+    Ok(())
 }
 
 fn handle_connection(
@@ -323,7 +336,7 @@ fn wake_pipe_server() {
     let _ = send_request(&request, 1000);
 }
 
-fn unix_time_ms() -> i64 {
+pub(crate) fn unix_time_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()

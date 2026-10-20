@@ -112,6 +112,12 @@ assert_before '\$service\.Dispose\(\)' 'sc\.exe delete KarmaService' "$uninstall
   'uninstaller must release its service handle before deleting KarmaService'
 assert_contains '\$deleteExitCode -notin @\(0, 1060, 1072\)' "$uninstall_script" \
   'uninstaller must allow retrying a service that is absent or already marked for deletion'
+assert_before "WaitForStatus\('Stopped'" 'clear-network-filters' "$uninstall_script" \
+  'uninstaller must stop the service before clearing its persistent WFP policy'
+assert_before 'clear-network-filters' 'sc\.exe delete KarmaService' "$uninstall_script" \
+  'uninstaller must clear persistent WFP objects before deleting the service registration'
+assert_contains 'WFP cleanup failed / WFP 清理失败，卸载已取消' "$uninstall_script" \
+  'uninstaller must keep recovery binaries if persistent WFP cleanup fails'
 rg -q 'Uninstall-Karma-Launcher\.exe' "$installer"
 rg -q 'SYSTEM\\CurrentControlSet\\Services\\KarmaService' "$installer"
 rg -q -- '-NonInteractive -ExecutionPolicy Bypass' "$installer"
