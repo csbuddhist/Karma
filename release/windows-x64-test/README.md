@@ -4,7 +4,7 @@
 
 ## 推荐测试方式
 
-1. 安装 Microsoft Visual C++ 2015–2022 Redistributable x64。
+1. `Install-Karma.ps1` 会检查 Microsoft Visual C++ 2015–2022 x64 运行库（14.44 或更新）。若未安装，可把微软的 `vc_redist.x64.exe` 放在本目录，脚本会在校验微软签名后自动安装；单文件安装器已内置该运行库。
 2. 以管理员身份打开 PowerShell，进入本目录。
 3. 对当前 PowerShell 执行 `Set-ExecutionPolicy -Scope Process Bypass`。
 4. 执行 `.\Install-Karma.ps1 -StartConsole`。
@@ -34,6 +34,14 @@ C:\Program Files\Karma\Uninstall-Karma.ps1
 - 浏览器域名发现依赖 UI Automation 读取地址栏；浏览器未公开地址栏时，网址规则不可用，但标题与图像规则仍会工作。连续帧风险融合仍未接入。
 - 应用时段限制和多用户同时登录会话尚未完成；watchdog 当前跟随活动控制台会话。
 - 这是用户态家长控制。管理员仍可接管文件、服务配置或脱机修改系统；没有 ELAM/PPL/内核驱动时，不能诚实承诺对 Windows 管理员绝对不可终止。
+
+## v0.2.3 / Version 0.2.3
+
+单文件安装器内置微软官方 Microsoft Visual C++ 2015–2022 x64 运行库（14.44.35211）。注册 Service 前，`Install-VCRuntime.ps1` 会检查注册表版本和 `VCRUNTIME140*.dll`/`MSVCP140*.dll`；仅在缺失或低于 14.44 时，用 Windows 校验安装包的微软 Authenticode 签名后以 `/install /quiet /norestart` 静默安装，安装失败时中止安装并说明原因。运行库安装包只解包到临时目录。ZIP 测试包不附带运行库，`Install-Karma.ps1` 会检查并提示。
+
+The single-file installer embeds the official Microsoft Visual C++ 2015–2022 x64 Redistributable (14.44.35211). Before registering the Service, `Install-VCRuntime.ps1` checks the registered version and the `VCRUNTIME140*.dll`/`MSVCP140*.dll` files; only when they are missing or older than 14.44 does it have Windows verify the installer's Microsoft Authenticode signature and install it silently (`/install /quiet /norestart`). If installation fails, setup stops with the reason. The redistributable is extracted only to a temporary directory. The ZIP bundle does not include the runtime; `Install-Karma.ps1` checks for it and explains what to do.
+
+**Windows 真机验收待完成 / Windows hardware acceptance pending.** 需在未安装 VC++ 运行库的干净 Windows 上验证安装器自动安装运行库且服务正常启动，并在已安装较新运行库的机器上验证不会重复安装。Verify on a clean Windows without the VC++ runtime that setup installs it and the services start, and on a machine with a newer runtime that it is not reinstalled.
 
 ## v0.2.2 / Version 0.2.2
 
