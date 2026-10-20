@@ -40,6 +40,37 @@ try {
     [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
 }
 
+# 密码授权通过后，把两个服务的 ACL 恢复为“管理员可停止”。安装时移除了管理员的停止权限，
+# 若不恢复，下面的 Stop-Service 会因拒绝访问而失败。管理员仍保留 WRITE_DAC(WD)，因此此处
+# sdset 可以成功；这一步只在密码校验通过之后执行，不会削弱日常的 GUI 防篡改。
+$permissiveSddl = 'D:(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLORC;;;AU)'
+foreach ($svc in @('KarmaService', 'KarmaGuardian')) {
+    if ($null -ne (Get-Service -Name $svc -ErrorAction SilentlyContinue)) {
+        & sc.exe sdset $svc $permissiveSddl | Out-Null
+    }
+}
+
+# 必须先移除 KarmaGuardian，再停止/删除 KarmaService：否则守护服务会在卸载过程中
+# 重新拉起 KarmaService。此时上面的 KarmaControl shutdown 已令 KarmaService 进入关闭，
+# 其内部的 guardian 镜像看护线程随之结束，不会再把 KarmaGuardian 拉起；而镜像看护只会
+# 启动已存在的服务，删除之后无法重建。
+$guardian = Get-Service -Name 'KarmaGuardian' -ErrorAction SilentlyContinue
+if ($null -ne $guardian) {
+    try {
+        if ($guardian.Status -ne 'Stopped') {
+            Stop-Service -Name 'KarmaGuardian' -Force -ErrorAction SilentlyContinue
+            $guardian.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(20))
+        }
+    } catch {
+    } finally {
+        $guardian.Dispose()
+        $guardian = $null
+    }
+    & sc.exe delete KarmaGuardian | Out-Null
+    $guardianDeleteExitCode = $LASTEXITCODE
+    if ($guardianDeleteExitCode -notin @(0, 1060, 1072)) { throw '删除 KarmaGuardian 注册失败。' }
+}
+
 function Stop-KarmaProcess {
     param(
         [string] $Name,
@@ -96,6 +127,11 @@ Remove-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersio
 $service = Get-Service -Name 'KarmaService' -ErrorAction SilentlyContinue
 if ($null -ne $service) {
     try {
+        # KarmaControl shutdown 通常已令服务自行停止；若因服务曾被守护拉起而仍在运行，
+        # 此处显式停止（ACL 已在上方恢复，管理员此刻可停止），确保 sc delete 前达到 Stopped。
+        if ($service.Status -ne 'Stopped') {
+            Stop-Service -Name 'KarmaService' -Force -ErrorAction SilentlyContinue
+        }
         $service.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(20))
     } finally {
         $service.Dispose()

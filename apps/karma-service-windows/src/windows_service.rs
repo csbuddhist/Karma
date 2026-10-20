@@ -44,6 +44,7 @@ use zeroize::Zeroizing;
 mod agent_watchdog;
 mod evidence_key;
 mod process_disposition;
+mod service_watchdog;
 
 const SERVICE_NAME: &str = "KarmaService";
 const DATA_DIRECTORY: &str = "Karma";
@@ -161,6 +162,7 @@ fn serve(shutdown: Arc<AtomicBool>) -> Result<(), Box<dyn std::error::Error>> {
         agent_secret.to_string(),
         Arc::clone(&shutdown),
     );
+    let guardian_watchdog = service_watchdog::start(Arc::clone(&shutdown));
     let active_connections = Arc::new(AtomicUsize::new(0));
     let serve_result = (|| -> Result<(), Box<dyn std::error::Error>> {
         while !shutdown.load(Ordering::Acquire) {
@@ -200,6 +202,7 @@ fn serve(shutdown: Arc<AtomicBool>) -> Result<(), Box<dyn std::error::Error>> {
     })();
     shutdown.store(true, Ordering::Release);
     let _ = watchdog.join();
+    let _ = guardian_watchdog.join();
     serve_result
 }
 

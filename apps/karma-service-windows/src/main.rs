@@ -1,4 +1,6 @@
 #[cfg(windows)]
+mod scm;
+#[cfg(windows)]
 mod windows_service;
 
 #[cfg(windows)]

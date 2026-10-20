@@ -13,6 +13,10 @@ path = "src/main.rs"
 name = "KarmaControl"
 path = "src/control.rs"
 
+[[bin]]
+name = "KarmaGuardian"
+path = "src/guardian.rs"
+
 [dependencies]
 karma-ipc = { path = "../../crates/karma-ipc" }
 karma-disposition = { path = "../../crates/karma-disposition" }
@@ -29,6 +33,7 @@ windows = { version = "0.62.2", features = [
     "Win32_Security_Authorization",
     "Win32_Security_Cryptography",
     "Win32_System_RemoteDesktop",
+    "Win32_System_Services",
     "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",
 ] }

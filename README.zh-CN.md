@@ -4,11 +4,11 @@ Karma 是一套面向 macOS 和 Windows 的本地色情内容防护与数字健�
 
 本项目采用“一套产品、一个共享核心、两个原生执行端”的架构。界面、策略、AI、数据格式可以共用，但屏幕采集、进程管控、网络过滤、后台常驻及设备管理必须使用各平台受支持的原生能力。
 
-> 本软件不能对拥有本机管理员、root、恢复环境或物理控制权的人承诺绝对不可卸载。强约束模式必须配合标准用户账户以及 MDM、WDAC/AppLocker 等设备管理能力。
+> 在 Windows 上，Karma 会收紧它的两个服务（KarmaService 及配套守护服务）的权限，使得在没有 Karma 密码时常见的 GUI 篡改都被拒绝：services.msc / 任务管理器里的“停止”、以及属性中的“启动类型=禁用”对管理员也返回“拒绝访问”（服务 ACL）；在 regedit 中修改服务注册表键——例如把 `Start` 改成 4 以禁用、或改写已存储的服务权限——同样被拒绝（注册表键 ACL 仅授予 SYSTEM 完全控制、管理员只读）；两个服务每几秒互相守护；通过“结束任务”强杀会被服务控制管理器自动拉起。这足以挡住只会使用图形工具的非专业管理员。但它仍不能对以下情况承诺绝对不可卸载：使用终端命令（`sc.exe`）、夺取服务或注册表键的所有权、进入恢复环境、离线修改注册表配置单元、或拥有设备物理控制权；要真正抵御懂技术的管理员，需要带签名的内核级保护（PPL/ELAM），而当前未签名测试版不包含该能力。把被监控的人设为标准用户（管理员密码放在另一个账户上）仍是最强选项，可令上述技术性路径也无法触及。
 
 ## Windows 测试安装包
 
-新用户可从 [v0.1.13 Windows Test Build](https://github.com/csbuddhist/Karma/releases/tag/v0.1.13) 下载单文件 `Karma-windows-x64-test-v0.1.13-setup.exe`，在 Windows 10 22H2 或 Windows 11 x64 上以管理员身份运行即可完成文件安装、哈希校验、Service 注册和快捷方式创建。安装前仍需安装 Microsoft Visual C++ 2015–2022 x64 Redistributable。
+新用户可从 [v0.1.14 Windows Test Build](https://github.com/csbuddhist/Karma/releases/tag/v0.1.14) 下载单文件 `Karma-windows-x64-test-v0.1.14-setup.exe`，在 Windows 10 22H2 或 Windows 11 x64 上以管理员身份运行即可完成文件安装、哈希校验、Service 注册和快捷方式创建。安装前仍需安装 Microsoft Visual C++ 2015–2022 x64 Redistributable。
 
 `main` 同时保留可审查的 **cloneable Windows test bundle**：[`release/windows-x64-test/`](release/windows-x64-test/)，用于诊断和复现打包。安装器检测到现有版本时会询问是否卸载，同步运行现有安装目录中要求输入 Karma 管理员密码的卸载脚本，结束旧控制台与 Agent 进程并等待其退出、删除 Service 与安装目录，再强制清理遗留进程后继续全新安装；密码验证失败或清理失败都会中止安装并说明原因。管理控制台默认在用户登录后后台启动，可在“系统设置”中关闭；保护 Service 则独立随 Windows 启动。该安装器仍是未签名的开发/测试软件，卸载继续要求 Karma 管理员密码；它不是正式签名的生产安装器。详细步骤见 [Windows 安装与测试指南](docs/windows-installation-guide.md)。
 

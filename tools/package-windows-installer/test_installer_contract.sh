@@ -51,7 +51,7 @@ assert_contains 'if \(-not \$\?\)' "$install_script" \
   'installer must use PowerShell success state after invoking the verification script'
 assert_contains "sc\.exe create KarmaService 'binPath=' .* 'start=' 'delayed-auto' 'DisplayName=' 'Karma Family Protection'" "$install_script" \
   'installer must pass sc.exe option names and values as separate arguments'
-assert_contains "sc\.exe failure KarmaService 'reset=' '0' 'actions=' 'restart/1000/restart/3000/restart/10000'" "$install_script" \
+assert_contains "sc\.exe failure KarmaService 'reset=' '60' 'actions=' 'restart/1000/restart/1000/restart/1000'" "$install_script" \
   'installer must pass sc.exe recovery option names and values as separate arguments'
 rg -q 'Uninstall-Karma\.ps1' "$installer"
 rg -q 'KarmaControl\.exe' "$uninstall_script"

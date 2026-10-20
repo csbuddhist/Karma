@@ -9,6 +9,7 @@ $requiredPaths = @(
     'karma-ui.exe',
     'KarmaService.exe',
     'KarmaControl.exe',
+    'KarmaGuardian.exe',
     'DirectML.dll',
     'models/image/viddexa-nano/manifest.json',
     'models/ocr/pp-ocrv5-mobile/manifest.json'
