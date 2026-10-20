@@ -28,6 +28,32 @@ export interface RecognitionSettings {
   immediateThreshold: number;
   evidenceEnabled: boolean;
   evidenceRetentionDays: number;
+  rememberTitlesEnabled: boolean;
+}
+
+export interface RepeatOffenderSettings {
+  /** Rolling window in which closures accumulate toward a ban. */
+  windowMinutes: number;
+  /** Closures within the window that ban an application for one hour. */
+  strikeLimit: number;
+}
+
+export interface RememberedTitle {
+  id: string;
+  executable: string;
+  title: string;
+  browserHost: string | null;
+  rememberedAtMs: number;
+}
+
+export interface ActiveBan {
+  executable: string;
+  bannedUntilMs: number;
+}
+
+export interface LearnedEnforcement {
+  rememberedTitles: RememberedTitle[];
+  activeBans: ActiveBan[];
 }
 
 export interface KeywordRule {
@@ -105,6 +131,7 @@ export interface ConsoleState {
   agentConnected: boolean;
   monitors: MonitorStatus[];
   recognition: RecognitionSettings;
+  repeatOffender: RepeatOffenderSettings;
   keywords: KeywordRule[];
   websites: WebsiteRule[];
   applications: ApplicationRule[];
@@ -112,4 +139,6 @@ export interface ConsoleState {
   evidence: EvidenceItem[];
   audit: AuditItem[];
   network: NetworkStatus;
+  rememberedTitles: RememberedTitle[];
+  activeBans: ActiveBan[];
 }

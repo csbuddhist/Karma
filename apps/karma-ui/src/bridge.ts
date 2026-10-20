@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { disable, enable } from "@tauri-apps/plugin-autostart";
-import type { ConsoleState, NetworkStatus, NetworkTarget, ScheduleBlock, ScheduleRule } from "./types";
+import type { ConsoleState, LearnedEnforcement, NetworkStatus, NetworkTarget, ScheduleBlock, ScheduleRule } from "./types";
 
 const browserFallbackKey = "karma-ui-browser-state";
 const browserPasswordKey = "karma-ui-browser-password";
@@ -19,7 +19,9 @@ export const defaultConsoleState: ConsoleState = {
     immediateThreshold: 82,
     evidenceEnabled: false,
     evidenceRetentionDays: 7,
+    rememberTitlesEnabled: true,
   },
+  repeatOffender: { windowMinutes: 20, strikeLimit: 5 },
   keywords: [],
   websites: [],
   applications: [
@@ -30,7 +32,14 @@ export const defaultConsoleState: ConsoleState = {
   evidence: [],
   audit: [],
   network: { restricted: false, activeRuleIds: [], restrictedUntilMs: null, restoredUntilMs: null },
+  rememberedTitles: [],
+  activeBans: [],
 };
+
+export const repeatOffenderLimits = {
+  windowMinutes: { min: 1, max: 1440 },
+  strikeLimit: { min: 2, max: 20 },
+} as const;
 
 function isTauri(): boolean {
   return "__TAURI_INTERNALS__" in window;
@@ -40,7 +49,7 @@ export function isTauriConsole(): boolean {
   return isTauri();
 }
 
-const runtimeStateKeys = ["serviceConnected", "agentConnected", "monitors", "evidence", "audit", "network"];
+const runtimeStateKeys = ["serviceConnected", "agentConnected", "monitors", "evidence", "audit", "network", "rememberedTitles", "activeBans"];
 
 function stripRuntimeState(value: Record<string, unknown>): Record<string, unknown> {
   const stripped = { ...value };
@@ -117,6 +126,7 @@ export function mergeImportedPolicy(current: ConsoleState, imported: Partial<Con
     ...current,
     ...imported,
     recognition: { ...current.recognition, ...(imported.recognition ?? {}) },
+    repeatOffender: { ...current.repeatOffender, ...(imported.repeatOffender ?? {}) },
   });
 }
 
@@ -168,9 +178,12 @@ function hydrateConsoleState(value: Partial<ConsoleState>): ConsoleState {
       ...defaultConsoleState.recognition,
       ...(value.recognition ?? {}),
     },
+    repeatOffender: { ...defaultConsoleState.repeatOffender, ...(value.repeatOffender ?? {}) },
     websites: value.websites ?? [],
     schedules: (value.schedules ?? []).map(normalizeSchedule),
     network: { ...defaultConsoleState.network, ...(value.network ?? {}) },
+    rememberedTitles: value.rememberedTitles ?? [],
+    activeBans: value.activeBans ?? [],
   };
 }
 
@@ -222,6 +235,11 @@ export async function restoreNetwork(sessionToken: string, password: string): Pr
   if (isTauri()) return invoke("restore_network", { sessionToken, password });
   if (localStorage.getItem(browserPasswordKey) !== await browserPasswordDigest(password)) throw new Error("管理员密码不正确");
   return defaultConsoleState.network;
+}
+
+export async function forgetRememberedTitle(sessionToken: string, titleId: string, current: LearnedEnforcement): Promise<LearnedEnforcement> {
+  if (isTauri()) return invoke("forget_remembered_title", { sessionToken, titleId });
+  return { ...current, rememberedTitles: current.rememberedTitles.filter((item) => item.id !== titleId) };
 }
 
 export async function revealEvidence(sessionToken: string, evidenceId: string, password: string): Promise<string> {

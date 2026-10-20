@@ -99,6 +99,15 @@ pub enum ServiceRequest {
         session_token: String,
         evidence_id: String,
     },
+    /// Remembered window titles and active repeat-offender bans.
+    ListEnforcement {
+        session_token: String,
+    },
+    /// Stop closing windows that show one remembered title.
+    ForgetRememberedTitle {
+        session_token: String,
+        title_id: String,
+    },
     /// Lift the active network schedule until its current block ends. The
     /// administrator password is verified again even with a valid session.
     RestoreNetwork {
@@ -146,6 +155,8 @@ impl ServiceRequest {
             | Self::ListEvidence { .. }
             | Self::RevealEvidence { .. }
             | Self::DeleteEvidence { .. }
+            | Self::ListEnforcement { .. }
+            | Self::ForgetRememberedTitle { .. }
             | Self::RestoreNetwork { .. }
             | Self::ChangePassword { .. } => client == ClientKind::Ui,
             Self::AgentHeartbeat { .. }
@@ -190,6 +201,8 @@ impl ServiceRequest {
             | Self::ListEvidence { session_token }
             | Self::RevealEvidence { session_token, .. }
             | Self::DeleteEvidence { session_token, .. }
+            | Self::ListEnforcement { session_token }
+            | Self::ForgetRememberedTitle { session_token, .. }
             | Self::RestoreNetwork { session_token, .. }
             | Self::ChangePassword { session_token, .. } => {
                 validate_opaque(session_token, MAX_SESSION_TOKEN_CHARS)?;
@@ -208,6 +221,7 @@ impl ServiceRequest {
             Self::RevealEvidence { evidence_id, .. } | Self::DeleteEvidence { evidence_id, .. } => {
                 validate_identifier(evidence_id)?
             }
+            Self::ForgetRememberedTitle { title_id, .. } => validate_identifier(title_id)?,
             Self::AgentHeartbeat { heartbeat, .. } => heartbeat.validate()?,
             Self::AgentObservation { observation, .. } => observation.validate()?,
             Self::AgentContextObservation { observation, .. } => observation.validate()?,
@@ -296,6 +310,9 @@ pub struct AgentObservation {
     #[serde(default)]
     pub browser_host: Option<String>,
     pub evidence_pending: bool,
+    /// Title of the attributed window when the frame was captured.
+    #[serde(default)]
+    pub window_title: Option<String>,
 }
 
 impl AgentObservation {
@@ -310,6 +327,9 @@ impl AgentObservation {
             source.validate()?;
         }
         validate_browser_host(self.browser_host.as_deref())?;
+        if let Some(title) = &self.window_title {
+            validate_window_title(title)?;
+        }
         Ok(())
     }
 }
@@ -330,15 +350,10 @@ impl AgentContextObservation {
         validate_identifier(&self.event_id)?;
         validate_identifier(&self.agent_instance_id)?;
         self.source.validate()?;
-        if (self.window_title.is_empty() && self.browser_host.is_none())
-            || self.window_title.chars().count() > MAX_WINDOW_TITLE_CHARS
-            || self
-                .window_title
-                .chars()
-                .any(|character| character.is_control() && !character.is_whitespace())
-        {
+        if self.window_title.is_empty() && self.browser_host.is_none() {
             return Err(ProtocolError::InvalidField);
         }
+        validate_window_title(&self.window_title)?;
         validate_browser_host(self.browser_host.as_deref())
     }
 }
@@ -485,6 +500,8 @@ pub enum ServiceResult {
     AgentPolicy {
         revision: u64,
         policy: Value,
+        #[serde(default)]
+        enforcement: AgentEnforcement,
     },
     DispositionRequired {
         event_id: String,
@@ -495,7 +512,53 @@ pub enum ServiceResult {
         report: DispositionReport,
     },
     NetworkStatus(NetworkStatus),
+    Enforcement(EnforcementSummary),
     Acknowledged,
+}
+
+/// Service-derived enforcement state the agent applies to foreground
+/// windows in addition to the policy. Empty while protection is disabled.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentEnforcement {
+    /// Normalized executable paths that are closed whenever observed.
+    pub banned_executables: Vec<String>,
+    pub remembered_titles: Vec<RememberedTitleKey>,
+}
+
+/// One remembered window title, reduced to its matching key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RememberedTitleKey {
+    /// Normalized executable path.
+    pub executable: String,
+    /// Normalized title.
+    pub title_key: String,
+}
+
+/// What the console shows about learned enforcement.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnforcementSummary {
+    pub remembered_titles: Vec<RememberedTitleMetadata>,
+    pub active_bans: Vec<ActiveBan>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RememberedTitleMetadata {
+    pub id: String,
+    pub executable: String,
+    pub title: String,
+    pub browser_host: Option<String>,
+    pub remembered_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActiveBan {
+    pub executable: String,
+    pub banned_until_ms: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -636,6 +699,17 @@ fn validate_opaque(value: &str, maximum_chars: usize) -> Result<(), ProtocolErro
 
 fn validate_identifier(value: &str) -> Result<(), ProtocolError> {
     validate_opaque(value, 128)
+}
+
+fn validate_window_title(title: &str) -> Result<(), ProtocolError> {
+    if title.chars().count() > MAX_WINDOW_TITLE_CHARS
+        || title
+            .chars()
+            .any(|character| character.is_control() && !character.is_whitespace())
+    {
+        return Err(ProtocolError::InvalidField);
+    }
+    Ok(())
 }
 
 fn validate_browser_host(value: Option<&str>) -> Result<(), ProtocolError> {
@@ -852,5 +926,101 @@ mod tests {
             request_for(None).validate(),
             Err(ProtocolError::InvalidField)
         );
+    }
+
+    #[test]
+    fn enforcement_requests_are_ui_only_and_validate_the_title_id() {
+        let forget = |client, title_id: &str| {
+            request(
+                ServiceRequest::ForgetRememberedTitle {
+                    session_token: "session-1".into(),
+                    title_id: title_id.into(),
+                },
+                client,
+            )
+        };
+        assert!(forget(ClientKind::Ui, "title-1").validate().is_ok());
+        assert_eq!(
+            forget(ClientKind::Agent, "title-1").validate(),
+            Err(ProtocolError::ClientRoleDenied)
+        );
+        assert_eq!(
+            forget(ClientKind::Ui, "../title").validate(),
+            Err(ProtocolError::InvalidField)
+        );
+        assert_eq!(
+            request(
+                ServiceRequest::ListEnforcement {
+                    session_token: "session-1".into(),
+                },
+                ClientKind::Installer,
+            )
+            .validate(),
+            Err(ProtocolError::ClientRoleDenied)
+        );
+    }
+
+    #[test]
+    fn image_observation_title_is_optional_and_bounded() {
+        let observation = |window_title: Option<String>| {
+            request(
+                ServiceRequest::AgentObservation {
+                    agent_token: "agent-token".into(),
+                    observation: AgentObservation {
+                        event_id: "event-1".into(),
+                        agent_instance_id: "agent-1".into(),
+                        occurred_at_ms: 1,
+                        monitor_id: "monitor-1".into(),
+                        risk_millis: 900,
+                        reason_code: "image_immediate".into(),
+                        source: None,
+                        browser_host: None,
+                        evidence_pending: false,
+                        window_title,
+                    },
+                },
+                ClientKind::Agent,
+            )
+        };
+        assert!(observation(None).validate().is_ok());
+        assert!(
+            observation(Some("视频 - Google Chrome".into()))
+                .validate()
+                .is_ok()
+        );
+        assert_eq!(
+            observation(Some("x".repeat(MAX_WINDOW_TITLE_CHARS + 1))).validate(),
+            Err(ProtocolError::InvalidField)
+        );
+        assert_eq!(
+            observation(Some("bad\u{0007}title".into())).validate(),
+            Err(ProtocolError::InvalidField)
+        );
+        let legacy: AgentObservation = serde_json::from_value(serde_json::json!({
+            "event_id": "event-1",
+            "agent_instance_id": "agent-1",
+            "occurred_at_ms": 1,
+            "monitor_id": "monitor-1",
+            "risk_millis": 900,
+            "reason_code": "image_immediate",
+            "source": null,
+            "evidence_pending": false
+        }))
+        .unwrap();
+        assert_eq!(legacy.window_title, None);
+    }
+
+    #[test]
+    fn agent_policy_without_enforcement_still_decodes() {
+        let result: ServiceResult = serde_json::from_value(serde_json::json!({
+            "type": "agent_policy",
+            "payload": {"revision": 3, "policy": {}}
+        }))
+        .unwrap();
+        assert!(matches!(
+            result,
+            ServiceResult::AgentPolicy { revision: 3, enforcement, .. }
+                if enforcement == AgentEnforcement::default()
+        ));
     }
 }

@@ -16,11 +16,13 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use image::{ExtendedColorType, codecs::jpeg::JpegEncoder};
 use karma_ai::{ImageInference, OcrMatchSummary, PreparedFrame};
 use karma_ipc::{
-    AgentContextObservation, AgentHeartbeat, AgentObservation, ClientKind, ComponentState,
-    EvidenceSubmission, MonitorHealth, ProcessIdentity, RequestEnvelope, ServiceRequest,
-    ServiceResult,
+    AgentContextObservation, AgentEnforcement, AgentHeartbeat, AgentObservation, ClientKind,
+    ComponentState, EvidenceSubmission, MAX_WINDOW_TITLE_CHARS, MonitorHealth, ProcessIdentity,
+    RequestEnvelope, ServiceRequest, ServiceResult,
 };
-use karma_policy::{ApplicationPolicy, ContextPolicy};
+use karma_policy::{
+    ApplicationEffect, ApplicationPolicy, ContextPolicy, normalize_executable, title_key,
+};
 use karma_windows::{
     AttributionResult, FrameWorkerReport, FrameWorkerStatus, MonitorSnapshot, Rect,
     SourceAttributor, WindowCandidate, WindowsRuntimeApartment, browser_host, foreground_window,
@@ -70,6 +72,8 @@ pub struct AgentServiceClient {
     instance_id: String,
     user_sid: String,
     request_sequence: AtomicU64,
+    /// Bans and remembered titles from the latest policy fetch.
+    enforcement: RwLock<AgentEnforcement>,
 }
 
 pub struct PolicySnapshot {
@@ -190,6 +194,8 @@ impl ApplicationPolicyHandle {
 pub struct SourceContext {
     identity: ProcessIdentity,
     window_handle: isize,
+    /// Title of the attributed window when the frame was prepared.
+    window_title: String,
 }
 
 pub struct AgentInferenceSink {
@@ -222,6 +228,7 @@ impl WindowsSourceIdentityProvider {
         else {
             return None;
         };
+        let title = window_title(foreground.handle);
         if self
             .cached_process
             .as_ref()
@@ -231,6 +238,7 @@ impl WindowsSourceIdentityProvider {
             return Some(SourceContext {
                 identity,
                 window_handle: foreground.handle,
+                window_title: title,
             });
         }
         let process = inspect_process(attributed.pid).ok().flatten()?;
@@ -244,6 +252,7 @@ impl WindowsSourceIdentityProvider {
         Some(SourceContext {
             identity,
             window_handle: foreground.handle,
+            window_title: title,
         })
     }
 }
@@ -392,6 +401,7 @@ impl OcrSummarySink for AgentInferenceSink {
                 .flatten(),
             source: Some(source.identity),
             evidence_pending,
+            window_title: sendable_title(source.window_title),
         };
         if sender.try_send(observation).is_ok() {
             self.last_disposition_at_ms = frame.captured_at_ms();
@@ -416,6 +426,7 @@ impl AgentServiceClient {
             instance_id: random_opaque(),
             user_sid: current_user_sid()?,
             request_sequence: AtomicU64::new(1),
+            enforcement: RwLock::new(AgentEnforcement::default()),
         }))
     }
 
@@ -445,37 +456,63 @@ impl AgentServiceClient {
         match self.request(ServiceRequest::GetAgentPolicy {
             agent_token: self.token.to_string(),
         })? {
-            ServiceResult::AgentPolicy { revision, policy } => Ok(PolicySnapshot {
+            ServiceResult::AgentPolicy {
                 revision,
-                protection_enabled: policy
-                    .get("protectionEnabled")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(true),
                 policy,
-            }),
+                enforcement,
+            } => {
+                *self
+                    .enforcement
+                    .write()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = enforcement;
+                Ok(PolicySnapshot {
+                    revision,
+                    protection_enabled: policy
+                        .get("protectionEnabled")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(true),
+                    policy,
+                })
+            }
             _ => Err(AgentServiceError::InvalidResponse),
         }
     }
 
+    fn enforcement(&self) -> AgentEnforcement {
+        self.enforcement
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
     fn submit_observation(&self, observation: AgentObservation) -> Result<(), AgentServiceError> {
-        match self.request(ServiceRequest::AgentObservation {
+        let result = self.request(ServiceRequest::AgentObservation {
             agent_token: self.token.to_string(),
             observation,
-        })? {
-            ServiceResult::DispositionCompleted { .. } | ServiceResult::Acknowledged => Ok(()),
-            _ => Err(AgentServiceError::InvalidResponse),
-        }
+        })?;
+        self.after_submission(result)
     }
 
     fn submit_context_observation(
         &self,
         observation: AgentContextObservation,
     ) -> Result<(), AgentServiceError> {
-        match self.request(ServiceRequest::AgentContextObservation {
+        let result = self.request(ServiceRequest::AgentContextObservation {
             agent_token: self.token.to_string(),
             observation,
-        })? {
-            ServiceResult::DispositionCompleted { .. } | ServiceResult::Acknowledged => Ok(()),
+        })?;
+        self.after_submission(result)
+    }
+
+    /// A completed closure may have remembered a title or started a ban;
+    /// refresh enforcement now instead of waiting for the next heartbeat.
+    fn after_submission(&self, result: ServiceResult) -> Result<(), AgentServiceError> {
+        match result {
+            ServiceResult::DispositionCompleted { .. } => {
+                let _ = self.fetch_policy();
+                Ok(())
+            }
+            ServiceResult::Acknowledged => Ok(()),
             _ => Err(AgentServiceError::InvalidResponse),
         }
     }
@@ -558,14 +595,21 @@ pub fn start_context_monitor(
                 let Some(observation) = foreground_context_observation(&client.instance_id) else {
                     continue;
                 };
-                let verdict = policy.snapshot().evaluate(
-                    observation.browser_host.as_deref(),
-                    &observation.window_title,
-                );
+                let context_policy = policy.snapshot();
                 let effect = applications
                     .snapshot()
                     .effect_for(&observation.source.executable_name);
-                if !karma_policy::context_enforcement(verdict, effect) {
+                let verdict = context_policy.evaluate(
+                    observation.browser_host.as_deref(),
+                    &observation.window_title,
+                );
+                if !learned_enforcement_applies(
+                    &client.enforcement(),
+                    &context_policy,
+                    effect,
+                    &observation,
+                ) && !karma_policy::context_enforcement(verdict, effect)
+                {
                     continue;
                 }
                 let fingerprint = context_fingerprint(&observation);
@@ -610,6 +654,45 @@ fn foreground_context_observation(agent_instance_id: &str) -> Option<AgentContex
         window_title: title,
         browser_host,
     })
+}
+
+/// Mirrors the service: banned executables are closed unconditionally, and
+/// remembered titles yield to allowlisted hosts and allowed applications.
+fn learned_enforcement_applies(
+    enforcement: &AgentEnforcement,
+    context_policy: &ContextPolicy,
+    effect: ApplicationEffect,
+    observation: &AgentContextObservation,
+) -> bool {
+    if enforcement.banned_executables.is_empty() && enforcement.remembered_titles.is_empty() {
+        return false;
+    }
+    let executable = normalize_executable(&observation.source.executable_name);
+    if enforcement.banned_executables.contains(&executable) {
+        return true;
+    }
+    if context_policy.allows_host(observation.browser_host.as_deref())
+        || effect == ApplicationEffect::Allow
+    {
+        return false;
+    }
+    let key = title_key(&observation.window_title);
+    !key.is_empty()
+        && enforcement
+            .remembered_titles
+            .iter()
+            .any(|remembered| remembered.executable == executable && remembered.title_key == key)
+}
+
+/// The title to report with an image observation, or `None` when it would
+/// fail protocol validation and cost the observation itself.
+fn sendable_title(title: String) -> Option<String> {
+    (!title.is_empty()
+        && title.chars().count() <= MAX_WINDOW_TITLE_CHARS
+        && !title
+            .chars()
+            .any(|character| character.is_control() && !character.is_whitespace()))
+    .then_some(title)
 }
 
 fn context_fingerprint(observation: &AgentContextObservation) -> u64 {
@@ -750,4 +833,92 @@ fn unix_time_ms() -> i64 {
         .unwrap_or_default()
         .as_millis()
         .min(i64::MAX as u128) as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use karma_ipc::RememberedTitleKey;
+    use serde_json::json;
+
+    use super::*;
+
+    fn observation(executable: &str, title: &str, host: Option<&str>) -> AgentContextObservation {
+        AgentContextObservation {
+            event_id: "context-1".into(),
+            agent_instance_id: "agent-1".into(),
+            occurred_at_ms: 1,
+            source: ProcessIdentity {
+                process_id: 42,
+                started_at_ms: 1,
+                executable_name: executable.into(),
+                executable_sha256: None,
+            },
+            window_title: title.into(),
+            browser_host: host.map(str::to_owned),
+        }
+    }
+
+    fn enforcement() -> AgentEnforcement {
+        AgentEnforcement {
+            banned_executables: vec![r"d:\games\game.exe".into()],
+            remembered_titles: vec![RememberedTitleKey {
+                executable: r"c:\browser\chrome.exe".into(),
+                title_key: "hot video - google chrome".into(),
+            }],
+        }
+    }
+
+    #[test]
+    fn banned_executables_and_remembered_titles_are_submitted() {
+        let context = ContextPolicy::default();
+        assert!(learned_enforcement_applies(
+            &enforcement(),
+            &context,
+            ApplicationEffect::Allow,
+            &observation(r"D:\Games\Game.exe", "Main menu", None),
+        ));
+        assert!(learned_enforcement_applies(
+            &enforcement(),
+            &context,
+            ApplicationEffect::ContentOnly,
+            &observation(r"C:\Browser\chrome.exe", "Hot  Video - Google Chrome", None),
+        ));
+        assert!(!learned_enforcement_applies(
+            &enforcement(),
+            &context,
+            ApplicationEffect::ContentOnly,
+            &observation(r"C:\Browser\chrome.exe", "Homework - Google Chrome", None),
+        ));
+        assert!(!learned_enforcement_applies(
+            &enforcement(),
+            &context,
+            ApplicationEffect::Allow,
+            &observation(r"C:\Browser\chrome.exe", "Hot Video - Google Chrome", None),
+        ));
+        let allowlist = ContextPolicy::from_value(&json!({
+            "websites": [{"id":"a","pattern":"safe.example","action":"allow","enabled":true}]
+        }))
+        .unwrap();
+        assert!(!learned_enforcement_applies(
+            &enforcement(),
+            &allowlist,
+            ApplicationEffect::ContentOnly,
+            &observation(
+                r"C:\Browser\chrome.exe",
+                "Hot Video - Google Chrome",
+                Some("safe.example")
+            ),
+        ));
+    }
+
+    #[test]
+    fn only_protocol_valid_titles_accompany_image_observations() {
+        assert_eq!(sendable_title(String::new()), None);
+        assert_eq!(sendable_title("bad\u{7}title".into()), None);
+        assert_eq!(sendable_title("x".repeat(MAX_WINDOW_TITLE_CHARS + 1)), None);
+        assert_eq!(
+            sendable_title("视频 - Google Chrome".into()).as_deref(),
+            Some("视频 - Google Chrome")
+        );
+    }
 }

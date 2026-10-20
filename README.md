@@ -10,7 +10,7 @@ The project follows a “single product, shared core, two native executors” ar
 
 ## Windows Test Installer
 
-New users can download the single-file `Karma-windows-x64-test-v0.2.0-setup.exe` from the [v0.2.0 Windows Test Build](https://github.com/csbuddhist/Karma/releases/tag/v0.2.0). On Windows 10 22H2 or Windows 11 x64, run it as an administrator to install the files, verify their hashes, register the Service, and create shortcuts. The Microsoft Visual C++ 2015–2022 x64 Redistributable is still required.
+New users can download the single-file `Karma-windows-x64-test-v0.2.1-setup.exe` from the [v0.2.1 Windows Test Build](https://github.com/csbuddhist/Karma/releases/tag/v0.2.1). On Windows 10 22H2 or Windows 11 x64, run it as an administrator to install the files, verify their hashes, register the Service, and create shortcuts. The Microsoft Visual C++ 2015–2022 x64 Redistributable is still required.
 
 `main` also retains the auditable **cloneable Windows test bundle** at [`release/windows-x64-test/`](release/windows-x64-test/) for diagnostics and reproducible packaging. If setup detects an existing installation, it offers to remove it: it synchronously runs the password-authorized uninstall script from the existing install directory (prompting for the Karma administrator password in a console window), terminates the old console and Agent processes and waits for them to exit, removes the Service and the install directory, then force-cleans any leftover Karma processes before extracting the new build. A failed password check or a blocked cleanup aborts setup with a clear reason. The administration console launches in the background at user sign-in by default and can be disabled in System Settings; the protection Service starts with Windows independently. The installer remains unsigned development/test software, and uninstall still requires the Karma administrator password; it is not a signed production installer. See the [Windows Installation and Testing Guide](docs/windows-installation-guide.md) for details.
 
@@ -115,6 +115,10 @@ The unified engine supports:
   keywords; console-managed exemption keywords suppress keyword matches. The console keyword
   page browses and searches the built-in read-only list by language and supports adding,
   editing, enabling, deleting, and searching custom keywords.
+- Remembered window titles: when explicit image detection closes an application, the Service
+  remembers that window's title (the page title in browsers) and canonical host; the same
+  application showing the same title again is closed on sight. The console's Content
+  Recognition page lists and deletes remembered titles and can switch the behavior off.
 - Temporary allowances, remaining usage time, and cooldown periods.
 - Corrections for screen locking, sleep, time-zone changes, and daylight saving time.
 - Policy priority and conflict explanations.
@@ -184,7 +188,7 @@ By default, only the following are recorded:
 - Model version, risk level, and normalized score.
 - Policy ID, reason code, and component health status.
 
-By default, screen captures, window contents, full URLs, user input, and dynamically generated site certificates are not recorded. The Windows Agent processes the active window title and browser address transiently in memory, sends only the canonical host plus a bounded title to the local Service for independent policy validation, and never persists either value in audit or evidence records.
+By default, screen captures, window contents, full URLs, user input, and dynamically generated site certificates are not recorded. The Windows Agent processes the active window title and browser address transiently in memory, sends only the canonical host plus a bounded title to the local Service for independent policy validation, and never persists either value in audit or evidence records. The one exception is the remembered-title feature (on by default): after explicit image detection successfully closes an application, the Service stores that window's title, canonical host, and executable path in its ACL-protected local state (`C:\ProgramData\Karma`) so it can close the same page again. At most 200 titles are kept, oldest first out; the administrator can review and delete them in the console or turn the feature off. Titles never enter the audit log.
 
 ## Screen Capture
 
@@ -244,7 +248,7 @@ Application control borrows the idea of “continuous process monitoring, immedi
 
 After a browser match, the corresponding browser process group is closed by default. For browsers with multiple profiles, the implementation should identify the process owning the window whenever possible. Media players, image viewers, and games can be handled directly by their main processes.
 
-Repeat-offender cooldown (implemented on Windows): once the same executable is closed three times within one hour, it is banned for one hour. During the ban, any observation of that executable is terminated immediately with no grace period, superseding website allow rules and application allow rules. Enforcement kills during a ban do not extend it. The ban is persisted in the service state, survives service restarts and reboots, and is recorded in the audit log as `repeat_offender_banned`; turning protection off (`protectionEnabled`) suspends enforcement.
+Repeat-offender cooldown (implemented on Windows): once the same executable is closed 5 times within 20 minutes (both configurable on the console's Application Control page: 1–1440 minutes and 2–20 closures), it is banned for one hour. Every successful closure counts, whether triggered by images, titles, URL rules, or remembered titles. During the ban, any foreground observation of that executable is terminated immediately with no grace period, superseding website allow rules and application allow rules. The Service publishes active bans and remembered titles to the Agent, which refreshes them right after each closure and with every heartbeat (about 10 seconds), so a relaunched program is closed even when its window shows nothing objectionable. Enforcement kills during a ban do not extend it. The ban is persisted in the service state, survives service restarts and reboots, is listed on the Application Control page, and is recorded in the audit log as `repeat_offender_banned`; turning protection off (`protectionEnabled`) suspends enforcement.
 
 ### Windows Application Control
 

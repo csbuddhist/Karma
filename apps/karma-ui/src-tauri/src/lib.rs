@@ -29,13 +29,15 @@ fn synchronize_recognition_threshold(state: &mut serde_json::Value) {
 const EXPORT_SCHEMA: &str = "karma-policy-export";
 const EXPORT_VERSION: u32 = 1;
 const MAX_EXPORT_BYTES: usize = 1_048_576;
-const RUNTIME_STATE_KEYS: [&str; 6] = [
+const RUNTIME_STATE_KEYS: [&str; 8] = [
     "serviceConnected",
     "agentConnected",
     "monitors",
     "evidence",
     "audit",
     "network",
+    "rememberedTitles",
+    "activeBans",
 ];
 
 fn strip_runtime_state(state: &mut serde_json::Value) {
@@ -87,6 +89,7 @@ fn parse_import_document(bytes: &[u8]) -> Option<serde_json::Value> {
     // Reject backups whose policy cannot be enforced before the webview sees them.
     karma_policy::ContextPolicy::from_value(&policy).ok()?;
     karma_policy::NetworkSchedulePolicy::from_value(&policy).ok()?;
+    karma_policy::RepeatOffenderRule::from_value(&policy).ok()?;
     Some(policy)
 }
 
@@ -106,7 +109,9 @@ mod tests {
             "serviceConnected": true,
             "monitors": [{"id": "m1"}],
             "evidence": [],
-            "audit": []
+            "audit": [],
+            "rememberedTitles": [{"id": "t1", "title": "private"}],
+            "activeBans": []
         }));
 
         assert_eq!(document["schema"], "karma-policy-export");
@@ -117,6 +122,7 @@ mod tests {
         assert_eq!(policy["keywords"].as_array().unwrap().len(), 1);
         assert!(policy.get("serviceConnected").is_none());
         assert!(policy.get("monitors").is_none());
+        assert!(policy.get("rememberedTitles").is_none());
     }
 
     #[test]
@@ -144,6 +150,10 @@ mod tests {
         let invalid_schedule = br#"{"schema":"karma-policy-export","version":1,"exported_at_ms":1,
             "policy":{"schedules":[{"id":"s","name":"s","target":"browsers","blocks":[{"day":9,"start":"08:00","end":"09:00"}],"enabled":true}]}}"#;
         assert!(parse_import_document(invalid_schedule).is_none());
+        let invalid_repeat_offender =
+            br#"{"schema":"karma-policy-export","version":1,"exported_at_ms":1,
+            "policy":{"repeatOffender":{"windowMinutes":20,"strikeLimit":100}}}"#;
+        assert!(parse_import_document(invalid_repeat_offender).is_none());
     }
 }
 
@@ -319,8 +329,10 @@ mod local_backend {
                 "sensitivity": 82,
                 "immediateThreshold": 82,
                 "evidenceEnabled": false,
-                "evidenceRetentionDays": 7
+                "evidenceRetentionDays": 7,
+                "rememberTitlesEnabled": true
             },
+            "repeatOffender": {"windowMinutes": 20, "strikeLimit": 5},
             "keywords": [],
             "websites": [],
             "applications": [
@@ -343,7 +355,9 @@ mod local_backend {
             ],
             "schedules": [],
             "evidence": [],
-            "audit": []
+            "audit": [],
+            "rememberedTitles": [],
+            "activeBans": []
         })
     }
 
@@ -649,6 +663,18 @@ mod local_backend {
         }))
     }
 
+    /// Development builds never close windows, so nothing is remembered.
+    #[tauri::command]
+    fn forget_remembered_title(
+        runtime: State<'_, ConsoleRuntime>,
+        session_token: String,
+        title_id: String,
+    ) -> Result<Value, ConsoleError> {
+        authorize(&runtime, &session_token)?;
+        let _ = title_id;
+        Ok(json!({"rememberedTitles": [], "activeBans": []}))
+    }
+
     #[cfg_attr(mobile, tauri::mobile_entry_point)]
     pub(super) fn run() {
         super::desktop_builder()
@@ -663,6 +689,7 @@ mod local_backend {
                 save_console,
                 reveal_evidence,
                 restore_network,
+                forget_remembered_title,
                 export_settings,
                 import_settings
             ])
@@ -872,8 +899,10 @@ mod service_backend {
                 "sensitivity": 82,
                 "immediateThreshold": 82,
                 "evidenceEnabled": false,
-                "evidenceRetentionDays": 7
+                "evidenceRetentionDays": 7,
+                "rememberTitlesEnabled": true
             },
+            "repeatOffender": {"windowMinutes": 20, "strikeLimit": 5},
             "keywords": [],
             "websites": [],
             "applications": [
@@ -882,7 +911,9 @@ mod service_backend {
             ],
             "schedules": [],
             "evidence": [],
-            "audit": []
+            "audit": [],
+            "rememberedTitles": [],
+            "activeBans": []
         })
     }
 
@@ -1026,6 +1057,12 @@ mod service_backend {
             ServiceResult::EvidenceList { items } => items,
             _ => return Err(ConsoleError::InvalidResponse),
         };
+        let enforcement = match request(ServiceRequest::ListEnforcement {
+            session_token: session_token.clone(),
+        })? {
+            ServiceResult::Enforcement(summary) => summary,
+            _ => return Err(ConsoleError::InvalidResponse),
+        };
         runtime
             .0
             .lock()
@@ -1057,6 +1094,9 @@ mod service_backend {
             })).collect()),
         );
         object.insert("network".into(), network_status_json(&status.network));
+        if let Value::Object(learned) = enforcement_json(&enforcement) {
+            object.extend(learned);
+        }
         object.insert(
             "evidence".into(),
             Value::Array(
@@ -1159,6 +1199,36 @@ mod service_backend {
         })
     }
 
+    fn enforcement_json(summary: &karma_ipc::EnforcementSummary) -> Value {
+        json!({
+            "rememberedTitles": summary.remembered_titles.iter().map(|item| json!({
+                "id": item.id,
+                "executable": item.executable,
+                "title": item.title,
+                "browserHost": item.browser_host,
+                "rememberedAtMs": item.remembered_at_ms
+            })).collect::<Vec<_>>(),
+            "activeBans": summary.active_bans.iter().map(|ban| json!({
+                "executable": ban.executable,
+                "bannedUntilMs": ban.banned_until_ms
+            })).collect::<Vec<_>>()
+        })
+    }
+
+    #[tauri::command]
+    fn forget_remembered_title(
+        session_token: String,
+        title_id: String,
+    ) -> Result<Value, ConsoleError> {
+        match request(ServiceRequest::ForgetRememberedTitle {
+            session_token,
+            title_id,
+        })? {
+            ServiceResult::Enforcement(summary) => Ok(enforcement_json(&summary)),
+            _ => Err(ConsoleError::InvalidResponse),
+        }
+    }
+
     #[tauri::command]
     fn restore_network(session_token: String, password: String) -> Result<Value, ConsoleError> {
         match request(ServiceRequest::RestoreNetwork {
@@ -1191,6 +1261,7 @@ mod service_backend {
                 save_console,
                 reveal_evidence,
                 restore_network,
+                forget_remembered_title,
                 export_settings,
                 import_settings
             ])

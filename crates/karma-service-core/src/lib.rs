@@ -16,13 +16,15 @@ use argon2::{
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use karma_evidence::EvidenceVault;
 use karma_ipc::{
-    BootstrapStatus, EvidenceMetadata, NetworkStatus, RequestEnvelope, ResponseEnvelope,
+    ActiveBan, AgentEnforcement, BootstrapStatus, EnforcementSummary, EvidenceMetadata,
+    NetworkStatus, RememberedTitleKey, RememberedTitleMetadata, RequestEnvelope, ResponseEnvelope,
     ServiceErrorCode, ServiceFailure, ServiceRequest, ServiceResult, ServiceStatus,
 };
 use karma_policy::{
     ApplicationEffect, ApplicationPolicy, ContextPolicy, MINUTES_PER_DAY, MINUTES_PER_WEEK,
-    NetworkRestriction, NetworkSchedulePolicy, StrikeRecord, is_banned, normalize_executable,
-    record_closure,
+    NetworkRestriction, NetworkSchedulePolicy, RememberedTitle, RepeatOffenderRule, StrikeRecord,
+    active_bans, is_banned, matches_remembered_title, normalize_executable, record_closure,
+    remember_title, remember_titles_enabled, rememberable_title_key, title_key,
 };
 use rand::{RngCore, rngs::OsRng};
 use serde::{Deserialize, Serialize};
@@ -96,6 +98,8 @@ struct StoredState {
     repeat_offenders: Vec<StrikeRecord>,
     #[serde(default)]
     network_restore: Option<NetworkRestore>,
+    #[serde(default)]
+    remembered_titles: Vec<RememberedTitle>,
 }
 
 /// An administrator-approved early end of the active network schedule.
@@ -117,6 +121,7 @@ impl Default for StoredState {
             evidence: Vec::new(),
             repeat_offenders: Vec::new(),
             network_restore: None,
+            remembered_titles: Vec::new(),
         }
     }
 }
@@ -150,9 +155,23 @@ struct RuntimeState {
     failures: u32,
     blocked_until_ms: Option<i64>,
     last_heartbeat: Option<karma_ipc::AgentHeartbeat>,
-    pending_dispositions: HashMap<String, karma_ipc::ProcessIdentity>,
+    pending_dispositions: HashMap<String, PendingDisposition>,
     network_restricted: Option<bool>,
     network_enforcement_succeeded: Option<bool>,
+}
+
+/// A disposition the service authorized and awaits a report for.
+#[derive(Debug)]
+struct PendingDisposition {
+    target: karma_ipc::ProcessIdentity,
+    /// Window title to remember once image-triggered enforcement succeeds.
+    remember: Option<TitleCandidate>,
+}
+
+#[derive(Debug)]
+struct TitleCandidate {
+    title: String,
+    browser_host: Option<String>,
 }
 
 /// What the network enforcement layer must apply right now.
@@ -466,6 +485,8 @@ impl ServiceCore {
                     .map_err(|_| ServiceErrorCode::InvalidRequest)?;
                 NetworkSchedulePolicy::from_value(&policy)
                     .map_err(|_| ServiceErrorCode::InvalidRequest)?;
+                RepeatOffenderRule::from_value(&policy)
+                    .map_err(|_| ServiceErrorCode::InvalidRequest)?;
                 runtime.stored.policy_revision = runtime.stored.policy_revision.saturating_add(1);
                 runtime.stored.policy = policy;
                 audit(runtime, now_ms, "policy_updated", "success");
@@ -487,6 +508,7 @@ impl ServiceCore {
                 Ok(ServiceResult::AgentPolicy {
                     revision: runtime.stored.policy_revision,
                     policy: runtime.stored.policy.clone(),
+                    enforcement: agent_enforcement(runtime, now_ms),
                 })
             }
             ServiceRequest::AgentObservation {
@@ -518,7 +540,12 @@ impl ServiceCore {
                 if protection_enabled
                     && repeat_offender_banned(runtime, &target.executable_name, now_ms)
                 {
-                    return Ok(disposition_required(runtime, observation.event_id, target));
+                    return Ok(disposition_required(
+                        runtime,
+                        observation.event_id,
+                        target,
+                        None,
+                    ));
                 }
                 let context_policy = ContextPolicy::from_value(&runtime.stored.policy)
                     .map_err(|_| ServiceErrorCode::Internal)?;
@@ -535,7 +562,22 @@ impl ServiceCore {
                 if !protection_enabled || !image_enabled || observation.risk_millis < threshold {
                     return Ok(ServiceResult::Acknowledged);
                 }
-                Ok(disposition_required(runtime, observation.event_id, target))
+                let remember = remember_titles_enabled(&runtime.stored.policy)
+                    .then_some(observation.window_title)
+                    .flatten()
+                    .filter(|title| {
+                        rememberable_title_key(&target.executable_name, title).is_some()
+                    })
+                    .map(|title| TitleCandidate {
+                        title,
+                        browser_host: observation.browser_host,
+                    });
+                Ok(disposition_required(
+                    runtime,
+                    observation.event_id,
+                    target,
+                    remember,
+                ))
             }
             ServiceRequest::AgentContextObservation {
                 agent_token,
@@ -561,12 +603,32 @@ impl ServiceCore {
                         runtime,
                         observation.event_id,
                         observation.source,
+                        None,
                     ));
                 }
                 let context_policy = ContextPolicy::from_value(&runtime.stored.policy)
                     .map_err(|_| ServiceErrorCode::Internal)?;
                 let application_policy = ApplicationPolicy::from_value(&runtime.stored.policy)
                     .map_err(|_| ServiceErrorCode::Internal)?;
+                // Remembered titles yield to the same exemptions that would
+                // have prevented the original image enforcement.
+                if remember_titles_enabled(&runtime.stored.policy)
+                    && !context_policy.allows_host(observation.browser_host.as_deref())
+                    && application_policy.effect_for(&observation.source.executable_name)
+                        != ApplicationEffect::Allow
+                    && matches_remembered_title(
+                        &runtime.stored.remembered_titles,
+                        &normalize_executable(&observation.source.executable_name),
+                        &observation.window_title,
+                    )
+                {
+                    return Ok(disposition_required(
+                        runtime,
+                        observation.event_id,
+                        observation.source,
+                        None,
+                    ));
+                }
                 let verdict = context_policy.evaluate(
                     observation.browser_host.as_deref(),
                     &observation.window_title,
@@ -580,6 +642,7 @@ impl ServiceCore {
                     runtime,
                     observation.event_id,
                     observation.source,
+                    None,
                 ))
             }
             ServiceRequest::SubmitEvidence {
@@ -712,6 +775,30 @@ impl ServiceCore {
                 audit(runtime, now_ms, "evidence_deleted", "success");
                 self.persist(&runtime.stored)?;
                 Ok(ServiceResult::Acknowledged)
+            }
+            ServiceRequest::ListEnforcement { session_token } => {
+                authorize(runtime, &session_token, now_ms)?;
+                Ok(ServiceResult::Enforcement(enforcement_summary(
+                    runtime, now_ms,
+                )))
+            }
+            ServiceRequest::ForgetRememberedTitle {
+                session_token,
+                title_id,
+            } => {
+                authorize(runtime, &session_token, now_ms)?;
+                let index = runtime
+                    .stored
+                    .remembered_titles
+                    .iter()
+                    .position(|record| record.id == title_id)
+                    .ok_or(ServiceErrorCode::InvalidRequest)?;
+                runtime.stored.remembered_titles.remove(index);
+                audit(runtime, now_ms, "remembered_title_forgotten", "success");
+                self.persist(&runtime.stored)?;
+                Ok(ServiceResult::Enforcement(enforcement_summary(
+                    runtime, now_ms,
+                )))
             }
             ServiceRequest::RestoreNetwork {
                 session_token,
@@ -882,14 +969,75 @@ fn repeat_offender_banned(runtime: &RuntimeState, executable_name: &str, now_ms:
     )
 }
 
+/// Bans and remembered titles the agent must enforce; empty while the
+/// corresponding protection is switched off.
+fn agent_enforcement(runtime: &RuntimeState, now_ms: i64) -> AgentEnforcement {
+    let policy = &runtime.stored.policy;
+    if !policy
+        .get("protectionEnabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
+    {
+        return AgentEnforcement::default();
+    }
+    AgentEnforcement {
+        banned_executables: active_bans(&runtime.stored.repeat_offenders, now_ms)
+            .map(|(executable, _)| executable.to_owned())
+            .collect(),
+        remembered_titles: if remember_titles_enabled(policy) {
+            runtime
+                .stored
+                .remembered_titles
+                .iter()
+                .map(|record| RememberedTitleKey {
+                    executable: record.executable.clone(),
+                    title_key: title_key(&record.title),
+                })
+                .collect()
+        } else {
+            Vec::new()
+        },
+    }
+}
+
+fn enforcement_summary(runtime: &RuntimeState, now_ms: i64) -> EnforcementSummary {
+    let mut remembered_titles: Vec<_> = runtime
+        .stored
+        .remembered_titles
+        .iter()
+        .map(|record| RememberedTitleMetadata {
+            id: record.id.clone(),
+            executable: record.executable.clone(),
+            title: record.title.clone(),
+            browser_host: record.browser_host.clone(),
+            remembered_at_ms: record.remembered_at_ms,
+        })
+        .collect();
+    remembered_titles.sort_by_key(|record| std::cmp::Reverse(record.remembered_at_ms));
+    EnforcementSummary {
+        remembered_titles,
+        active_bans: active_bans(&runtime.stored.repeat_offenders, now_ms)
+            .map(|(executable, banned_until_ms)| ActiveBan {
+                executable: executable.to_owned(),
+                banned_until_ms,
+            })
+            .collect(),
+    }
+}
+
 fn disposition_required(
     runtime: &mut RuntimeState,
     event_id: String,
     target: karma_ipc::ProcessIdentity,
+    remember: Option<TitleCandidate>,
 ) -> ServiceResult {
-    runtime
-        .pending_dispositions
-        .insert(event_id.clone(), target.clone());
+    runtime.pending_dispositions.insert(
+        event_id.clone(),
+        PendingDisposition {
+            target: target.clone(),
+            remember,
+        },
+    );
     ServiceResult::DispositionRequired {
         event_id,
         target,
@@ -902,15 +1050,20 @@ fn record_disposition(
     report: &karma_ipc::DispositionReport,
     now_ms: i64,
 ) -> Result<(), ServiceErrorCode> {
-    let expected = runtime
+    let expected = &runtime
         .pending_dispositions
         .get(&report.event_id)
-        .ok_or(ServiceErrorCode::InvalidRequest)?;
+        .ok_or(ServiceErrorCode::InvalidRequest)?
+        .target;
     if expected.process_id != report.process_id || expected.started_at_ms != report.started_at_ms {
         return Err(ServiceErrorCode::InvalidRequest);
     }
-    let executable_name = expected.executable_name.clone();
-    runtime.pending_dispositions.remove(&report.event_id);
+    let Some(PendingDisposition { target, remember }) =
+        runtime.pending_dispositions.remove(&report.event_id)
+    else {
+        return Err(ServiceErrorCode::InvalidRequest);
+    };
+    let executable_name = target.executable_name;
     let outcome = match report.outcome {
         karma_ipc::DispositionOutcome::ClosedGracefully => "closed_gracefully",
         karma_ipc::DispositionOutcome::Terminated => "terminated",
@@ -924,8 +1077,22 @@ fn record_disposition(
         karma_ipc::DispositionOutcome::ClosedGracefully | karma_ipc::DispositionOutcome::Terminated
     ) {
         let executable = normalize_executable(&executable_name);
+        if let Some(candidate) = remember {
+            let entry = RememberedTitle {
+                id: format!("title-{}", random_token()),
+                executable: executable.clone(),
+                title: candidate.title,
+                browser_host: candidate.browser_host,
+                remembered_at_ms: now_ms,
+            };
+            if remember_title(&mut runtime.stored.remembered_titles, entry) {
+                audit(runtime, now_ms, "window_title_remembered", "success");
+            }
+        }
+        let rule = RepeatOffenderRule::from_value(&runtime.stored.policy).unwrap_or_default();
         if record_closure(
             &mut runtime.stored.repeat_offenders,
+            rule,
             &executable,
             report.process_id,
             report.started_at_ms,
@@ -1128,8 +1295,11 @@ mod tests {
         })
     }
 
+    /// Closures within the default 20-minute window that establish a ban.
+    const DEFAULT_STRIKES: u32 = 5;
+
     fn establish_repeat_offender_ban(core: &ServiceCore, base_ms: i64) {
-        for index in 0..3_u32 {
+        for index in 0..DEFAULT_STRIKES {
             let at = base_ms + i64::from(index) * 1_000;
             let event_id = format!("strike-{index}");
             let observation =
@@ -1156,7 +1326,7 @@ mod tests {
     }
 
     #[test]
-    fn third_closed_program_is_terminated_on_sight_for_one_hour() {
+    fn fifth_closed_program_is_terminated_on_sight_for_one_hour() {
         let directory = tempfile::tempdir().unwrap();
         let core = open_core(directory.path(), 0);
         configure_policy(&core, repeat_offender_policy());
@@ -1179,8 +1349,8 @@ mod tests {
                 if event_id == "relaunch"
         ));
 
-        // One hour after the third closure the program may run again.
-        let now = base + 2_000 + 60 * 60 * 1000 + 5;
+        // One hour after the fifth closure the program may run again.
+        let now = base + 4_000 + 60 * 60 * 1000 + 5;
         let after_ban = context_observation_at(
             "after-ban",
             now - 1,
@@ -1285,6 +1455,396 @@ mod tests {
         ));
     }
 
+    fn authenticate_ui(core: &ServiceCore, nonce: &str, now_ms: i64) -> String {
+        match success(core.handle(
+            request(
+                &format!("auth-{nonce}"),
+                nonce,
+                ServiceRequest::Authenticate {
+                    password: "long-test-password".into(),
+                },
+            ),
+            now_ms,
+        )) {
+            ServiceResult::Session { session_token, .. } => session_token,
+            _ => panic!("unexpected response"),
+        }
+    }
+
+    fn agent_enforcement_at(core: &ServiceCore, nonce: &str, now_ms: i64) -> AgentEnforcement {
+        match success(core.handle(
+            RequestEnvelope::new(
+                format!("request-{nonce}"),
+                nonce,
+                ClientKind::Agent,
+                ServiceRequest::GetAgentPolicy {
+                    agent_token: "agent-secret".into(),
+                },
+            ),
+            now_ms,
+        )) {
+            ServiceResult::AgentPolicy { enforcement, .. } => enforcement,
+            _ => panic!("unexpected response"),
+        }
+    }
+
+    fn list_enforcement(
+        core: &ServiceCore,
+        session: &str,
+        nonce: &str,
+        now_ms: i64,
+    ) -> EnforcementSummary {
+        match success(core.handle(
+            request(
+                &format!("list-{nonce}"),
+                nonce,
+                ServiceRequest::ListEnforcement {
+                    session_token: session.into(),
+                },
+            ),
+            now_ms,
+        )) {
+            ServiceResult::Enforcement(summary) => summary,
+            _ => panic!("unexpected response"),
+        }
+    }
+
+    const PORN_TITLE: &str = "Hot Video 123 - Google Chrome";
+
+    fn remembered_title_policy() -> Value {
+        json!({
+            "protectionEnabled": true,
+            "recognition": {"imageEnabled": true, "sensitivity": 60, "titleMatchingEnabled": true},
+            "websites": [
+                {"id":"allowed","pattern":"safe.example","action":"allow","enabled":true}
+            ]
+        })
+    }
+
+    /// Submits a high-risk image observation for `process_id` showing
+    /// `title` and reports the resulting closure.
+    fn close_by_image(
+        core: &ServiceCore,
+        nonce: &str,
+        title: Option<&str>,
+        process_id: u32,
+        now_ms: i64,
+    ) {
+        let observation = AgentObservation {
+            event_id: format!("image-{nonce}"),
+            agent_instance_id: "agent-1".into(),
+            occurred_at_ms: now_ms - 1,
+            monitor_id: "monitor-1".into(),
+            risk_millis: 990,
+            reason_code: "image_immediate".into(),
+            source: Some(ProcessIdentity {
+                process_id,
+                started_at_ms: 77,
+                executable_name: r"C:\Browser\chrome.exe".into(),
+                executable_sha256: None,
+            }),
+            browser_host: Some("video.example".into()),
+            evidence_pending: false,
+            window_title: title.map(str::to_owned),
+        };
+        assert!(matches!(
+            success(core.handle(
+                RequestEnvelope::new(
+                    format!("request-{nonce}"),
+                    nonce,
+                    ClientKind::Agent,
+                    ServiceRequest::AgentObservation {
+                        agent_token: "agent-secret".into(),
+                        observation,
+                    },
+                ),
+                now_ms,
+            )),
+            ServiceResult::DispositionRequired { .. }
+        ));
+        core.record_disposition(
+            &DispositionReport {
+                event_id: format!("image-{nonce}"),
+                process_id,
+                started_at_ms: 77,
+                outcome: DispositionOutcome::Terminated,
+            },
+            now_ms + 1,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn image_closed_window_title_is_remembered_and_closed_on_sight() {
+        let directory = tempfile::tempdir().unwrap();
+        let core = open_core(directory.path(), 0);
+        configure_policy(&core, remembered_title_policy());
+        close_by_image(&core, "image-1", Some(PORN_TITLE), 42, 1_000);
+
+        // The remembered title is published to the agent as a matching key.
+        let enforcement = agent_enforcement_at(&core, "agent-policy-1", 1_100);
+        assert_eq!(
+            enforcement.remembered_titles,
+            vec![RememberedTitleKey {
+                executable: r"c:\browser\chrome.exe".into(),
+                title_key: "hot video 123 - google chrome".into(),
+            }]
+        );
+
+        // The same title in a relaunched browser closes it without any image hit.
+        let relaunch =
+            context_observation_at("relaunch", 2_000, "hot video 123 - GOOGLE chrome", None, 43);
+        assert!(matches!(
+            submit_context_at(&core, "relaunch-nonce", relaunch, 2_001),
+            ServiceResult::DispositionRequired { event_id, .. } if event_id == "relaunch"
+        ));
+        // Other pages of the same browser stay open.
+        let other = context_observation_at("other", 2_100, "Homework - Google Chrome", None, 44);
+        assert!(matches!(
+            submit_context_at(&core, "other-nonce", other, 2_101),
+            ServiceResult::Acknowledged
+        ));
+        // An allowlisted host suppresses the remembered title like any exemption.
+        let allowed =
+            context_observation_at("allowed", 2_200, PORN_TITLE, Some("www.safe.example"), 45);
+        assert!(matches!(
+            submit_context_at(&core, "allowed-nonce", allowed, 2_201),
+            ServiceResult::Acknowledged
+        ));
+        let state: StoredState =
+            serde_json::from_slice(&fs::read(directory.path().join("service.json")).unwrap())
+                .unwrap();
+        assert!(
+            state
+                .audit
+                .iter()
+                .any(|record| record.kind == "window_title_remembered")
+        );
+        // Titles never enter the audit log.
+        assert!(
+            state
+                .audit
+                .iter()
+                .all(|record| !record.outcome.contains("Hot Video"))
+        );
+    }
+
+    #[test]
+    fn remembered_title_survives_restart_and_can_be_forgotten_by_the_administrator() {
+        let directory = tempfile::tempdir().unwrap();
+        {
+            let core = open_core(directory.path(), 0);
+            configure_policy(&core, remembered_title_policy());
+            close_by_image(&core, "image-1", Some(PORN_TITLE), 42, 1_000);
+        }
+        let core = open_core(directory.path(), 5_000);
+        let session = authenticate_ui(&core, "auth-forget", 5_000);
+        let summary = list_enforcement(&core, &session, "list-1", 5_001);
+        assert_eq!(summary.remembered_titles.len(), 1);
+        let remembered = &summary.remembered_titles[0];
+        assert_eq!(remembered.title, PORN_TITLE);
+        assert_eq!(remembered.browser_host.as_deref(), Some("video.example"));
+        assert_eq!(remembered.remembered_at_ms, 1_001);
+
+        let relaunch = context_observation_at("relaunch", 5_100, PORN_TITLE, None, 43);
+        assert!(matches!(
+            submit_context_at(&core, "relaunch-nonce", relaunch, 5_101),
+            ServiceResult::DispositionRequired { .. }
+        ));
+
+        match success(core.handle(
+            request(
+                "forget",
+                "forget-nonce",
+                ServiceRequest::ForgetRememberedTitle {
+                    session_token: session.clone(),
+                    title_id: remembered.id.clone(),
+                },
+            ),
+            5_200,
+        )) {
+            ServiceResult::Enforcement(summary) => assert!(summary.remembered_titles.is_empty()),
+            _ => panic!("unexpected response"),
+        }
+        let again = context_observation_at("again", 5_300, PORN_TITLE, None, 46);
+        assert!(matches!(
+            submit_context_at(&core, "again-nonce", again, 5_301),
+            ServiceResult::Acknowledged
+        ));
+        assert_eq!(
+            core.handle(
+                request(
+                    "forget-missing",
+                    "forget-missing-nonce",
+                    ServiceRequest::ForgetRememberedTitle {
+                        session_token: session,
+                        title_id: remembered.id.clone(),
+                    },
+                ),
+                5_400,
+            )
+            .result
+            .unwrap_err()
+            .code,
+            ServiceErrorCode::InvalidRequest
+        );
+    }
+
+    #[test]
+    fn titles_are_not_remembered_when_disabled_generic_or_not_closed() {
+        let directory = tempfile::tempdir().unwrap();
+        let core = open_core(directory.path(), 0);
+        let mut policy = remembered_title_policy();
+        policy["recognition"]["rememberTitlesEnabled"] = json!(false);
+        configure_policy(&core, policy);
+        close_by_image(&core, "disabled", Some(PORN_TITLE), 42, 1_000);
+        assert!(
+            agent_enforcement_at(&core, "agent-policy-1", 1_100)
+                .remembered_titles
+                .is_empty()
+        );
+
+        let directory = tempfile::tempdir().unwrap();
+        let core = open_core(directory.path(), 0);
+        configure_policy(&core, remembered_title_policy());
+        // The bare application name and a missing title are too generic.
+        close_by_image(&core, "generic", Some("Chrome"), 42, 1_000);
+        close_by_image(&core, "untitled", None, 43, 1_100);
+        // A failed closure remembers nothing.
+        let observation = AgentObservation {
+            event_id: "denied".into(),
+            agent_instance_id: "agent-1".into(),
+            occurred_at_ms: 1_200,
+            monitor_id: "monitor-1".into(),
+            risk_millis: 990,
+            reason_code: "image_immediate".into(),
+            source: Some(context_observation("ignored", "x", None).source),
+            browser_host: None,
+            evidence_pending: false,
+            window_title: Some(PORN_TITLE.into()),
+        };
+        success(core.handle(
+            RequestEnvelope::new(
+                "denied-request",
+                "denied-nonce",
+                ClientKind::Agent,
+                ServiceRequest::AgentObservation {
+                    agent_token: "agent-secret".into(),
+                    observation,
+                },
+            ),
+            1_201,
+        ));
+        core.record_disposition(
+            &DispositionReport {
+                event_id: "denied".into(),
+                process_id: 42,
+                started_at_ms: 77,
+                outcome: DispositionOutcome::AccessDenied,
+            },
+            1_202,
+        )
+        .unwrap();
+        assert!(
+            agent_enforcement_at(&core, "agent-policy-2", 1_300)
+                .remembered_titles
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn configured_strike_limit_and_window_govern_bans_and_reach_the_agent() {
+        let directory = tempfile::tempdir().unwrap();
+        let core = open_core(directory.path(), 0);
+        let mut policy = remembered_title_policy();
+        policy["repeatOffender"] = json!({"windowMinutes": 1, "strikeLimit": 2});
+        configure_policy(&core, policy);
+        // Two closures more than a minute apart do not ban.
+        close_by_image(&core, "strike-1", None, 50, 10_000);
+        close_by_image(&core, "strike-2", None, 51, 10_000 + 61_000);
+        assert!(
+            agent_enforcement_at(&core, "agent-policy-1", 71_100)
+                .banned_executables
+                .is_empty()
+        );
+        // A second closure inside the minute bans the browser for one hour.
+        close_by_image(&core, "strike-3", None, 52, 100_000);
+        assert_eq!(
+            agent_enforcement_at(&core, "agent-policy-2", 100_100).banned_executables,
+            vec![r"c:\browser\chrome.exe".to_owned()]
+        );
+        let session = authenticate_ui(&core, "auth-bans", 100_200);
+        assert_eq!(
+            list_enforcement(&core, &session, "list-bans", 100_201).active_bans,
+            vec![ActiveBan {
+                executable: r"c:\browser\chrome.exe".into(),
+                banned_until_ms: 100_001 + 60 * 60 * 1000,
+            }]
+        );
+        assert!(
+            agent_enforcement_at(&core, "agent-policy-3", 100_001 + 60 * 60 * 1000)
+                .banned_executables
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn disabled_protection_publishes_no_agent_enforcement() {
+        let directory = tempfile::tempdir().unwrap();
+        let core = open_core(directory.path(), 0);
+        configure_policy(&core, repeat_offender_policy());
+        establish_repeat_offender_ban(&core, 10_000);
+        assert_eq!(
+            agent_enforcement_at(&core, "agent-policy-on", 20_000).banned_executables,
+            vec![r"c:\browser\chrome.exe".to_owned()]
+        );
+        let session = authenticate_ui(&core, "auth-off", 20_100);
+        let mut disabled = repeat_offender_policy();
+        disabled["protectionEnabled"] = json!(false);
+        success(core.handle(
+            request(
+                "disable",
+                "disable-nonce",
+                ServiceRequest::PutPolicy {
+                    session_token: session,
+                    expected_revision: 1,
+                    policy: disabled,
+                },
+            ),
+            20_101,
+        ));
+        assert_eq!(
+            agent_enforcement_at(&core, "agent-policy-off", 20_200),
+            AgentEnforcement::default()
+        );
+    }
+
+    #[test]
+    fn put_policy_rejects_out_of_range_repeat_offender_settings() {
+        let directory = tempfile::tempdir().unwrap();
+        let core = open_core(directory.path(), 0);
+        configure_policy(&core, json!({}));
+        let session = authenticate_ui(&core, "auth-invalid", 10);
+        assert_eq!(
+            core.handle(
+                request(
+                    "invalid-repeat",
+                    "invalid-repeat-nonce",
+                    ServiceRequest::PutPolicy {
+                        session_token: session,
+                        expected_revision: 1,
+                        policy: json!({"repeatOffender": {"windowMinutes": 0, "strikeLimit": 5}}),
+                    },
+                ),
+                11,
+            )
+            .result
+            .unwrap_err()
+            .code,
+            ServiceErrorCode::InvalidRequest
+        );
+    }
+
     fn submit_context(
         core: &ServiceCore,
         nonce: &str,
@@ -1337,6 +1897,7 @@ mod tests {
             source: Some(context_observation("ignored", "ordinary", None).source),
             browser_host: Some("safe.example.com".into()),
             evidence_pending: false,
+            window_title: None,
         };
         assert!(matches!(
             success(core.handle(
@@ -1655,6 +2216,7 @@ mod tests {
             }),
             browser_host: None,
             evidence_pending: false,
+            window_title: None,
         };
         assert!(matches!(
             success(core.handle(
@@ -1874,6 +2436,7 @@ mod tests {
             source: Some(source.clone()),
             browser_host: None,
             evidence_pending: false,
+            window_title: None,
         };
         let request = RequestEnvelope::new(
             "1",
@@ -1954,6 +2517,7 @@ mod tests {
             }),
             browser_host: None,
             evidence_pending: false,
+            window_title: None,
         };
         let response = success(core.handle(
             RequestEnvelope::new(

@@ -233,6 +233,13 @@ select, .field input, .toolbar input { height: 39px; padding: 0 11px; color: var
 .app-main strong { font-size: 12px; }
 .app-main small { margin-top: 3px; color: var(--muted); font-size: 9px; }
 .app-rule select { width: 175px; }
+.repeat-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.repeat-fields .field { margin-top: 15px; }
+.field-error { display: block; margin-top: 7px; color: #a33e3a; font-size: 9px; }
+.learned-list { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+.learned-heading { display: block; margin-bottom: 4px; color: var(--muted); font-size: 10px; font-weight: 600; }
+.learned-list .app-main strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.learned-empty { margin: 8px 0 0; color: var(--muted); font-size: 10px; }
 
 .field { display: block; margin-top: 15px; }
 .field input, .field select { width: 100%; }

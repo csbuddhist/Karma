@@ -13,6 +13,7 @@ import {
   Activity,
   AppWindow,
   Archive,
+  Ban,
   CalendarClock,
   Check,
   Copy,
@@ -25,6 +26,7 @@ import {
   Fingerprint,
   Gauge,
   Globe2,
+  History,
   Image,
   KeyRound,
   LayoutDashboard,
@@ -53,6 +55,7 @@ import {
   defaultConsoleState,
   enroll,
   exportSettings,
+  forgetRememberedTitle,
   getAppVersion,
   importSettings,
   isTauriConsole,
@@ -60,6 +63,7 @@ import {
   lock,
   mergeImportedPolicy,
   parseImportedBackupFile,
+  repeatOffenderLimits,
   restoreNetwork,
   revealEvidence,
   saveConsole,
@@ -80,6 +84,7 @@ import type {
   ConsoleState,
   EvidenceItem,
   KeywordRule,
+  LearnedEnforcement,
   NetworkStatus,
   NetworkTarget,
   PageKey,
@@ -365,7 +370,43 @@ function Monitors({ state }: { state: ConsoleState }) {
   return <div className="monitor-grid">{state.monitors.length ? state.monitors.map((monitor) => <Card key={monitor.id} className="monitor-card"><div className="monitor-preview"><Monitor size={48} /><span>{monitor.resolution}</span></div><div className="monitor-info"><div><strong>{monitor.name}</strong><StatusPill tone={monitor.state === "healthy" ? "good" : monitor.state === "degraded" ? "warn" : "muted"}>{t(`monitors.${monitor.state}`)}</StatusPill></div><dl><div><dt>{t("monitors.fps")}</dt><dd>{monitor.fps.toFixed(1)} FPS</dd></div><div><dt>{t("monitors.latency")}</dt><dd>{monitor.latencyMs} ms</dd></div></dl></div></Card>) : <Card className="full-span"><EmptyState icon={<Monitor />} title={t("monitors.emptyTitle")} text={t("monitors.emptyDescription")} /></Card>}</div>;
 }
 
-function Recognition({ state, update }: { state: ConsoleState; update: (state: ConsoleState) => void }) {
+function executableFileName(path: string): string {
+  return path.split(/[\\/]/).pop() || path;
+}
+
+function useShortDateTime(): Intl.DateTimeFormat {
+  const { locale } = useI18n();
+  return useMemo(() => new Intl.DateTimeFormat(locale, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }), [locale]);
+}
+
+function RememberedTitlesCard({ state, update, sessionToken, onLearnedChange }: { state: ConsoleState; update: (state: ConsoleState) => void; sessionToken: string; onLearnedChange: (learned: LearnedEnforcement) => void }) {
+  const { t } = useI18n();
+  const dateTime = useShortDateTime();
+  const [busyId, setBusyId] = useState<string>();
+  const [error, setError] = useState("");
+  const settings = state.recognition;
+  async function forget(id: string) {
+    setBusyId(id);
+    setError("");
+    try {
+      onLearnedChange(await forgetRememberedTitle(sessionToken, id, { rememberedTitles: state.rememberedTitles, activeBans: state.activeBans }));
+    } catch (reason) {
+      setError(localizeError(reason, t));
+    } finally {
+      setBusyId(undefined);
+    }
+  }
+  return <Card className="full-span">
+    <div className="setting-row"><div className="setting-icon violet"><History /></div><div><strong>{t("recognition.rememberTitle")}</strong><p>{t("recognition.rememberDescription")}</p></div><Toggle checked={settings.rememberTitlesEnabled} onChange={(value) => update({ ...state, recognition: { ...settings, rememberTitlesEnabled: value } })} label={t("recognition.rememberToggle")} /></div>
+    <div className="learned-list">
+      <span className="learned-heading">{t("recognition.rememberedCount", { count: state.rememberedTitles.length })}</span>
+      {state.rememberedTitles.length ? state.rememberedTitles.map((item) => <div className="app-rule" key={item.id}><div className="app-avatar">{item.browserHost ? <Globe2 /> : <AppWindow />}</div><div className="app-main"><strong>{item.title}</strong><small>{[executableFileName(item.executable), item.browserHost, t("recognition.rememberedAt", { time: dateTime.format(item.rememberedAtMs) })].filter(Boolean).join(" · ")}</small></div><button className="icon-button danger" disabled={busyId === item.id} aria-label={t("recognition.forgetTitle")} title={t("recognition.forgetTitle")} onClick={() => void forget(item.id)}><Trash2 size={17} /></button></div>) : <p className="learned-empty">{t("recognition.rememberedEmpty")}</p>}
+      {error && <div className="form-error"><CircleAlert size={16} />{error}</div>}
+    </div>
+  </Card>;
+}
+
+function Recognition({ state, update, sessionToken, onLearnedChange }: { state: ConsoleState; update: (state: ConsoleState) => void; sessionToken: string; onLearnedChange: (learned: LearnedEnforcement) => void }) {
   const { t } = useI18n();
   const settings = state.recognition;
   const patch = (next: Partial<ConsoleState["recognition"]>) => update({ ...state, recognition: { ...settings, ...next } });
@@ -373,6 +414,7 @@ function Recognition({ state, update }: { state: ConsoleState; update: (state: C
     <Card><div className="setting-row"><div className="setting-icon violet"><Image /></div><div><strong>{t("recognition.imageTitle")}</strong><p>{t("recognition.imageDescription")}</p></div><Toggle checked={settings.imageEnabled} onChange={(value) => patch({ imageEnabled: value })} label={t("recognition.imageToggle")} /></div></Card>
     <Card><div className="setting-row"><div className="setting-icon blue"><Search /></div><div><strong>{t("recognition.ocrTitle")}</strong><p>{t("recognition.ocrDescription")}</p></div><Toggle checked={settings.ocrEnabled} onChange={(value) => patch({ ocrEnabled: value })} label={t("recognition.ocrToggle")} /></div></Card>
     <Card className="full-span"><div className="setting-row"><div className="setting-icon green"><AppWindow /></div><div><strong>{t("recognition.titleTitle")}</strong><p>{t("recognition.titleDescription")}</p></div><Toggle checked={settings.titleMatchingEnabled} onChange={(value) => patch({ titleMatchingEnabled: value })} label={t("recognition.titleToggle")} /></div></Card>
+    <RememberedTitlesCard state={state} update={update} sessionToken={sessionToken} onLearnedChange={onLearnedChange} />
     <Card className="full-span"><div className="card-heading"><div><h2>{t("recognition.sensitivity")}</h2><p>{t("recognition.sensitivityDescription")}</p></div><span className="value-badge">{settings.sensitivity}%</span></div><input className="range" type="range" min="60" max="95" value={settings.sensitivity} onChange={(event) => { const value = Number(event.target.value); patch({ sensitivity: value, immediateThreshold: value }); }} /><div className="range-labels"><span>{t("recognition.moreResponsive")}</span><span>{t("recognition.balanced")}</span><span>{t("recognition.fewerFalsePositives")}</span></div></Card>
     <Card className="full-span evidence-setting"><div className="setting-row"><div className="setting-icon amber"><Archive /></div><div><strong>{t("recognition.evidenceTitle")}</strong><p>{t("recognition.evidenceDescription")}</p></div><Toggle checked={settings.evidenceEnabled} onChange={(value) => patch({ evidenceEnabled: value })} label={t("recognition.evidenceToggle")} /></div>{settings.evidenceEnabled && <div className="inline-setting"><label>{t("recognition.retention")}</label><select value={settings.evidenceRetentionDays} onChange={(event) => patch({ evidenceRetentionDays: Number(event.target.value) })}>{[1, 3, 7, 14, 30].map((days) => <option value={days} key={days}>{t(days === 1 ? "overview.day" : "overview.days", { count: days })}</option>)}</select><span>{t("recognition.retentionDescription")}</span></div>}</Card>
   </div>;
@@ -528,12 +570,38 @@ function localizedExecutable(rule: ApplicationRule, t: Translate): string {
   return rule.executable;
 }
 
+function NumberField({ label, value, min, max, onCommit }: { label: string; value: number; min: number; max: number; onCommit: (value: number) => void }) {
+  const { t } = useI18n();
+  const [text, setText] = useState(String(value));
+  useEffect(() => setText(String(value)), [value]);
+  const accepts = (candidate: string) => /^\d+$/.test(candidate) && Number(candidate) >= min && Number(candidate) <= max;
+  return <label className="field"><span>{label}</span><input type="number" inputMode="numeric" min={min} max={max} step={1} value={text} onChange={(event) => { const next = event.target.value; setText(next); if (accepts(next)) onCommit(Number(next)); }} onBlur={() => setText(String(value))} />{!accepts(text) && <small className="field-error">{t("applications.repeatRange", { min, max })}</small>}</label>;
+}
+
+function RepeatOffenderCard({ state, update }: { state: ConsoleState; update: (state: ConsoleState) => void }) {
+  const { t } = useI18n();
+  const dateTime = useShortDateTime();
+  const settings = state.repeatOffender;
+  const patch = (next: Partial<ConsoleState["repeatOffender"]>) => update({ ...state, repeatOffender: { ...settings, ...next } });
+  return <Card>
+    <div className="setting-row"><div className="setting-icon amber"><Ban /></div><div><strong>{t("applications.repeatTitle")}</strong><p>{t("applications.repeatDescription", { minutes: settings.windowMinutes, count: settings.strikeLimit })}</p></div></div>
+    <div className="repeat-fields">
+      <NumberField label={t("applications.repeatWindow")} value={settings.windowMinutes} min={repeatOffenderLimits.windowMinutes.min} max={repeatOffenderLimits.windowMinutes.max} onCommit={(windowMinutes) => patch({ windowMinutes })} />
+      <NumberField label={t("applications.repeatCount")} value={settings.strikeLimit} min={repeatOffenderLimits.strikeLimit.min} max={repeatOffenderLimits.strikeLimit.max} onCommit={(strikeLimit) => patch({ strikeLimit })} />
+    </div>
+    <div className="learned-list">
+      <span className="learned-heading">{t("applications.activeBans")}</span>
+      {state.activeBans.length ? state.activeBans.map((ban) => <div className="app-rule" key={ban.executable}><div className="app-avatar"><AppWindow /></div><div className="app-main"><strong>{executableFileName(ban.executable)}</strong><small>{ban.executable}</small></div><StatusPill tone="danger">{t("applications.bannedUntil", { time: dateTime.format(ban.bannedUntilMs) })}</StatusPill></div>) : <p className="learned-empty">{t("applications.noActiveBans")}</p>}
+    </div>
+  </Card>;
+}
+
 function Applications({ state, update }: { state: ConsoleState; update: (state: ConsoleState) => void }) {
   const { t } = useI18n();
   const [showAdd, setShowAdd] = useState(false);
   const [draft, setDraft] = useState({ name: "", executable: "", category: "custom" as ApplicationRule["category"] });
   function add() { if (!draft.name.trim() || !draft.executable.trim()) return; update({ ...state, applications: [...state.applications, { id: crypto.randomUUID(), ...draft, action: "content_only", enabled: true }] }); setShowAdd(false); setDraft({ name: "", executable: "", category: "custom" }); }
-  return <div className="page-stack"><div className="privacy-banner"><AppWindow size={18} /><span><strong>{t("applications.bannerTitle")}</strong> {t("applications.bannerDescription")}</span></div><div className="page-actions"><button className="primary-button" onClick={() => setShowAdd(true)}><Plus size={17} />{t("applications.add")}</button></div><Card>{state.applications.map((rule) => { const name = localizedApplicationName(rule, t); return <div className="app-rule" key={rule.id}><div className="app-avatar"><AppWindow /></div><div className="app-main"><strong>{name}</strong><small>{localizedExecutable(rule, t)}</small></div><select value={rule.action} onChange={(event) => update({ ...state, applications: state.applications.map((item) => item.id === rule.id ? { ...item, action: event.target.value as ApplicationRule["action"] } : item) })}><option value="content_only">{t("applications.contentOnly")}</option><option value="block">{t("applications.block")}</option><option value="allow">{t("applications.allow")}</option></select><Toggle checked={rule.enabled} onChange={(enabled) => update({ ...state, applications: state.applications.map((item) => item.id === rule.id ? { ...item, enabled } : item) })} label={t("applications.enable", { name })} /></div>; })}</Card>{showAdd && <Modal title={t("applications.modalTitle")} onClose={() => setShowAdd(false)}><label className="field"><span>{t("applications.displayName")}</span><input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder={t("applications.namePlaceholder")} /></label><label className="field"><span>{t("applications.executable")}</span><input value={draft.executable} onChange={(event) => setDraft({ ...draft, executable: event.target.value })} placeholder={t("applications.executablePlaceholder")} /></label><label className="field"><span>{t("applications.category")}</span><select value={draft.category} onChange={(event) => setDraft({ ...draft, category: event.target.value as ApplicationRule["category"] })}><option value="browser">{t("applications.browser")}</option><option value="player">{t("applications.player")}</option><option value="game">{t("applications.game")}</option><option value="custom">{t("applications.custom")}</option></select></label><button className="primary-button modal-submit" onClick={add}>{t("applications.save")}</button></Modal>}</div>;
+  return <div className="page-stack"><div className="privacy-banner"><AppWindow size={18} /><span><strong>{t("applications.bannerTitle")}</strong> {t("applications.bannerDescription")}</span></div><RepeatOffenderCard state={state} update={update} /><div className="page-actions"><button className="primary-button" onClick={() => setShowAdd(true)}><Plus size={17} />{t("applications.add")}</button></div><Card>{state.applications.map((rule) => { const name = localizedApplicationName(rule, t); return <div className="app-rule" key={rule.id}><div className="app-avatar"><AppWindow /></div><div className="app-main"><strong>{name}</strong><small>{localizedExecutable(rule, t)}</small></div><select value={rule.action} onChange={(event) => update({ ...state, applications: state.applications.map((item) => item.id === rule.id ? { ...item, action: event.target.value as ApplicationRule["action"] } : item) })}><option value="content_only">{t("applications.contentOnly")}</option><option value="block">{t("applications.block")}</option><option value="allow">{t("applications.allow")}</option></select><Toggle checked={rule.enabled} onChange={(enabled) => update({ ...state, applications: state.applications.map((item) => item.id === rule.id ? { ...item, enabled } : item) })} label={t("applications.enable", { name })} /></div>; })}</Card>{showAdd && <Modal title={t("applications.modalTitle")} onClose={() => setShowAdd(false)}><label className="field"><span>{t("applications.displayName")}</span><input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder={t("applications.namePlaceholder")} /></label><label className="field"><span>{t("applications.executable")}</span><input value={draft.executable} onChange={(event) => setDraft({ ...draft, executable: event.target.value })} placeholder={t("applications.executablePlaceholder")} /></label><label className="field"><span>{t("applications.category")}</span><select value={draft.category} onChange={(event) => setDraft({ ...draft, category: event.target.value as ApplicationRule["category"] })}><option value="browser">{t("applications.browser")}</option><option value="player">{t("applications.player")}</option><option value="game">{t("applications.game")}</option><option value="custom">{t("applications.custom")}</option></select></label><button className="primary-button modal-submit" onClick={add}>{t("applications.save")}</button></Modal>}</div>;
 }
 
 const dayKeys: MessageKey[] = ["schedule.dayMon", "schedule.dayTue", "schedule.dayWed", "schedule.dayThu", "schedule.dayFri", "schedule.daySat", "schedule.daySun"];
@@ -971,6 +1039,8 @@ function AppContent() {
   function update(next: ConsoleState) { setState(next); setDirty(true); setSaveMessage(""); setSaveError(""); }
   // Network status is runtime state reported by the Service, not an unsaved policy edit.
   function updateNetwork(network: NetworkStatus) { setState((current) => ({ ...current, network })); }
+  // Remembered titles and bans are runtime state owned by the Service as well.
+  function updateLearned(learned: LearnedEnforcement) { setState((current) => ({ ...current, ...learned })); }
   async function save() {
     setSaving(true);
     setSaveError("");
@@ -1003,7 +1073,7 @@ function AppContent() {
   const content = useMemo(() => {
     if (page === "overview") return <Overview state={state} update={update} sessionToken={sessionToken} onNetworkChange={updateNetwork} />;
     if (page === "monitors") return <Monitors state={state} />;
-    if (page === "recognition") return <Recognition state={state} update={update} />;
+    if (page === "recognition") return <Recognition state={state} update={update} sessionToken={sessionToken} onLearnedChange={updateLearned} />;
     if (page === "keywords") return <Keywords state={state} update={update} />;
     if (page === "websites") return <Websites state={state} update={update} />;
     if (page === "applications") return <Applications state={state} update={update} />;
