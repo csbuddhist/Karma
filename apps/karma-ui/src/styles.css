@@ -269,6 +269,11 @@ select, .field input, .toolbar input { height: 39px; padding: 0 11px; color: var
 .evidence-card > div:last-child { display: flex; flex-direction: column; align-items: flex-start; gap: 7px; padding: 15px; }
 .evidence-card strong { font-size: 12px; }
 .evidence-card small { color: var(--muted); font-size: 9px; }
+.evidence-time { display: inline-flex; align-items: center; gap: 5px; color: var(--ink); font-size: 10px; font-variant-numeric: tabular-nums; }
+.evidence-time svg { color: var(--muted); }
+.evidence-filter { flex-wrap: wrap; align-items: flex-end; margin-bottom: 0; }
+.evidence-filter .field { min-width: 190px; margin: 0; }
+.evidence-filter-count { margin-left: auto; align-self: center; color: var(--muted); font-size: 10px; }
 .reveal-panel { text-align: center; }
 .locked-preview { height: 210px; display: grid; place-items: center; margin-bottom: 18px; color: #848a80; background: #ecede7; border-radius: 12px; }
 .locked-preview svg { width: 38px; height: 38px; }
