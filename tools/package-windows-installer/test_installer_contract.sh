@@ -8,6 +8,8 @@ builder="$script_dir/build_installer.sh"
 install_script="$repo_root/release/windows-x64-test/Install-Karma.ps1"
 uninstall_script="$repo_root/release/windows-x64-test/Uninstall-Karma.ps1"
 cleanup_script="$script_dir/Cleanup-InstallDirectory.ps1"
+runtime_script="$repo_root/release/windows-x64-test/Install-VCRuntime.ps1"
+fetch_script="$script_dir/fetch_vc_redist.sh"
 contract_failed=0
 
 assert_contains() {
@@ -118,6 +120,31 @@ assert_before 'clear-network-filters' 'sc\.exe delete KarmaService' "$uninstall_
   'uninstaller must clear persistent WFP objects before deleting the service registration'
 assert_contains 'WFP cleanup failed / WFP 清理失败，卸载已取消' "$uninstall_script" \
   'uninstaller must keep recovery binaries if persistent WFP cleanup fails'
+# 单文件安装器必须内置微软 VC++ x64 运行库，并在注册服务前按需安装。
+test -f "$runtime_script"
+test -f "$fetch_script"
+assert_contains 'VC_REDIST_FILE is required' "$installer" \
+  'installer must refuse to build without the Microsoft VC++ redistributable'
+assert_contains 'File /oname=\$PLUGINSDIR\\vc_redist\.x64\.exe' "$installer" \
+  'installer must embed vc_redist.x64.exe in its temporary plug-in directory, not the install directory'
+assert_contains 'Install-Karma\.ps1" -InstallDirectory "\$INSTDIR" -VCRedistPath "\$PLUGINSDIR\\vc_redist\.x64\.exe"' "$installer" \
+  'installer must hand the embedded redistributable to Install-Karma.ps1'
+assert_contains 'fetch_vc_redist\.sh' "$builder" \
+  'installer build must fetch and verify the Microsoft redistributable'
+assert_contains 'osslsigncode verify' "$fetch_script" \
+  'redistributable fetch must verify the Authenticode signature'
+assert_contains '847DF6A78497943F27FC72EB93F9A637320A02B561D0A91B09E87A7807ED7C61' "$fetch_script" \
+  'redistributable fetch must pin the Microsoft code-signing root'
+assert_before 'Install-VCRuntime\.ps1' "sc\.exe create KarmaService" "$install_script" \
+  'Install-Karma.ps1 must satisfy the VC++ runtime before registering services'
+assert_before 'Get-AuthenticodeSignature' 'Start-Process -FilePath \$RedistPath' "$runtime_script" \
+  'runtime installer must verify the Microsoft signature before executing vc_redist'
+assert_contains "'/install', '/quiet', '/norestart'" "$runtime_script" \
+  'runtime installer must install silently without forcing a restart'
+assert_contains '@\(0, 1638, 3010, 1641\)' "$runtime_script" \
+  'runtime installer must accept already-installed and restart-required results'
+assert_contains "\[version\]'14\.44\.0\.0'" "$runtime_script" \
+  'runtime installer must require the 14.44 runtime the binaries are built against'
 rg -q 'Uninstall-Karma-Launcher\.exe' "$installer"
 rg -q 'SYSTEM\\CurrentControlSet\\Services\\KarmaService' "$installer"
 rg -q -- '-NonInteractive -ExecutionPolicy Bypass' "$installer"

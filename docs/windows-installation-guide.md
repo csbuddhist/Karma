@@ -57,7 +57,11 @@ Windows network schedules now have WFP enforcement for browsers, selected apps, 
 
 ### 2.2 必需的运行库
 
-安装 **Microsoft Visual C++ Redistributable 2015–2022 x64**。如果没有安装，启动时通常会报告以下文件缺失：
+Karma 需要 **Microsoft Visual C++ Redistributable 2015–2022 x64**，版本不低于 14.44（构建所用的工具集版本）。单文件安装器已内置微软官方 `vc_redist.x64.exe`：注册 Service 前会用 Windows 校验其微软 Authenticode 签名，仅在运行库缺失或版本过旧时以 `/install /quiet /norestart` 静默安装；安装包本身只解包到临时目录，不留在安装目录。使用仓库或 ZIP 测试包安装时，`Install-Karma.ps1` 会进行同样的检查：可把微软的 `vc_redist.x64.exe` 放在脚本同一目录由其自动安装，否则脚本会给出下载地址并停止。
+
+Karma requires the **Microsoft Visual C++ Redistributable 2015–2022 x64**, version 14.44 or later (the toolset it is built with). The single-file installer embeds the official `vc_redist.x64.exe`: before registering the Service it has Windows verify the Microsoft Authenticode signature and installs the runtime silently (`/install /quiet /norestart`) only when it is missing or too old; the redistributable is extracted to a temporary directory, never the install directory. `Install-Karma.ps1` performs the same check for repository or ZIP installs: place Microsoft's `vc_redist.x64.exe` next to the script to have it installed automatically; otherwise the script stops with the download link.
+
+如果没有安装运行库，启动时通常会报告以下文件缺失：
 
 - `MSVCP140.dll`
 - `MSVCP140_1.dll`
@@ -80,15 +84,16 @@ Windows network schedules now have WFP enforcement for browsers, selected apps, 
 
 ### 3.1 单文件安装器（推荐）
 
-新用户从 [v0.2.2 Windows Test Build](https://github.com/csbuddhist/Karma/releases/tag/v0.2.2) 下载：
+新用户从 [v0.2.3 Windows Test Build](https://github.com/csbuddhist/Karma/releases/tag/v0.2.3) 下载：
 
 ```text
-Karma-windows-x64-test-v0.2.2-setup.exe
+Karma-windows-x64-test-v0.2.3-setup.exe
 ```
 
-安装第 2.2 节所述 Microsoft Visual C++ Redistributable 后，右键安装器并选择“以管理员身份运行”。安装器会：
+右键安装器并选择“以管理员身份运行”。安装器会：
 
 - 把完整测试包安装到 `C:\Program Files\Karma`；
+- 按第 2.2 节检查 Microsoft Visual C++ 运行库，必要时校验签名后静默安装；
 - 在注册 Service 前验证全部二进制和模型哈希；
 - 注册并启动具有延迟自动启动和崩溃恢复配置的 `KarmaService`；
 - 默认配置管理控制台在用户登录后后台启动，可在控制台“系统设置”中关闭；
@@ -108,7 +113,7 @@ git clone <远端仓库地址> Karma
 Set-Location .\Karma\release\windows-x64-test
 ```
 
-先安装第 2.2 节所述 Microsoft Visual C++ Redistributable。然后以管理员身份执行：
+`Install-Karma.ps1` 会按第 2.2 节检查 Microsoft Visual C++ 运行库；若尚未安装，可先把微软的 `vc_redist.x64.exe` 放在本目录。然后以管理员身份执行：
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
@@ -385,7 +390,7 @@ MSVCP140.dll was not found
 处理：
 
 1. 确认系统是 x64；
-2. 安装 Microsoft Visual C++ Redistributable 2015–2022 x64；
+2. 重新运行单文件安装器，或从 https://aka.ms/vs/17/release/vc_redist.x64.exe 安装 Microsoft Visual C++ Redistributable 2015–2022 x64（14.44 或更新）；
 3. 重新启动 PowerShell；
 4. 不要将网上下载的单个 DLL 放入应用目录。
 
@@ -531,16 +536,18 @@ cp -L target/x86_64-pc-windows-msvc/release/DirectML.dll \
 安装 NSIS 3 后，构建脚本会先验证测试包契约和 `SHA256SUMS`，再生成自解压安装器：
 
 ```bash
-brew install nsis
+brew install nsis osslsigncode
 bash tools/package-windows-installer/test_installer_contract.sh
-bash tools/package-windows-installer/build_installer.sh 0.2.2
+bash tools/package-windows-installer/build_installer.sh 0.2.3
 ```
 
 生成文件：
 
 ```text
-target/release-artifacts/Karma-windows-x64-test-v0.2.2-setup.exe
+target/release-artifacts/Karma-windows-x64-test-v0.2.3-setup.exe
 ```
+
+构建脚本会通过 `fetch_vc_redist.sh` 下载微软官方 `vc_redist.x64.exe` 到 `target/vc-redist/`（不提交到仓库），用固定指纹的微软根证书校验其 Authenticode 签名并要求版本不低于 14.44，然后嵌入安装器。The build downloads Microsoft's `vc_redist.x64.exe` into `target/vc-redist/` (never committed), verifies its Authenticode signature against pinned Microsoft root fingerprints, requires version 14.44 or later, and embeds it in the installer.
 
 安装器自身包含 CRC，安装阶段还会运行包内 SHA-256 校验；两者均不能替代正式发布所需的 Authenticode 代码签名。
 

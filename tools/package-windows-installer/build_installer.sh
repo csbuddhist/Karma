@@ -3,7 +3,7 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/../.." && pwd)"
-version="${1:-0.2.2}"
+version="${1:-0.2.3}"
 bundle_dir="$repo_root/release/windows-x64-test"
 output_dir="$repo_root/target/release-artifacts"
 output_file="$output_dir/Karma-windows-x64-test-v${version}-setup.exe"
@@ -26,6 +26,8 @@ bash "$repo_root/tools/package-windows-test/test_bundle_contract.sh"
   shasum -a 256 -c SHA256SUMS
 )
 
+vc_redist_file="$(bash "$script_dir/fetch_vc_redist.sh")"
+
 mkdir -p "$output_dir"
 makensis \
   -DVERSION="$version" \
@@ -34,6 +36,7 @@ makensis \
   -DOUTPUT_FILE="$output_file" \
   -DICON_FILE="$icon_file" \
   -DCLEANUP_FILE="$cleanup_file" \
+  -DVC_REDIST_FILE="$vc_redist_file" \
   "$script_dir/KarmaInstaller.nsi"
 
 file "$output_file"

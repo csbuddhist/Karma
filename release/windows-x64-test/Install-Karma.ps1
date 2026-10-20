@@ -1,7 +1,10 @@
 ﻿[CmdletBinding()]
 param(
     [string] $InstallDirectory = (Join-Path $env:ProgramFiles 'Karma'),
-    [switch] $StartConsole
+    [switch] $StartConsole,
+    # Microsoft vc_redist.x64.exe; the single-file installer passes its embedded
+    # copy. Defaults to a copy placed next to this script.
+    [string] $VCRedistPath = (Join-Path $PSScriptRoot 'vc_redist.x64.exe')
 )
 
 $ErrorActionPreference = 'Stop'
@@ -12,6 +15,10 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 
 & (Join-Path $PSScriptRoot 'Verify-KarmaTestBundle.ps1')
 if (-not $?) { throw '测试包完整性校验失败。' }
+
+# 服务和 Agent 依赖 VC++ 运行库，缺失时会因找不到 DLL 而无法启动；必须在注册服务前满足。
+& (Join-Path $PSScriptRoot 'Install-VCRuntime.ps1') -RedistPath $VCRedistPath
+if (-not $?) { throw 'Microsoft Visual C++ 运行库检查失败。' }
 
 function Protect-KarmaServiceRegistryKey {
     # 收紧服务注册表键（及其子键，含存放服务 SDDL 的 Security 子键）的 ACL：

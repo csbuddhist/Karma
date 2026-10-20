@@ -22,6 +22,9 @@ Unicode true
 !ifndef CLEANUP_FILE
   !error "CLEANUP_FILE is required"
 !endif
+!ifndef VC_REDIST_FILE
+  !error "VC_REDIST_FILE is required"
+!endif
 
 !define PRODUCT_NAME "Karma Family Protection"
 !define PRODUCT_PUBLISHER "Karma"
@@ -141,13 +144,19 @@ Section "Install" SecInstall
   File /r "${BUNDLE_DIR}\*.*"
   WriteUninstaller "$INSTDIR\Uninstall-Karma-Launcher.exe"
 
-  DetailPrint "正在校验安装包并注册 KarmaService..."
-  nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\Install-Karma.ps1" -InstallDirectory "$INSTDIR"'
+  # 微软 VC++ x64 运行库只解包到临时插件目录：Install-Karma.ps1 先校验其微软签名，
+  # 仅在本机运行库缺失或版本过旧时静默安装，安装目录中不保留安装包。
+  InitPluginsDir
+  File /oname=$PLUGINSDIR\vc_redist.x64.exe "${VC_REDIST_FILE}"
+
+  DetailPrint "正在校验安装包、检查 Microsoft Visual C++ 运行库并注册 KarmaService..."
+  nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\Install-Karma.ps1" -InstallDirectory "$INSTDIR" -VCRedistPath "$PLUGINSDIR\vc_redist.x64.exe"'
   Pop $0
   Pop $1
+  Delete "$PLUGINSDIR\vc_redist.x64.exe"
   ${If} $0 != "0"
     DetailPrint "$1"
-    MessageBox MB_OK|MB_ICONSTOP "Karma 安装失败。安装日志中保留了诊断信息。"
+    MessageBox MB_OK|MB_ICONSTOP "Karma 安装失败（可能是 Microsoft Visual C++ 运行库未能安装）。安装日志中保留了诊断信息。"
     Abort
   ${EndIf}
 
