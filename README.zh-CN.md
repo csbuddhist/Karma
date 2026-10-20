@@ -8,7 +8,7 @@ Karma 是一套面向 macOS 和 Windows 的本地色情内容防护与数字健�
 
 ## Windows 测试安装包
 
-新用户可从 [v0.2.1 Windows Test Build](https://github.com/csbuddhist/Karma/releases/tag/v0.2.1) 下载单文件 `Karma-windows-x64-test-v0.2.1-setup.exe`，在 Windows 10 22H2 或 Windows 11 x64 上以管理员身份运行即可完成文件安装、哈希校验、Service 注册和快捷方式创建。安装前仍需安装 Microsoft Visual C++ 2015–2022 x64 Redistributable。
+新用户可从 [v0.2.2 Windows Test Build](https://github.com/csbuddhist/Karma/releases/tag/v0.2.2) 下载单文件 `Karma-windows-x64-test-v0.2.2-setup.exe`，在 Windows 10 22H2 或 Windows 11 x64 上以管理员身份运行即可完成文件安装、哈希校验、Service 注册和快捷方式创建。安装前仍需安装 Microsoft Visual C++ 2015–2022 x64 Redistributable。
 
 `main` 同时保留可审查的 **cloneable Windows test bundle**：[`release/windows-x64-test/`](release/windows-x64-test/)，用于诊断和复现打包。安装器检测到现有版本时会询问是否卸载，同步运行现有安装目录中要求输入 Karma 管理员密码的卸载脚本，结束旧控制台与 Agent 进程并等待其退出、删除 Service 与安装目录，再强制清理遗留进程后继续全新安装；密码验证失败或清理失败都会中止安装并说明原因。管理控制台默认在用户登录后后台启动，可在“系统设置”中关闭；保护 Service 则独立随 Windows 启动。该安装器仍是未签名的开发/测试软件，卸载继续要求 Karma 管理员密码；它不是正式签名的生产安装器。详细步骤见 [Windows 安装与测试指南](docs/windows-installation-guide.md)。
 
@@ -167,7 +167,7 @@ score >= 0.95                         → 立即处置
 - 模型版本、风险等级和归一化分数。
 - 策略 ID、原因码和组件健康状态。
 
-默认不记录屏幕截图、窗口正文、完整 URL、输入内容或动态生成的站点证书。Windows Agent 只在内存中短暂处理活动窗口标题和浏览器地址栏，仅向本机 Service 发送规范化域名及有长度上限的标题供独立复核；审计与证据记录均不会持久化这两个值。唯一例外是默认开启的“记住窗口标题”：图像色情识别成功关闭应用后，Service 会把该窗口的标题、规范化域名和可执行文件路径保存在受 ACL 保护的本机状态（`C:\ProgramData\Karma`）中，以便再次关闭同一页面。最多保留 200 条，超出时先删除最旧的；管理员可在控制台查看、删除或关闭此功能。标题不会写入审计日志。
+默认不记录屏幕截图、窗口正文、完整 URL、输入内容或动态生成的站点证书。Windows Agent 只在内存中短暂处理活动窗口标题和浏览器地址栏，仅向本机 Service 发送规范化域名及有长度上限的标题供独立复核；审计与证据记录均不会持久化这两个值。唯一例外是默认开启的“记住窗口标题”：图像色情识别成功关闭应用后，Service 会保存该窗口的标题、规范化域名和可执行文件路径，以便再次关闭同一页面。这些内容使用由 DPAPI 保护的证据密钥派生出的密钥进行 AES-256-GCM 加密，保存在 Service 受 ACL 保护的 SQLite 数据库（`C:\ProgramData\Karma\service-state.db`）中。最多保留 5000 条，超出时先删除最旧的。Agent 只会收到 128 位摘要，收不到标题本身。管理员可在控制台搜索、查看、删除或关闭此功能。标题不会写入审计日志。
 
 ## 屏幕采集
 
@@ -181,6 +181,8 @@ score >= 0.95                         → 立即处置
 - 锁屏、UAC 安全桌面和受 DRM 保护内容不承诺可采集。
 
 当前仓库已实现 Windows 帧输入、图像推理与 OCR 推理切片、前台窗口标题观察、浏览器地址栏域名发现，以及 Windows Service、认证 IPC、策略持久化、Agent watchdog、健康心跳、身份绑定处置执行端和 DPAPI + AES-GCM 证据库。Agent 在独立 apartment 中轮询活动窗口，先在本地评估上下文，仅在命中时向 Service 提交有长度上限的观察；Service 会重新应用白名单、黑名单与多语种标题策略，再授权绑定进程身份的关闭操作。图像观察也只携带规范化浏览器域名，确保白名单网站不会因为高图像分数被关闭。启用“保存事件证据”后，只有达到立即处置阈值的图像推理帧才会在 Agent 中编码并提交给 Service 加密保存，Service 会再次校验策略与阈值。Agent 从已验证的本地清单加载图像与 OCR 模型，运行时不会向日志输出识别原文、分数、标题、URL 或画面。连续帧风险融合仍未接入。
+
+Service 状态（管理员密码哈希、策略、最多 50000 条审计记录、证据元数据、重复违规封禁及已记住的标题）保存在事务型 SQLite 数据库中（WAL、`synchronous=FULL`、`secure_delete`）。每次修改都以原子方式提交，崩溃或断电不会留下写到一半的状态文件。v0.2.2 之前的版本使用 JSON 文件保存状态，首次启动时会在初始化数据库的同一事务中自动导入，并保留为 `service-state.json.migrated`。不支持降级到更早版本：旧版本找不到它的 JSON 文件，会进入首次设置。
 
 Windows 当前通过 UI Automation 支持 Chrome、Edge、Firefox、Brave、Opera/Opera GX、Vivaldi 和 Arc 的浏览器域名发现。规则只匹配域名（并覆盖子域名），不匹配 URL 路径。如果浏览器隐藏地址栏或未向辅助功能公开地址栏，Karma 无法识别该窗口是否命中网址白名单/黑名单；标题与图像规则仍继续工作。
 

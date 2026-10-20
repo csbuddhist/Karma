@@ -48,7 +48,9 @@ mod service_watchdog;
 
 const SERVICE_NAME: &str = "KarmaService";
 const DATA_DIRECTORY: &str = "Karma";
-const STATE_FILE: &str = "service-state.json";
+/// SQLite state database; a `service-state.json` left by earlier builds is
+/// imported on first start and kept as `service-state.json.migrated`.
+const STATE_FILE: &str = "service-state.db";
 const AGENT_SECRET_FILE: &str = "agent.secret";
 const EVIDENCE_KEY_FILE: &str = "evidence.key.dpapi";
 const EVIDENCE_DIRECTORY: &str = "evidence";
@@ -151,12 +153,15 @@ fn serve(shutdown: Arc<AtomicBool>) -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|_| ServiceHostError::StorageUnavailable)?;
     harden_path(&evidence_key_path)?;
     let core = Arc::new(ServiceCore::open(
-        state_path,
+        &state_path,
         agent_secret.to_string(),
         evidence_directory,
         evidence_key,
         unix_time_ms(),
     )?);
+    // A freshly created database inherits the directory ACL; set it
+    // explicitly like every other state file.
+    harden_path(&state_path)?;
 
     let install_directory = env::current_exe()
         .map_err(|_| ServiceHostError::StorageUnavailable)?

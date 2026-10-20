@@ -59,10 +59,12 @@ import {
   getAppVersion,
   importSettings,
   isTauriConsole,
+  listRememberedTitles,
   loadConsole,
   lock,
   mergeImportedPolicy,
   parseImportedBackupFile,
+  rememberedTitlePageSize,
   repeatOffenderLimits,
   restoreNetwork,
   revealEvidence,
@@ -84,10 +86,10 @@ import type {
   ConsoleState,
   EvidenceItem,
   KeywordRule,
-  LearnedEnforcement,
   NetworkStatus,
   NetworkTarget,
   PageKey,
+  RememberedTitlePage,
   ScheduleBlock,
   ScheduleRule,
   WebsiteRule,
@@ -379,17 +381,42 @@ function useShortDateTime(): Intl.DateTimeFormat {
   return useMemo(() => new Intl.DateTimeFormat(locale, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }), [locale]);
 }
 
-function RememberedTitlesCard({ state, update, sessionToken, onLearnedChange }: { state: ConsoleState; update: (state: ConsoleState) => void; sessionToken: string; onLearnedChange: (learned: LearnedEnforcement) => void }) {
+function RememberedTitlesCard({ state, update, sessionToken }: { state: ConsoleState; update: (state: ConsoleState) => void; sessionToken: string }) {
   const { t } = useI18n();
   const dateTime = useShortDateTime();
+  const [query, setQuery] = useState("");
+  const [appliedQuery, setAppliedQuery] = useState("");
+  const [pageIndex, setPageIndex] = useState(0);
+  const [titles, setTitles] = useState<RememberedTitlePage>({ items: [], total: 0 });
+  const [reload, setReload] = useState(0);
   const [busyId, setBusyId] = useState<string>();
   const [error, setError] = useState("");
   const settings = state.recognition;
+  const pageCount = Math.max(1, Math.ceil(titles.total / rememberedTitlePageSize));
+  useEffect(() => {
+    const timeout = window.setTimeout(() => { setAppliedQuery(query); setPageIndex(0); }, 250);
+    return () => window.clearTimeout(timeout);
+  }, [query]);
+  // The Service owns the titles: refetch when the page, query, or the total
+  // reported by the periodic console refresh changes.
+  useEffect(() => {
+    let current = true;
+    listRememberedTitles(sessionToken, pageIndex * rememberedTitlePageSize, appliedQuery)
+      .then((page) => {
+        if (!current) return;
+        if (!page.items.length && pageIndex > 0) { setPageIndex(Math.max(0, Math.ceil(page.total / rememberedTitlePageSize) - 1)); return; }
+        setTitles(page);
+        setError("");
+      })
+      .catch((reason) => { if (current) setError(localizeError(reason, t)); });
+    return () => { current = false; };
+  }, [sessionToken, pageIndex, appliedQuery, state.rememberedTitleTotal, reload, t]);
   async function forget(id: string) {
     setBusyId(id);
     setError("");
     try {
-      onLearnedChange(await forgetRememberedTitle(sessionToken, id, { rememberedTitles: state.rememberedTitles, activeBans: state.activeBans }));
+      await forgetRememberedTitle(sessionToken, id);
+      setReload((value) => value + 1);
     } catch (reason) {
       setError(localizeError(reason, t));
     } finally {
@@ -399,14 +426,15 @@ function RememberedTitlesCard({ state, update, sessionToken, onLearnedChange }: 
   return <Card className="full-span">
     <div className="setting-row"><div className="setting-icon violet"><History /></div><div><strong>{t("recognition.rememberTitle")}</strong><p>{t("recognition.rememberDescription")}</p></div><Toggle checked={settings.rememberTitlesEnabled} onChange={(value) => update({ ...state, recognition: { ...settings, rememberTitlesEnabled: value } })} label={t("recognition.rememberToggle")} /></div>
     <div className="learned-list">
-      <span className="learned-heading">{t("recognition.rememberedCount", { count: state.rememberedTitles.length })}</span>
-      {state.rememberedTitles.length ? state.rememberedTitles.map((item) => <div className="app-rule" key={item.id}><div className="app-avatar">{item.browserHost ? <Globe2 /> : <AppWindow />}</div><div className="app-main"><strong>{item.title}</strong><small>{[executableFileName(item.executable), item.browserHost, t("recognition.rememberedAt", { time: dateTime.format(item.rememberedAtMs) })].filter(Boolean).join(" · ")}</small></div><button className="icon-button danger" disabled={busyId === item.id} aria-label={t("recognition.forgetTitle")} title={t("recognition.forgetTitle")} onClick={() => void forget(item.id)}><Trash2 size={17} /></button></div>) : <p className="learned-empty">{t("recognition.rememberedEmpty")}</p>}
+      <div className="learned-toolbar"><span className="learned-heading">{t(appliedQuery.trim() ? "recognition.searchCount" : "recognition.rememberedCount", { count: titles.total })}</span><label className="learned-search"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} maxLength={128} placeholder={t("recognition.searchTitles")} aria-label={t("recognition.searchTitles")} /></label></div>
+      {titles.items.length ? titles.items.map((item) => <div className="app-rule" key={item.id}><div className="app-avatar">{item.browserHost ? <Globe2 /> : <AppWindow />}</div><div className="app-main"><strong>{item.title}</strong><small>{[executableFileName(item.executable), item.browserHost, t("recognition.rememberedAt", { time: dateTime.format(item.rememberedAtMs) })].filter(Boolean).join(" · ")}</small></div><button className="icon-button danger" disabled={busyId === item.id} aria-label={t("recognition.forgetTitle")} title={t("recognition.forgetTitle")} onClick={() => void forget(item.id)}><Trash2 size={17} /></button></div>) : <p className="learned-empty">{t(appliedQuery.trim() ? "recognition.searchEmpty" : "recognition.rememberedEmpty")}</p>}
+      {pageCount > 1 && <div className="learned-pager"><button className="secondary-button" disabled={pageIndex === 0} onClick={() => setPageIndex(pageIndex - 1)}>{t("recognition.previousPage")}</button><span>{t("recognition.pageStatus", { page: pageIndex + 1, pages: pageCount })}</span><button className="secondary-button" disabled={pageIndex + 1 >= pageCount} onClick={() => setPageIndex(pageIndex + 1)}>{t("recognition.nextPage")}</button></div>}
       {error && <div className="form-error"><CircleAlert size={16} />{error}</div>}
     </div>
   </Card>;
 }
 
-function Recognition({ state, update, sessionToken, onLearnedChange }: { state: ConsoleState; update: (state: ConsoleState) => void; sessionToken: string; onLearnedChange: (learned: LearnedEnforcement) => void }) {
+function Recognition({ state, update, sessionToken }: { state: ConsoleState; update: (state: ConsoleState) => void; sessionToken: string }) {
   const { t } = useI18n();
   const settings = state.recognition;
   const patch = (next: Partial<ConsoleState["recognition"]>) => update({ ...state, recognition: { ...settings, ...next } });
@@ -414,7 +442,7 @@ function Recognition({ state, update, sessionToken, onLearnedChange }: { state: 
     <Card><div className="setting-row"><div className="setting-icon violet"><Image /></div><div><strong>{t("recognition.imageTitle")}</strong><p>{t("recognition.imageDescription")}</p></div><Toggle checked={settings.imageEnabled} onChange={(value) => patch({ imageEnabled: value })} label={t("recognition.imageToggle")} /></div></Card>
     <Card><div className="setting-row"><div className="setting-icon blue"><Search /></div><div><strong>{t("recognition.ocrTitle")}</strong><p>{t("recognition.ocrDescription")}</p></div><Toggle checked={settings.ocrEnabled} onChange={(value) => patch({ ocrEnabled: value })} label={t("recognition.ocrToggle")} /></div></Card>
     <Card className="full-span"><div className="setting-row"><div className="setting-icon green"><AppWindow /></div><div><strong>{t("recognition.titleTitle")}</strong><p>{t("recognition.titleDescription")}</p></div><Toggle checked={settings.titleMatchingEnabled} onChange={(value) => patch({ titleMatchingEnabled: value })} label={t("recognition.titleToggle")} /></div></Card>
-    <RememberedTitlesCard state={state} update={update} sessionToken={sessionToken} onLearnedChange={onLearnedChange} />
+    <RememberedTitlesCard state={state} update={update} sessionToken={sessionToken} />
     <Card className="full-span"><div className="card-heading"><div><h2>{t("recognition.sensitivity")}</h2><p>{t("recognition.sensitivityDescription")}</p></div><span className="value-badge">{settings.sensitivity}%</span></div><input className="range" type="range" min="60" max="95" value={settings.sensitivity} onChange={(event) => { const value = Number(event.target.value); patch({ sensitivity: value, immediateThreshold: value }); }} /><div className="range-labels"><span>{t("recognition.moreResponsive")}</span><span>{t("recognition.balanced")}</span><span>{t("recognition.fewerFalsePositives")}</span></div></Card>
     <Card className="full-span evidence-setting"><div className="setting-row"><div className="setting-icon amber"><Archive /></div><div><strong>{t("recognition.evidenceTitle")}</strong><p>{t("recognition.evidenceDescription")}</p></div><Toggle checked={settings.evidenceEnabled} onChange={(value) => patch({ evidenceEnabled: value })} label={t("recognition.evidenceToggle")} /></div>{settings.evidenceEnabled && <div className="inline-setting"><label>{t("recognition.retention")}</label><select value={settings.evidenceRetentionDays} onChange={(event) => patch({ evidenceRetentionDays: Number(event.target.value) })}>{[1, 3, 7, 14, 30].map((days) => <option value={days} key={days}>{t(days === 1 ? "overview.day" : "overview.days", { count: days })}</option>)}</select><span>{t("recognition.retentionDescription")}</span></div>}</Card>
   </div>;
@@ -1039,8 +1067,6 @@ function AppContent() {
   function update(next: ConsoleState) { setState(next); setDirty(true); setSaveMessage(""); setSaveError(""); }
   // Network status is runtime state reported by the Service, not an unsaved policy edit.
   function updateNetwork(network: NetworkStatus) { setState((current) => ({ ...current, network })); }
-  // Remembered titles and bans are runtime state owned by the Service as well.
-  function updateLearned(learned: LearnedEnforcement) { setState((current) => ({ ...current, ...learned })); }
   async function save() {
     setSaving(true);
     setSaveError("");
@@ -1073,7 +1099,7 @@ function AppContent() {
   const content = useMemo(() => {
     if (page === "overview") return <Overview state={state} update={update} sessionToken={sessionToken} onNetworkChange={updateNetwork} />;
     if (page === "monitors") return <Monitors state={state} />;
-    if (page === "recognition") return <Recognition state={state} update={update} sessionToken={sessionToken} onLearnedChange={updateLearned} />;
+    if (page === "recognition") return <Recognition state={state} update={update} sessionToken={sessionToken} />;
     if (page === "keywords") return <Keywords state={state} update={update} />;
     if (page === "websites") return <Websites state={state} update={update} />;
     if (page === "applications") return <Applications state={state} update={update} />;

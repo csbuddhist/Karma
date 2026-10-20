@@ -13,6 +13,9 @@ pub const MAX_SESSION_TOKEN_CHARS: usize = 128;
 pub const MAX_PASSWORD_CHARS: usize = 1024;
 pub const MAX_WINDOW_TITLE_CHARS: usize = 512;
 pub const MAX_BROWSER_HOST_CHARS: usize = 253;
+/// Largest page of remembered titles one console request may read.
+pub const MAX_TITLE_PAGE: u32 = 100;
+pub const MAX_TITLE_QUERY_CHARS: usize = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -99,9 +102,16 @@ pub enum ServiceRequest {
         session_token: String,
         evidence_id: String,
     },
-    /// Remembered window titles and active repeat-offender bans.
+    /// One page of remembered window titles, newest first, optionally
+    /// filtered by a case-insensitive query, plus active repeat-offender bans.
     ListEnforcement {
         session_token: String,
+        #[serde(default)]
+        title_offset: u32,
+        #[serde(default = "default_title_page")]
+        title_limit: u32,
+        #[serde(default)]
+        title_query: Option<String>,
     },
     /// Stop closing windows that show one remembered title.
     ForgetRememberedTitle {
@@ -201,7 +211,7 @@ impl ServiceRequest {
             | Self::ListEvidence { session_token }
             | Self::RevealEvidence { session_token, .. }
             | Self::DeleteEvidence { session_token, .. }
-            | Self::ListEnforcement { session_token }
+            | Self::ListEnforcement { session_token, .. }
             | Self::ForgetRememberedTitle { session_token, .. }
             | Self::RestoreNetwork { session_token, .. }
             | Self::ChangePassword { session_token, .. } => {
@@ -222,6 +232,20 @@ impl ServiceRequest {
                 validate_identifier(evidence_id)?
             }
             Self::ForgetRememberedTitle { title_id, .. } => validate_identifier(title_id)?,
+            Self::ListEnforcement {
+                title_limit,
+                title_query,
+                ..
+            } => {
+                if !(1..=MAX_TITLE_PAGE).contains(title_limit)
+                    || title_query.as_ref().is_some_and(|query| {
+                        query.chars().count() > MAX_TITLE_QUERY_CHARS
+                            || query.chars().any(char::is_control)
+                    })
+                {
+                    return Err(ProtocolError::InvalidField);
+                }
+            }
             Self::AgentHeartbeat { heartbeat, .. } => heartbeat.validate()?,
             Self::AgentObservation { observation, .. } => observation.validate()?,
             Self::AgentContextObservation { observation, .. } => observation.validate()?,
@@ -516,6 +540,10 @@ pub enum ServiceResult {
     Acknowledged,
 }
 
+fn default_title_page() -> u32 {
+    50
+}
+
 /// Service-derived enforcement state the agent applies to foreground
 /// windows in addition to the policy. Empty while protection is disabled.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -523,24 +551,19 @@ pub enum ServiceResult {
 pub struct AgentEnforcement {
     /// Normalized executable paths that are closed whenever observed.
     pub banned_executables: Vec<String>,
-    pub remembered_titles: Vec<RememberedTitleKey>,
-}
-
-/// One remembered window title, reduced to its matching key.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RememberedTitleKey {
-    /// Normalized executable path.
-    pub executable: String,
-    /// Normalized title.
-    pub title_key: String,
+    /// `karma_policy::title_digest` of each remembered executable and title;
+    /// the titles themselves stay in the service.
+    pub remembered_title_digests: Vec<String>,
 }
 
 /// What the console shows about learned enforcement.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EnforcementSummary {
+    /// The requested page of remembered titles.
     pub remembered_titles: Vec<RememberedTitleMetadata>,
+    /// Remembered titles matching the query, across all pages.
+    pub remembered_title_total: u64,
     pub active_bans: Vec<ActiveBan>,
 }
 
@@ -948,16 +971,48 @@ mod tests {
             forget(ClientKind::Ui, "../title").validate(),
             Err(ProtocolError::InvalidField)
         );
-        assert_eq!(
+        let list = |client, title_limit, title_query: Option<&str>| {
             request(
                 ServiceRequest::ListEnforcement {
                     session_token: "session-1".into(),
+                    title_offset: 0,
+                    title_limit,
+                    title_query: title_query.map(str::to_owned),
                 },
-                ClientKind::Installer,
+                client,
             )
-            .validate(),
+        };
+        assert!(list(ClientKind::Ui, 50, Some("视频")).validate().is_ok());
+        assert_eq!(
+            list(ClientKind::Installer, 50, None).validate(),
             Err(ProtocolError::ClientRoleDenied)
         );
+        for invalid in [
+            list(ClientKind::Ui, 0, None),
+            list(ClientKind::Ui, MAX_TITLE_PAGE + 1, None),
+            list(
+                ClientKind::Ui,
+                50,
+                Some(&"x".repeat(MAX_TITLE_QUERY_CHARS + 1)),
+            ),
+            list(ClientKind::Ui, 50, Some("bad\nquery")),
+        ] {
+            assert_eq!(invalid.validate(), Err(ProtocolError::InvalidField));
+        }
+        let defaulted: ServiceRequest = serde_json::from_value(serde_json::json!({
+            "type": "list_enforcement",
+            "payload": {"session_token": "session-1"}
+        }))
+        .unwrap();
+        assert!(matches!(
+            defaulted,
+            ServiceRequest::ListEnforcement {
+                title_offset: 0,
+                title_limit: 50,
+                title_query: None,
+                ..
+            }
+        ));
     }
 
     #[test]

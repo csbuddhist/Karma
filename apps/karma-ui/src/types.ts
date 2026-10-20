@@ -51,9 +51,10 @@ export interface ActiveBan {
   bannedUntilMs: number;
 }
 
-export interface LearnedEnforcement {
-  rememberedTitles: RememberedTitle[];
-  activeBans: ActiveBan[];
+export interface RememberedTitlePage {
+  items: RememberedTitle[];
+  /** Titles matching the query across all pages. */
+  total: number;
 }
 
 export interface KeywordRule {
@@ -139,6 +140,7 @@ export interface ConsoleState {
   evidence: EvidenceItem[];
   audit: AuditItem[];
   network: NetworkStatus;
-  rememberedTitles: RememberedTitle[];
+  /** Remembered titles in the Service; the console reads them page by page. */
+  rememberedTitleTotal: number;
   activeBans: ActiveBan[];
 }

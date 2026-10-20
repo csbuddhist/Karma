@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+aes-gcm = "0.10"
 argon2 = { version = "0.5", features = ["std"] }
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
@@ -13,8 +14,10 @@ karma-evidence = { path = "../karma-evidence" }
 karma-ipc = { path = "../karma-ipc" }
 karma-policy = { path = "../karma-policy" }
 rand = "0.8"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde.workspace = true
 serde_json.workspace = true
+sha2 = "0.10"
 subtle = "2"
 thiserror.workspace = true
 zeroize = "1"

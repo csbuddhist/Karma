@@ -1,11 +1,11 @@
 #![forbid(unsafe_code)]
 
+mod store;
+
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     fmt::Write as _,
-    fs::{self, OpenOptions},
-    io::Write as _,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::Mutex,
 };
 
@@ -17,24 +17,24 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use karma_evidence::EvidenceVault;
 use karma_ipc::{
     ActiveBan, AgentEnforcement, BootstrapStatus, EnforcementSummary, EvidenceMetadata,
-    NetworkStatus, RememberedTitleKey, RememberedTitleMetadata, RequestEnvelope, ResponseEnvelope,
-    ServiceErrorCode, ServiceFailure, ServiceRequest, ServiceResult, ServiceStatus,
+    NetworkStatus, RememberedTitleMetadata, RequestEnvelope, ResponseEnvelope, ServiceErrorCode,
+    ServiceFailure, ServiceRequest, ServiceResult, ServiceStatus,
 };
 use karma_policy::{
     ApplicationEffect, ApplicationPolicy, ContextPolicy, MINUTES_PER_DAY, MINUTES_PER_WEEK,
-    NetworkRestriction, NetworkSchedulePolicy, RememberedTitle, RepeatOffenderRule, StrikeRecord,
-    active_bans, is_banned, matches_remembered_title, normalize_executable, record_closure,
-    remember_title, remember_titles_enabled, rememberable_title_key, title_key,
+    NetworkRestriction, NetworkSchedulePolicy, RememberedTitle, RepeatOffenderRule, active_bans,
+    is_banned, normalize_executable, record_closure, remember_title, remember_titles_enabled,
+    rememberable_title_key, title_digest, title_key,
 };
 use rand::{RngCore, rngs::OsRng};
-use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
+use store::{
+    AuditRecord, Change, MAX_AUDIT_ENTRIES, NetworkRestore, PersistedState, Store, StoredEvidence,
+};
 use subtle::ConstantTimeEq;
 use thiserror::Error;
 use zeroize::{Zeroize, Zeroizing};
 
-const STATE_SCHEMA: u32 = 1;
-const MAX_STATE_BYTES: usize = 2 * 1024 * 1024;
 const SESSION_LIFETIME_MS: i64 = 15 * 60 * 1000;
 const AGENT_OFFLINE_AFTER_MS: i64 = 30 * 1000;
 const MAX_OBSERVATION_AGE_MS: i64 = 10 * 1000;
@@ -42,7 +42,6 @@ const DISPOSITION_GRACE_MS: u32 = 0;
 const MAX_FAILURES: u32 = 5;
 const FAILURE_COOLDOWN_MS: i64 = 30 * 1000;
 const MAX_REPLAY_ENTRIES: usize = 4096;
-const MAX_AUDIT_ENTRIES: usize = 5000;
 const MS_PER_MINUTE: i64 = 60 * 1000;
 /// 1970-01-01 was a Thursday; schedules number Monday as day 0.
 const EPOCH_WEEKDAY_FROM_MONDAY: i64 = 3;
@@ -85,70 +84,14 @@ pub enum CoreError {
     LockUnavailable,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct StoredState {
-    schema_version: u32,
-    password_hash: Option<String>,
-    policy_revision: u64,
-    policy: Value,
-    audit: Vec<AuditRecord>,
-    evidence: Vec<StoredEvidence>,
-    #[serde(default)]
-    repeat_offenders: Vec<StrikeRecord>,
-    #[serde(default)]
-    network_restore: Option<NetworkRestore>,
-    #[serde(default)]
-    remembered_titles: Vec<RememberedTitle>,
-}
-
-/// An administrator-approved early end of the active network schedule.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct NetworkRestore {
-    granted_at_ms: i64,
-    until_ms: i64,
-}
-
-impl Default for StoredState {
-    fn default() -> Self {
-        Self {
-            schema_version: STATE_SCHEMA,
-            password_hash: None,
-            policy_revision: 0,
-            policy: json!({}),
-            audit: Vec::new(),
-            evidence: Vec::new(),
-            repeat_offenders: Vec::new(),
-            network_restore: None,
-            remembered_titles: Vec::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct AuditRecord {
-    occurred_at_ms: i64,
-    kind: String,
-    outcome: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct StoredEvidence {
-    id: String,
-    captured_at_ms: i64,
-    monitor_name: String,
-    application_name: String,
-    reason_code: String,
-    risk_millis: u16,
-    media_type: String,
-}
-
-#[derive(Debug)]
 struct RuntimeState {
-    stored: StoredState,
+    /// In-memory copy of the persisted state; every mutation also queues a
+    /// change in `pending`, which `persist` commits.
+    stored: PersistedState,
+    store: Store,
+    pending: Vec<Change>,
+    /// `title_digest` of every remembered title, for constant-time matching.
+    title_digests: HashSet<String>,
     sessions: HashMap<String, i64>,
     recent_nonces: VecDeque<String>,
     nonce_index: HashSet<String>,
@@ -183,7 +126,6 @@ pub struct NetworkEnforcement {
 }
 
 pub struct ServiceCore {
-    state_path: PathBuf,
     started_at_ms: i64,
     local_offset: LocalOffsetFn,
     agent_token: Zeroizing<String>,
@@ -192,37 +134,40 @@ pub struct ServiceCore {
 }
 
 impl ServiceCore {
+    /// Opens the SQLite state database at `database_path`, importing a legacy
+    /// JSON state file of the same name (`.json` extension) on first open.
+    /// Remembered titles are sealed with a key derived from `evidence_key`.
     pub fn open(
-        state_path: impl Into<PathBuf>,
+        database_path: impl Into<PathBuf>,
         agent_token: String,
         evidence_directory: impl Into<PathBuf>,
         evidence_key: [u8; 32],
         started_at_ms: i64,
     ) -> Result<Self, CoreError> {
-        let state_path = state_path.into();
-        let stored = if state_path.exists() {
-            load_state(&state_path)?
-        } else {
-            StoredState::default()
+        let (store, stored) = Store::open(&database_path.into(), &evidence_key)
+            .map_err(|_| CoreError::StorageUnavailable)?;
+        let mut runtime = RuntimeState {
+            stored,
+            store,
+            pending: Vec::new(),
+            title_digests: HashSet::new(),
+            sessions: HashMap::new(),
+            recent_nonces: VecDeque::new(),
+            nonce_index: HashSet::new(),
+            failures: 0,
+            blocked_until_ms: None,
+            last_heartbeat: None,
+            pending_dispositions: HashMap::new(),
+            network_restricted: None,
+            network_enforcement_succeeded: None,
         };
+        runtime.rebuild_title_digests();
         Ok(Self {
-            state_path,
             started_at_ms,
             local_offset: system_local_offset_seconds,
             agent_token: Zeroizing::new(agent_token),
             evidence_vault: EvidenceVault::new(evidence_directory, evidence_key),
-            runtime: Mutex::new(RuntimeState {
-                stored,
-                sessions: HashMap::new(),
-                recent_nonces: VecDeque::new(),
-                nonce_index: HashSet::new(),
-                failures: 0,
-                blocked_until_ms: None,
-                last_heartbeat: None,
-                pending_dispositions: HashMap::new(),
-                network_restricted: None,
-                network_enforcement_succeeded: None,
-            }),
+            runtime: Mutex::new(runtime),
         })
     }
 
@@ -251,8 +196,7 @@ impl ServiceCore {
                     "network_schedule_ended"
                 };
                 audit(&mut runtime, now_ms, kind, "success");
-                self.persist(&runtime.stored)
-                    .map_err(|_| CoreError::StorageUnavailable)?;
+                persist(&mut runtime).map_err(|_| CoreError::StorageUnavailable)?;
             }
         }
         Ok(NetworkEnforcement {
@@ -283,8 +227,7 @@ impl ServiceCore {
                 "network_enforcement",
                 if succeeded { "success" } else { "failure" },
             );
-            self.persist(&runtime.stored)
-                .map_err(|_| CoreError::StorageUnavailable)?;
+            persist(&mut runtime).map_err(|_| CoreError::StorageUnavailable)?;
             runtime.network_enforcement_succeeded = Some(succeeded);
         }
         Ok(())
@@ -300,7 +243,7 @@ impl ServiceCore {
             .network_restore
             .is_some_and(|restore| restore.until_ms <= now_ms)
         {
-            runtime.stored.network_restore = None;
+            runtime.set_network_restore(None);
         }
         let protection_enabled = runtime
             .stored
@@ -373,7 +316,7 @@ impl ServiceCore {
             .lock()
             .map_err(|_| ServiceErrorCode::Internal)?;
         record_disposition(&mut runtime, report, now_ms)?;
-        self.persist(&runtime.stored)
+        persist(&mut runtime)
     }
 
     fn dispatch(
@@ -403,15 +346,15 @@ impl ServiceCore {
                     .hash_password(password.as_bytes(), &salt)
                     .map_err(|_| ServiceErrorCode::Internal)?
                     .to_string();
-                runtime.stored.password_hash = Some(hash);
+                runtime.set_password_hash(hash);
                 audit(runtime, now_ms, "administrator_enrolled", "success");
-                self.persist(&runtime.stored)?;
+                persist(runtime)?;
                 Ok(new_session(runtime, now_ms))
             }
             ServiceRequest::Authenticate { password } => {
                 self.authenticate(runtime, password, now_ms)?;
                 audit(runtime, now_ms, "administrator_authenticated", "success");
-                self.persist(&runtime.stored)?;
+                persist(runtime)?;
                 Ok(new_session(runtime, now_ms))
             }
             ServiceRequest::ChangePassword {
@@ -430,9 +373,9 @@ impl ServiceCore {
                     .hash_password(new_password.as_bytes(), &salt)
                     .map_err(|_| ServiceErrorCode::Internal)?
                     .to_string();
-                runtime.stored.password_hash = Some(hash);
+                runtime.set_password_hash(hash);
                 audit(runtime, now_ms, "administrator_password_changed", "success");
-                self.persist(&runtime.stored)?;
+                persist(runtime)?;
                 Ok(ServiceResult::Acknowledged)
             }
             ServiceRequest::LockSession { session_token } => {
@@ -460,7 +403,7 @@ impl ServiceCore {
                         .map(|heartbeat| heartbeat.monitors.clone())
                         .unwrap_or_default(),
                     evidence_count: runtime.stored.evidence.len() as u64,
-                    audit_count: runtime.stored.audit.len() as u64,
+                    audit_count: runtime.stored.audit_count,
                     network: self.evaluate_network(runtime, now_ms).0,
                 }))
             }
@@ -487,10 +430,9 @@ impl ServiceCore {
                     .map_err(|_| ServiceErrorCode::InvalidRequest)?;
                 RepeatOffenderRule::from_value(&policy)
                     .map_err(|_| ServiceErrorCode::InvalidRequest)?;
-                runtime.stored.policy_revision = runtime.stored.policy_revision.saturating_add(1);
-                runtime.stored.policy = policy;
+                runtime.set_policy(policy);
                 audit(runtime, now_ms, "policy_updated", "success");
-                self.persist(&runtime.stored)?;
+                persist(runtime)?;
                 Ok(ServiceResult::PolicySaved {
                     revision: runtime.stored.policy_revision,
                 })
@@ -616,9 +558,8 @@ impl ServiceCore {
                     && !context_policy.allows_host(observation.browser_host.as_deref())
                     && application_policy.effect_for(&observation.source.executable_name)
                         != ApplicationEffect::Allow
-                    && matches_remembered_title(
-                        &runtime.stored.remembered_titles,
-                        &normalize_executable(&observation.source.executable_name),
+                    && runtime.matches_remembered_title(
+                        &observation.source.executable_name,
                         &observation.window_title,
                     )
                 {
@@ -694,7 +635,7 @@ impl ServiceCore {
                 self.evidence_vault
                     .store(&evidence.evidence_id, &mut plaintext)
                     .map_err(|_| ServiceErrorCode::StorageUnavailable)?;
-                runtime.stored.evidence.push(StoredEvidence {
+                runtime.insert_evidence(StoredEvidence {
                     id: evidence.evidence_id.clone(),
                     captured_at_ms: evidence.captured_at_ms,
                     monitor_name: evidence.monitor_name.clone(),
@@ -704,7 +645,7 @@ impl ServiceCore {
                     media_type: evidence.media_type.clone(),
                 });
                 audit(runtime, now_ms, "evidence_stored", "success");
-                self.persist(&runtime.stored)?;
+                persist(runtime)?;
                 Ok(ServiceResult::Acknowledged)
             }
             ServiceRequest::ReportDisposition {
@@ -713,7 +654,7 @@ impl ServiceCore {
             } => {
                 self.authorize_agent(&agent_token)?;
                 record_disposition(runtime, &report, now_ms)?;
-                self.persist(&runtime.stored)?;
+                persist(runtime)?;
                 Ok(ServiceResult::DispositionCompleted { report })
             }
             ServiceRequest::ListEvidence { session_token } => {
@@ -771,15 +712,24 @@ impl ServiceCore {
                 self.evidence_vault
                     .delete(&evidence_id)
                     .map_err(|_| ServiceErrorCode::EvidenceUnavailable)?;
-                runtime.stored.evidence.remove(index);
+                runtime.remove_evidence(index);
                 audit(runtime, now_ms, "evidence_deleted", "success");
-                self.persist(&runtime.stored)?;
+                persist(runtime)?;
                 Ok(ServiceResult::Acknowledged)
             }
-            ServiceRequest::ListEnforcement { session_token } => {
+            ServiceRequest::ListEnforcement {
+                session_token,
+                title_offset,
+                title_limit,
+                title_query,
+            } => {
                 authorize(runtime, &session_token, now_ms)?;
                 Ok(ServiceResult::Enforcement(enforcement_summary(
-                    runtime, now_ms,
+                    runtime,
+                    now_ms,
+                    title_offset as usize,
+                    title_limit as usize,
+                    title_query.as_deref(),
                 )))
             }
             ServiceRequest::ForgetRememberedTitle {
@@ -793,12 +743,10 @@ impl ServiceCore {
                     .iter()
                     .position(|record| record.id == title_id)
                     .ok_or(ServiceErrorCode::InvalidRequest)?;
-                runtime.stored.remembered_titles.remove(index);
+                runtime.forget_title(index);
                 audit(runtime, now_ms, "remembered_title_forgotten", "success");
-                self.persist(&runtime.stored)?;
-                Ok(ServiceResult::Enforcement(enforcement_summary(
-                    runtime, now_ms,
-                )))
+                persist(runtime)?;
+                Ok(ServiceResult::Acknowledged)
             }
             ServiceRequest::RestoreNetwork {
                 session_token,
@@ -813,17 +761,17 @@ impl ServiceCore {
                 let until_ms = status
                     .restricted_until_ms
                     .ok_or(ServiceErrorCode::Internal)?;
-                runtime.stored.network_restore = Some(NetworkRestore {
+                runtime.set_network_restore(Some(NetworkRestore {
                     granted_at_ms: now_ms,
                     until_ms,
-                });
+                }));
                 audit(
                     runtime,
                     now_ms,
                     "network_restored_by_administrator",
                     "success",
                 );
-                self.persist(&runtime.stored)?;
+                persist(runtime)?;
                 Ok(ServiceResult::NetworkStatus(
                     self.evaluate_network(runtime, now_ms).0,
                 ))
@@ -831,7 +779,7 @@ impl ServiceCore {
             ServiceRequest::RequestShutdown { password } => {
                 self.authenticate(runtime, password, now_ms)?;
                 audit(runtime, now_ms, "service_shutdown_requested", "success");
-                self.persist(&runtime.stored)?;
+                persist(runtime)?;
                 Ok(ServiceResult::Acknowledged)
             }
         }
@@ -882,10 +830,6 @@ impl ServiceCore {
         } else {
             Err(ServiceErrorCode::AgentUnauthorized)
         }
-    }
-
-    fn persist(&self, state: &StoredState) -> Result<(), ServiceErrorCode> {
-        save_state(&self.state_path, state).map_err(|_| ServiceErrorCode::StorageUnavailable)
     }
 }
 
@@ -949,16 +893,115 @@ fn remember_nonce(runtime: &mut RuntimeState, nonce: String) -> bool {
     true
 }
 
+impl RuntimeState {
+    fn set_password_hash(&mut self, hash: String) {
+        self.stored.password_hash = Some(hash.clone());
+        self.pending.push(Change::PasswordHash(hash));
+    }
+
+    fn set_policy(&mut self, policy: Value) {
+        self.stored.policy_revision = self.stored.policy_revision.saturating_add(1);
+        self.stored.policy = policy.clone();
+        self.pending.push(Change::Policy {
+            revision: self.stored.policy_revision,
+            policy,
+        });
+    }
+
+    fn set_network_restore(&mut self, restore: Option<NetworkRestore>) {
+        self.stored.network_restore = restore;
+        self.pending.push(Change::NetworkRestore(restore));
+    }
+
+    fn insert_evidence(&mut self, item: StoredEvidence) {
+        self.pending.push(Change::InsertEvidence(item.clone()));
+        self.stored.evidence.push(item);
+    }
+
+    fn remove_evidence(&mut self, index: usize) {
+        let item = self.stored.evidence.remove(index);
+        self.pending.push(Change::DeleteEvidence(item.id));
+    }
+
+    /// Remembers `entry` and reports whether it is new; a known title only
+    /// has its timestamp refreshed, and the cap may evict the oldest title.
+    fn remember(&mut self, entry: RememberedTitle) -> bool {
+        let executable = entry.executable.clone();
+        let key = title_key(&entry.title);
+        let before: HashSet<String> = self
+            .stored
+            .remembered_titles
+            .iter()
+            .map(|record| record.id.clone())
+            .collect();
+        let added = remember_title(&mut self.stored.remembered_titles, entry);
+        let remaining: HashSet<&str> = self
+            .stored
+            .remembered_titles
+            .iter()
+            .map(|record| record.id.as_str())
+            .collect();
+        let evicted: Vec<String> = before
+            .into_iter()
+            .filter(|id| !remaining.contains(id.as_str()))
+            .collect();
+        self.pending
+            .extend(evicted.into_iter().map(Change::DeleteTitle));
+        if let Some(record) = self
+            .stored
+            .remembered_titles
+            .iter()
+            .find(|record| record.executable == executable && title_key(&record.title) == key)
+        {
+            self.pending.push(Change::UpsertTitle(record.clone()));
+        }
+        self.rebuild_title_digests();
+        added
+    }
+
+    fn forget_title(&mut self, index: usize) {
+        let record = self.stored.remembered_titles.remove(index);
+        self.pending.push(Change::DeleteTitle(record.id));
+        self.rebuild_title_digests();
+    }
+
+    fn rebuild_title_digests(&mut self) {
+        self.title_digests = self
+            .stored
+            .remembered_titles
+            .iter()
+            .filter_map(|record| title_digest(&record.executable, &record.title))
+            .collect();
+    }
+
+    fn matches_remembered_title(&self, executable_name: &str, title: &str) -> bool {
+        title_digest(&normalize_executable(executable_name), title)
+            .is_some_and(|digest| self.title_digests.contains(&digest))
+    }
+}
+
+/// Commits every queued change in one transaction. A failed commit keeps the
+/// queue so the next successful commit still writes it.
+fn persist(runtime: &mut RuntimeState) -> Result<(), ServiceErrorCode> {
+    runtime
+        .store
+        .apply(&runtime.pending)
+        .map_err(|_| ServiceErrorCode::StorageUnavailable)?;
+    runtime.pending.clear();
+    Ok(())
+}
+
 fn audit(runtime: &mut RuntimeState, occurred_at_ms: i64, kind: &str, outcome: &str) {
-    runtime.stored.audit.push(AuditRecord {
+    runtime.pending.push(Change::Audit(AuditRecord {
         occurred_at_ms,
         kind: kind.into(),
         outcome: outcome.into(),
-    });
-    if runtime.stored.audit.len() > MAX_AUDIT_ENTRIES {
-        let remove = runtime.stored.audit.len() - MAX_AUDIT_ENTRIES;
-        runtime.stored.audit.drain(..remove);
-    }
+    }));
+    runtime.stored.audit_count = runtime
+        .stored
+        .audit_count
+        .saturating_add(1)
+        .min(MAX_AUDIT_ENTRIES);
 }
 
 fn repeat_offender_banned(runtime: &RuntimeState, executable_name: &str, now_ms: i64) -> bool {
@@ -984,38 +1027,61 @@ fn agent_enforcement(runtime: &RuntimeState, now_ms: i64) -> AgentEnforcement {
         banned_executables: active_bans(&runtime.stored.repeat_offenders, now_ms)
             .map(|(executable, _)| executable.to_owned())
             .collect(),
-        remembered_titles: if remember_titles_enabled(policy) {
-            runtime
-                .stored
-                .remembered_titles
-                .iter()
-                .map(|record| RememberedTitleKey {
-                    executable: record.executable.clone(),
-                    title_key: title_key(&record.title),
-                })
-                .collect()
+        remembered_title_digests: if remember_titles_enabled(policy) {
+            let mut digests: Vec<_> = runtime.title_digests.iter().cloned().collect();
+            digests.sort_unstable();
+            digests
         } else {
             Vec::new()
         },
     }
 }
 
-fn enforcement_summary(runtime: &RuntimeState, now_ms: i64) -> EnforcementSummary {
-    let mut remembered_titles: Vec<_> = runtime
+/// One page of remembered titles, newest first, whose title, host, or
+/// executable contains `query` (compared like titles are matched).
+fn enforcement_summary(
+    runtime: &RuntimeState,
+    now_ms: i64,
+    offset: usize,
+    limit: usize,
+    query: Option<&str>,
+) -> EnforcementSummary {
+    let query = query.map(title_key).filter(|query| !query.is_empty());
+    let mut matching: Vec<&RememberedTitle> = runtime
         .stored
         .remembered_titles
         .iter()
-        .map(|record| RememberedTitleMetadata {
-            id: record.id.clone(),
-            executable: record.executable.clone(),
-            title: record.title.clone(),
-            browser_host: record.browser_host.clone(),
-            remembered_at_ms: record.remembered_at_ms,
+        .filter(|record| {
+            query.as_ref().is_none_or(|query| {
+                title_key(&record.title).contains(query.as_str())
+                    || record.executable.contains(query.as_str())
+                    || record
+                        .browser_host
+                        .as_deref()
+                        .is_some_and(|host| title_key(host).contains(query.as_str()))
+            })
         })
         .collect();
-    remembered_titles.sort_by_key(|record| std::cmp::Reverse(record.remembered_at_ms));
+    matching.sort_by(|left, right| {
+        right
+            .remembered_at_ms
+            .cmp(&left.remembered_at_ms)
+            .then_with(|| left.id.cmp(&right.id))
+    });
     EnforcementSummary {
-        remembered_titles,
+        remembered_title_total: matching.len() as u64,
+        remembered_titles: matching
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .map(|record| RememberedTitleMetadata {
+                id: record.id.clone(),
+                executable: record.executable.clone(),
+                title: record.title.clone(),
+                browser_host: record.browser_host.clone(),
+                remembered_at_ms: record.remembered_at_ms,
+            })
+            .collect(),
         active_bans: active_bans(&runtime.stored.repeat_offenders, now_ms)
             .map(|(executable, banned_until_ms)| ActiveBan {
                 executable: executable.to_owned(),
@@ -1085,55 +1151,27 @@ fn record_disposition(
                 browser_host: candidate.browser_host,
                 remembered_at_ms: now_ms,
             };
-            if remember_title(&mut runtime.stored.remembered_titles, entry) {
+            if runtime.remember(entry) {
                 audit(runtime, now_ms, "window_title_remembered", "success");
             }
         }
         let rule = RepeatOffenderRule::from_value(&runtime.stored.policy).unwrap_or_default();
-        if record_closure(
+        let banned = record_closure(
             &mut runtime.stored.repeat_offenders,
             rule,
             &executable,
             report.process_id,
             report.started_at_ms,
             now_ms,
-        ) {
+        );
+        runtime.pending.push(Change::RepeatOffenders(
+            runtime.stored.repeat_offenders.clone(),
+        ));
+        if banned {
             audit(runtime, now_ms, "repeat_offender_banned", &executable);
         }
     }
     Ok(())
-}
-
-fn load_state(path: &Path) -> Result<StoredState, CoreError> {
-    let metadata = fs::metadata(path).map_err(|_| CoreError::StorageUnavailable)?;
-    if metadata.len() > MAX_STATE_BYTES as u64 {
-        return Err(CoreError::StorageUnavailable);
-    }
-    let bytes = fs::read(path).map_err(|_| CoreError::StorageUnavailable)?;
-    let state: StoredState =
-        serde_json::from_slice(&bytes).map_err(|_| CoreError::StorageUnavailable)?;
-    if state.schema_version != STATE_SCHEMA {
-        return Err(CoreError::StorageUnavailable);
-    }
-    Ok(state)
-}
-
-fn save_state(path: &Path, state: &StoredState) -> Result<(), CoreError> {
-    let encoded = serde_json::to_vec(state).map_err(|_| CoreError::StorageUnavailable)?;
-    if encoded.len() > MAX_STATE_BYTES {
-        return Err(CoreError::StorageUnavailable);
-    }
-    let parent = path.parent().ok_or(CoreError::StorageUnavailable)?;
-    fs::create_dir_all(parent).map_err(|_| CoreError::StorageUnavailable)?;
-    let mut file = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(path)
-        .map_err(|_| CoreError::StorageUnavailable)?;
-    file.write_all(&encoded)
-        .map_err(|_| CoreError::StorageUnavailable)?;
-    file.sync_all().map_err(|_| CoreError::StorageUnavailable)
 }
 
 fn failure(request_id: String, code: ServiceErrorCode) -> ResponseEnvelope {
@@ -1142,11 +1180,14 @@ fn failure(request_id: String, code: ServiceErrorCode) -> ResponseEnvelope {
 
 #[cfg(test)]
 mod tests {
+    use std::{fs, path::Path};
+
     use super::*;
     use karma_ipc::{
         AgentContextObservation, AgentHeartbeat, AgentObservation, ClientKind, DispositionOutcome,
         DispositionReport, EvidenceSubmission, ProcessIdentity, ServiceRequest,
     };
+    use serde_json::json;
 
     #[test]
     fn sensitivity_precedes_legacy_immediate_threshold() {
@@ -1170,9 +1211,26 @@ mod tests {
         response.result.expect("request should succeed")
     }
 
+    /// What the database holds, read through a second connection.
+    struct DiskState {
+        audit: Vec<AuditRecord>,
+        repeat_offenders: Vec<karma_policy::StrikeRecord>,
+        remembered_titles: Vec<RememberedTitle>,
+    }
+
+    fn disk_state(directory: &Path) -> DiskState {
+        let path = directory.join("service.db");
+        let (_, state) = Store::open(&path, &[7; 32]).unwrap();
+        DiskState {
+            audit: store::audit_records(&path),
+            repeat_offenders: state.repeat_offenders,
+            remembered_titles: state.remembered_titles,
+        }
+    }
+
     fn open_core(directory: &Path, started_at_ms: i64) -> ServiceCore {
         ServiceCore::open(
-            directory.join("service.json"),
+            directory.join("service.db"),
             "agent-secret".into(),
             directory.join("evidence"),
             [7; 32],
@@ -1190,7 +1248,7 @@ mod tests {
         core.record_network_enforcement(false, 3).unwrap();
         core.record_network_enforcement(false, 4).unwrap();
         core.record_network_enforcement(true, 5).unwrap();
-        let stored = load_state(&directory.path().join("service.json")).unwrap();
+        let stored = disk_state(directory.path());
         let events = stored
             .audit
             .iter()
@@ -1386,9 +1444,7 @@ mod tests {
             submit_context_at(&reopened, "relaunch-nonce", relaunch, now),
             ServiceResult::DispositionRequired { event_id, .. } if event_id == "relaunch"
         ));
-        let state: StoredState =
-            serde_json::from_slice(&fs::read(directory.path().join("service.json")).unwrap())
-                .unwrap();
+        let state = disk_state(directory.path());
         assert_eq!(
             state
                 .audit
@@ -1500,6 +1556,9 @@ mod tests {
                 nonce,
                 ServiceRequest::ListEnforcement {
                     session_token: session.into(),
+                    title_offset: 0,
+                    title_limit: 50,
+                    title_query: None,
                 },
             ),
             now_ms,
@@ -1581,15 +1640,13 @@ mod tests {
         configure_policy(&core, remembered_title_policy());
         close_by_image(&core, "image-1", Some(PORN_TITLE), 42, 1_000);
 
-        // The remembered title is published to the agent as a matching key.
+        // The remembered title reaches the agent only as a digest.
         let enforcement = agent_enforcement_at(&core, "agent-policy-1", 1_100);
         assert_eq!(
-            enforcement.remembered_titles,
-            vec![RememberedTitleKey {
-                executable: r"c:\browser\chrome.exe".into(),
-                title_key: "hot video 123 - google chrome".into(),
-            }]
+            enforcement.remembered_title_digests,
+            vec![title_digest(r"c:\browser\chrome.exe", PORN_TITLE).unwrap()]
         );
+        assert_eq!(disk_state(directory.path()).remembered_titles.len(), 1);
 
         // The same title in a relaunched browser closes it without any image hit.
         let relaunch =
@@ -1611,9 +1668,7 @@ mod tests {
             submit_context_at(&core, "allowed-nonce", allowed, 2_201),
             ServiceResult::Acknowledged
         ));
-        let state: StoredState =
-            serde_json::from_slice(&fs::read(directory.path().join("service.json")).unwrap())
-                .unwrap();
+        let state = disk_state(directory.path());
         assert!(
             state
                 .audit
@@ -1663,9 +1718,15 @@ mod tests {
             ),
             5_200,
         )) {
-            ServiceResult::Enforcement(summary) => assert!(summary.remembered_titles.is_empty()),
+            ServiceResult::Acknowledged => {}
             _ => panic!("unexpected response"),
         }
+        assert!(
+            list_enforcement(&core, &session, "list-2", 5_250)
+                .remembered_titles
+                .is_empty()
+        );
+        assert!(disk_state(directory.path()).remembered_titles.is_empty());
         let again = context_observation_at("again", 5_300, PORN_TITLE, None, 46);
         assert!(matches!(
             submit_context_at(&core, "again-nonce", again, 5_301),
@@ -1700,7 +1761,7 @@ mod tests {
         close_by_image(&core, "disabled", Some(PORN_TITLE), 42, 1_000);
         assert!(
             agent_enforcement_at(&core, "agent-policy-1", 1_100)
-                .remembered_titles
+                .remembered_title_digests
                 .is_empty()
         );
 
@@ -1747,7 +1808,7 @@ mod tests {
         .unwrap();
         assert!(
             agent_enforcement_at(&core, "agent-policy-2", 1_300)
-                .remembered_titles
+                .remembered_title_digests
                 .is_empty()
         );
     }
@@ -1843,6 +1904,158 @@ mod tests {
             .code,
             ServiceErrorCode::InvalidRequest
         );
+    }
+
+    fn list_titles(
+        core: &ServiceCore,
+        session: &str,
+        nonce: &str,
+        offset: u32,
+        limit: u32,
+        query: Option<&str>,
+    ) -> EnforcementSummary {
+        match success(core.handle(
+            request(
+                &format!("list-{nonce}"),
+                nonce,
+                ServiceRequest::ListEnforcement {
+                    session_token: session.into(),
+                    title_offset: offset,
+                    title_limit: limit,
+                    title_query: query.map(str::to_owned),
+                },
+            ),
+            90_000,
+        )) {
+            ServiceResult::Enforcement(summary) => summary,
+            _ => panic!("unexpected response"),
+        }
+    }
+
+    #[test]
+    fn remembered_titles_are_paged_newest_first_and_searchable() {
+        let directory = tempfile::tempdir().unwrap();
+        let core = open_core(directory.path(), 0);
+        configure_policy(&core, remembered_title_policy());
+        for index in 0..5_u32 {
+            let title = format!("Clip {index} - Google Chrome");
+            close_by_image(
+                &core,
+                &format!("page-{index}"),
+                Some(&title),
+                60 + index,
+                10_000 + i64::from(index) * 1_000,
+            );
+        }
+        let session = authenticate_ui(&core, "auth-pages", 80_000);
+        let first = list_titles(&core, &session, "page-a", 0, 2, None);
+        assert_eq!(first.remembered_title_total, 5);
+        assert_eq!(
+            first
+                .remembered_titles
+                .iter()
+                .map(|item| item.title.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Clip 4 - Google Chrome", "Clip 3 - Google Chrome"]
+        );
+        let last = list_titles(&core, &session, "page-b", 4, 2, None);
+        assert_eq!(last.remembered_titles.len(), 1);
+        assert_eq!(last.remembered_titles[0].title, "Clip 0 - Google Chrome");
+        let found = list_titles(&core, &session, "page-c", 0, 50, Some("CLIP 2"));
+        assert_eq!(found.remembered_title_total, 1);
+        assert_eq!(found.remembered_titles[0].title, "Clip 2 - Google Chrome");
+        let by_host = list_titles(&core, &session, "page-d", 0, 50, Some("video.EXAMPLE"));
+        assert_eq!(by_host.remembered_title_total, 5);
+        assert_eq!(
+            list_titles(&core, &session, "page-e", 0, 50, Some("nothing")).remembered_title_total,
+            0
+        );
+    }
+
+    #[test]
+    fn database_never_holds_remembered_titles_in_plaintext() {
+        let directory = tempfile::tempdir().unwrap();
+        let core = open_core(directory.path(), 0);
+        configure_policy(&core, remembered_title_policy());
+        close_by_image(&core, "sealed", Some(PORN_TITLE), 42, 1_000);
+        drop(core);
+        let bytes = fs::read(directory.path().join("service.db")).unwrap();
+        for secret in [PORN_TITLE.as_bytes(), b"video.example"] {
+            assert!(!bytes.windows(secret.len()).any(|window| window == secret));
+        }
+        let reopened = open_core(directory.path(), 2_000);
+        let relaunch = context_observation_at("relaunch", 2_100, PORN_TITLE, None, 43);
+        assert!(matches!(
+            submit_context_at(&reopened, "relaunch-nonce", relaunch, 2_101),
+            ServiceResult::DispositionRequired { .. }
+        ));
+    }
+
+    #[test]
+    fn legacy_json_state_is_migrated_into_the_database() {
+        let directory = tempfile::tempdir().unwrap();
+        let salt = SaltString::generate(&mut PasswordOsRng);
+        let hash = Argon2::default()
+            .hash_password(b"long-test-password", &salt)
+            .unwrap()
+            .to_string();
+        fs::write(
+            directory.path().join("service.json"),
+            serde_json::to_vec(&json!({
+                "schema_version": 1,
+                "password_hash": hash,
+                "policy_revision": 3,
+                "policy": remembered_title_policy(),
+                "audit": [{"occurred_at_ms": 1, "kind": "policy_updated", "outcome": "success"}],
+                "evidence": [],
+                "repeat_offenders": [{
+                    "executable": "d:\\games\\game.exe",
+                    "closed_at_ms": [],
+                    "banned_until_ms": 60_000,
+                    "last_process_id": 9,
+                    "last_started_at_ms": 1
+                }],
+                "network_restore": null,
+                "remembered_titles": [{
+                    "id": "title-legacy",
+                    "executable": "c:\\browser\\chrome.exe",
+                    "title": PORN_TITLE,
+                    "browser_host": null,
+                    "remembered_at_ms": 5
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let core = open_core(directory.path(), 10_000);
+        let enforcement = agent_enforcement_at(&core, "migrated-policy", 10_000);
+        assert_eq!(
+            enforcement.banned_executables,
+            vec![r"d:\games\game.exe".to_owned()]
+        );
+        assert_eq!(
+            enforcement.remembered_title_digests,
+            vec![title_digest(r"c:\browser\chrome.exe", PORN_TITLE).unwrap()]
+        );
+        let session = authenticate_ui(&core, "migrated-auth", 10_001);
+        match success(core.handle(
+            request(
+                "migrated-status",
+                "migrated-status-nonce",
+                ServiceRequest::GetStatus {
+                    session_token: session,
+                },
+            ),
+            10_002,
+        )) {
+            ServiceResult::Status(status) => {
+                assert_eq!(status.policy_revision, 3);
+                assert_eq!(status.audit_count, 2);
+            }
+            _ => panic!("unexpected response"),
+        }
+        assert!(!directory.path().join("service.json").exists());
+        assert!(directory.path().join("service.json.migrated").exists());
     }
 
     fn submit_context(
@@ -2102,9 +2315,7 @@ mod tests {
             )),
             ServiceResult::Session { .. }
         ));
-        let state: StoredState =
-            serde_json::from_slice(&fs::read(directory.path().join("service.json")).unwrap())
-                .unwrap();
+        let state = disk_state(directory.path());
         assert!(
             state
                 .audit
@@ -2361,9 +2572,7 @@ mod tests {
             response.result.unwrap_err().code,
             ServiceErrorCode::AuthenticationFailed
         );
-        let state: StoredState =
-            serde_json::from_slice(&fs::read(directory.path().join("service.json")).unwrap())
-                .unwrap();
+        let state = disk_state(directory.path());
         assert!(
             state
                 .audit
@@ -2857,9 +3066,7 @@ mod tests {
                 .status
                 .restricted
         );
-        let state: StoredState =
-            serde_json::from_slice(&fs::read(directory.path().join("service.json")).unwrap())
-                .unwrap();
+        let state = disk_state(directory.path());
         let kinds: Vec<&str> = state
             .audit
             .iter()

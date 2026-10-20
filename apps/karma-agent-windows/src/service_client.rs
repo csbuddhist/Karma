@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     env,
     fmt::Write as _,
     hash::{DefaultHasher, Hash, Hasher},
@@ -21,7 +22,7 @@ use karma_ipc::{
     RequestEnvelope, ServiceRequest, ServiceResult,
 };
 use karma_policy::{
-    ApplicationEffect, ApplicationPolicy, ContextPolicy, normalize_executable, title_key,
+    ApplicationEffect, ApplicationPolicy, ContextPolicy, normalize_executable, title_digest,
 };
 use karma_windows::{
     AttributionResult, FrameWorkerReport, FrameWorkerStatus, MonitorSnapshot, Rect,
@@ -73,7 +74,23 @@ pub struct AgentServiceClient {
     user_sid: String,
     request_sequence: AtomicU64,
     /// Bans and remembered titles from the latest policy fetch.
-    enforcement: RwLock<AgentEnforcement>,
+    enforcement: RwLock<Arc<LearnedEnforcement>>,
+}
+
+/// `AgentEnforcement` indexed for the foreground poll.
+#[derive(Debug, Default)]
+struct LearnedEnforcement {
+    banned_executables: HashSet<String>,
+    remembered_title_digests: HashSet<String>,
+}
+
+impl From<AgentEnforcement> for LearnedEnforcement {
+    fn from(enforcement: AgentEnforcement) -> Self {
+        Self {
+            banned_executables: enforcement.banned_executables.into_iter().collect(),
+            remembered_title_digests: enforcement.remembered_title_digests.into_iter().collect(),
+        }
+    }
 }
 
 pub struct PolicySnapshot {
@@ -426,7 +443,7 @@ impl AgentServiceClient {
             instance_id: random_opaque(),
             user_sid: current_user_sid()?,
             request_sequence: AtomicU64::new(1),
-            enforcement: RwLock::new(AgentEnforcement::default()),
+            enforcement: RwLock::new(Arc::default()),
         }))
     }
 
@@ -464,7 +481,8 @@ impl AgentServiceClient {
                 *self
                     .enforcement
                     .write()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = enforcement;
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                    Arc::new(enforcement.into());
                 Ok(PolicySnapshot {
                     revision,
                     protection_enabled: policy
@@ -478,11 +496,13 @@ impl AgentServiceClient {
         }
     }
 
-    fn enforcement(&self) -> AgentEnforcement {
-        self.enforcement
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
+    fn enforcement(&self) -> Arc<LearnedEnforcement> {
+        Arc::clone(
+            &self
+                .enforcement
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )
     }
 
     fn submit_observation(&self, observation: AgentObservation) -> Result<(), AgentServiceError> {
@@ -659,12 +679,13 @@ fn foreground_context_observation(agent_instance_id: &str) -> Option<AgentContex
 /// Mirrors the service: banned executables are closed unconditionally, and
 /// remembered titles yield to allowlisted hosts and allowed applications.
 fn learned_enforcement_applies(
-    enforcement: &AgentEnforcement,
+    enforcement: &LearnedEnforcement,
     context_policy: &ContextPolicy,
     effect: ApplicationEffect,
     observation: &AgentContextObservation,
 ) -> bool {
-    if enforcement.banned_executables.is_empty() && enforcement.remembered_titles.is_empty() {
+    if enforcement.banned_executables.is_empty() && enforcement.remembered_title_digests.is_empty()
+    {
         return false;
     }
     let executable = normalize_executable(&observation.source.executable_name);
@@ -676,12 +697,8 @@ fn learned_enforcement_applies(
     {
         return false;
     }
-    let key = title_key(&observation.window_title);
-    !key.is_empty()
-        && enforcement
-            .remembered_titles
-            .iter()
-            .any(|remembered| remembered.executable == executable && remembered.title_key == key)
+    title_digest(&executable, &observation.window_title)
+        .is_some_and(|digest| enforcement.remembered_title_digests.contains(&digest))
 }
 
 /// The title to report with an image observation, or `None` when it would
@@ -837,7 +854,6 @@ fn unix_time_ms() -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use karma_ipc::RememberedTitleKey;
     use serde_json::json;
 
     use super::*;
@@ -858,14 +874,14 @@ mod tests {
         }
     }
 
-    fn enforcement() -> AgentEnforcement {
+    fn enforcement() -> LearnedEnforcement {
         AgentEnforcement {
             banned_executables: vec![r"d:\games\game.exe".into()],
-            remembered_titles: vec![RememberedTitleKey {
-                executable: r"c:\browser\chrome.exe".into(),
-                title_key: "hot video - google chrome".into(),
-            }],
+            remembered_title_digests: vec![
+                title_digest(r"c:\browser\chrome.exe", "Hot Video - Google Chrome").unwrap(),
+            ],
         }
+        .into()
     }
 
     #[test]

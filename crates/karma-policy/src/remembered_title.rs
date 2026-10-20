@@ -1,10 +1,16 @@
+use std::fmt::Write as _;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use unicode_normalization::UnicodeNormalization;
 
-/// Upper bound on remembered titles so persisted state and the agent policy
-/// stay small; the oldest entries are forgotten first.
-pub const MAX_REMEMBERED_TITLES: usize = 200;
+/// Upper bound on remembered titles so the agent's digest list stays well
+/// inside one IPC frame; the oldest entries are forgotten first.
+pub const MAX_REMEMBERED_TITLES: usize = 5000;
+/// Bytes of SHA-256 kept in a title digest; 128 bits make collisions among
+/// a few thousand titles negligible.
+const TITLE_DIGEST_BYTES: usize = 16;
 /// Titles shorter than this after normalization are too generic to remember.
 const MIN_TITLE_KEY_CHARS: usize = 2;
 
@@ -80,17 +86,27 @@ pub fn remember_title(records: &mut Vec<RememberedTitle>, entry: RememberedTitle
     true
 }
 
-/// Whether `title` shown by `executable` (normalized) was remembered.
-pub fn matches_remembered_title(
-    records: &[RememberedTitle],
-    executable: &str,
-    title: &str,
-) -> bool {
+/// Opaque matching identity of `title` shown by `executable` (normalized):
+/// lowercase hex of a truncated SHA-256 over the executable and title key.
+/// The agent matches foreground windows against digests, so remembered
+/// titles never leave the service in plaintext. `None` for an empty title.
+pub fn title_digest(executable: &str, title: &str) -> Option<String> {
     let key = title_key(title);
-    !key.is_empty()
-        && records
-            .iter()
-            .any(|record| record.executable == executable && title_key(&record.title) == key)
+    if key.is_empty() {
+        return None;
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(executable.as_bytes());
+    hasher.update([0]);
+    hasher.update(key.as_bytes());
+    let digest = hasher.finalize();
+    Some(digest[..TITLE_DIGEST_BYTES].iter().fold(
+        String::with_capacity(TITLE_DIGEST_BYTES * 2),
+        |mut hex, byte| {
+            let _ = write!(hex, "{byte:02x}");
+            hex
+        },
+    ))
 }
 
 #[cfg(test)]
@@ -98,8 +114,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        MAX_REMEMBERED_TITLES, RememberedTitle, matches_remembered_title, remember_title,
-        remember_titles_enabled, rememberable_title_key, title_key,
+        MAX_REMEMBERED_TITLES, RememberedTitle, remember_title, remember_titles_enabled,
+        rememberable_title_key, title_digest, title_key,
     };
 
     const CHROME: &str = r"c:\program files\google\chrome\application\chrome.exe";
@@ -136,28 +152,23 @@ mod tests {
     }
 
     #[test]
-    fn remembered_title_matches_only_the_same_executable_and_title() {
-        let mut records = Vec::new();
-        assert!(remember_title(
-            &mut records,
-            entry("t1", "Hot Video - Google Chrome", 1)
-        ));
-        assert!(matches_remembered_title(
-            &records,
-            CHROME,
-            "hot  video - GOOGLE chrome"
-        ));
-        assert!(!matches_remembered_title(
-            &records,
-            CHROME,
-            "Homework - Google Chrome"
-        ));
-        assert!(!matches_remembered_title(
-            &records,
-            r"c:\edge\msedge.exe",
-            "Hot Video - Google Chrome"
-        ));
-        assert!(!matches_remembered_title(&records, CHROME, ""));
+    fn title_digest_identifies_only_the_same_executable_and_title() {
+        let digest = title_digest(CHROME, "Hot Video - Google Chrome").unwrap();
+        assert_eq!(digest.len(), 32);
+        assert!(digest.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert_eq!(
+            title_digest(CHROME, "hot  video - GOOGLE chrome").as_deref(),
+            Some(digest.as_str())
+        );
+        assert_ne!(
+            title_digest(CHROME, "Homework - Google Chrome").as_deref(),
+            Some(digest.as_str())
+        );
+        assert_ne!(
+            title_digest(r"c:\edge\msedge.exe", "Hot Video - Google Chrome").as_deref(),
+            Some(digest.as_str())
+        );
+        assert_eq!(title_digest(CHROME, "  "), None);
     }
 
     #[test]
@@ -169,17 +180,24 @@ mod tests {
         assert_eq!(records[0].id, "t1");
         assert_eq!(records[0].remembered_at_ms, 5);
 
-        let mut crowded = Vec::new();
-        for index in 0..=MAX_REMEMBERED_TITLES {
-            remember_title(
-                &mut crowded,
+        let mut crowded: Vec<_> = (0..MAX_REMEMBERED_TITLES)
+            .map(|index| {
                 entry(
                     &format!("t{index}"),
                     &format!("title {index}"),
                     index as i64,
-                ),
-            );
-        }
+                )
+            })
+            .collect();
+        let newest = MAX_REMEMBERED_TITLES;
+        assert!(remember_title(
+            &mut crowded,
+            entry(
+                &format!("t{newest}"),
+                &format!("title {newest}"),
+                newest as i64
+            )
+        ));
         assert_eq!(crowded.len(), MAX_REMEMBERED_TITLES);
         assert!(!crowded.iter().any(|record| record.id == "t0"));
         assert!(

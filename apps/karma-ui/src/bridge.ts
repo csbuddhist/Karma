@@ -1,9 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { disable, enable } from "@tauri-apps/plugin-autostart";
-import type { ConsoleState, LearnedEnforcement, NetworkStatus, NetworkTarget, ScheduleBlock, ScheduleRule } from "./types";
+import type { ConsoleState, NetworkStatus, NetworkTarget, RememberedTitle, RememberedTitlePage, ScheduleBlock, ScheduleRule } from "./types";
 
 const browserFallbackKey = "karma-ui-browser-state";
 const browserPasswordKey = "karma-ui-browser-password";
+const browserTitlesKey = "karma-ui-browser-titles";
 
 export const defaultConsoleState: ConsoleState = {
   protectionEnabled: true,
@@ -32,7 +33,7 @@ export const defaultConsoleState: ConsoleState = {
   evidence: [],
   audit: [],
   network: { restricted: false, activeRuleIds: [], restrictedUntilMs: null, restoredUntilMs: null },
-  rememberedTitles: [],
+  rememberedTitleTotal: 0,
   activeBans: [],
 };
 
@@ -49,7 +50,7 @@ export function isTauriConsole(): boolean {
   return isTauri();
 }
 
-const runtimeStateKeys = ["serviceConnected", "agentConnected", "monitors", "evidence", "audit", "network", "rememberedTitles", "activeBans"];
+const runtimeStateKeys = ["serviceConnected", "agentConnected", "monitors", "evidence", "audit", "network", "rememberedTitleTotal", "activeBans"];
 
 function stripRuntimeState(value: Record<string, unknown>): Record<string, unknown> {
   const stripped = { ...value };
@@ -182,7 +183,7 @@ function hydrateConsoleState(value: Partial<ConsoleState>): ConsoleState {
     websites: value.websites ?? [],
     schedules: (value.schedules ?? []).map(normalizeSchedule),
     network: { ...defaultConsoleState.network, ...(value.network ?? {}) },
-    rememberedTitles: value.rememberedTitles ?? [],
+    rememberedTitleTotal: isTauri() ? value.rememberedTitleTotal ?? 0 : browserTitles().length,
     activeBans: value.activeBans ?? [],
   };
 }
@@ -237,9 +238,31 @@ export async function restoreNetwork(sessionToken: string, password: string): Pr
   return defaultConsoleState.network;
 }
 
-export async function forgetRememberedTitle(sessionToken: string, titleId: string, current: LearnedEnforcement): Promise<LearnedEnforcement> {
+/** Development-mode titles seeded into localStorage; the Service owns real ones. */
+function browserTitles(): RememberedTitle[] {
+  try {
+    const stored = JSON.parse(localStorage.getItem(browserTitlesKey) ?? "[]");
+    return Array.isArray(stored) ? (stored as RememberedTitle[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+export const rememberedTitlePageSize = 20;
+
+export async function listRememberedTitles(sessionToken: string, offset: number, query: string): Promise<RememberedTitlePage> {
+  const trimmed = query.trim();
+  if (isTauri()) return invoke("list_remembered_titles", { sessionToken, offset, limit: rememberedTitlePageSize, query: trimmed || null });
+  const needle = trimmed.toLowerCase();
+  const matching = browserTitles()
+    .filter((item) => !needle || [item.title, item.browserHost ?? "", item.executable].some((value) => value.toLowerCase().includes(needle)))
+    .sort((left, right) => right.rememberedAtMs - left.rememberedAtMs);
+  return { items: matching.slice(offset, offset + rememberedTitlePageSize), total: matching.length };
+}
+
+export async function forgetRememberedTitle(sessionToken: string, titleId: string): Promise<void> {
   if (isTauri()) return invoke("forget_remembered_title", { sessionToken, titleId });
-  return { ...current, rememberedTitles: current.rememberedTitles.filter((item) => item.id !== titleId) };
+  localStorage.setItem(browserTitlesKey, JSON.stringify(browserTitles().filter((item) => item.id !== titleId)));
 }
 
 export async function revealEvidence(sessionToken: string, evidenceId: string, password: string): Promise<string> {

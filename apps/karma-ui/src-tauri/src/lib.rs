@@ -36,7 +36,7 @@ const RUNTIME_STATE_KEYS: [&str; 8] = [
     "evidence",
     "audit",
     "network",
-    "rememberedTitles",
+    "rememberedTitleTotal",
     "activeBans",
 ];
 
@@ -110,7 +110,7 @@ mod tests {
             "monitors": [{"id": "m1"}],
             "evidence": [],
             "audit": [],
-            "rememberedTitles": [{"id": "t1", "title": "private"}],
+            "rememberedTitleTotal": 3,
             "activeBans": []
         }));
 
@@ -122,7 +122,7 @@ mod tests {
         assert_eq!(policy["keywords"].as_array().unwrap().len(), 1);
         assert!(policy.get("serviceConnected").is_none());
         assert!(policy.get("monitors").is_none());
-        assert!(policy.get("rememberedTitles").is_none());
+        assert!(policy.get("rememberedTitleTotal").is_none());
     }
 
     #[test]
@@ -356,7 +356,7 @@ mod local_backend {
             "schedules": [],
             "evidence": [],
             "audit": [],
-            "rememberedTitles": [],
+            "rememberedTitleTotal": 0,
             "activeBans": []
         })
     }
@@ -665,14 +665,27 @@ mod local_backend {
 
     /// Development builds never close windows, so nothing is remembered.
     #[tauri::command]
+    fn list_remembered_titles(
+        runtime: State<'_, ConsoleRuntime>,
+        session_token: String,
+        offset: u32,
+        limit: u32,
+        query: Option<String>,
+    ) -> Result<Value, ConsoleError> {
+        authorize(&runtime, &session_token)?;
+        let _ = (offset, limit, query);
+        Ok(json!({"items": [], "total": 0}))
+    }
+
+    #[tauri::command]
     fn forget_remembered_title(
         runtime: State<'_, ConsoleRuntime>,
         session_token: String,
         title_id: String,
-    ) -> Result<Value, ConsoleError> {
+    ) -> Result<(), ConsoleError> {
         authorize(&runtime, &session_token)?;
         let _ = title_id;
-        Ok(json!({"rememberedTitles": [], "activeBans": []}))
+        Ok(())
     }
 
     #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -689,6 +702,7 @@ mod local_backend {
                 save_console,
                 reveal_evidence,
                 restore_network,
+                list_remembered_titles,
                 forget_remembered_title,
                 export_settings,
                 import_settings
@@ -831,7 +845,7 @@ mod local_backend {
 
 #[cfg(windows)]
 mod service_backend {
-    use std::{collections::HashMap, sync::Mutex};
+    use std::{collections::HashMap, fmt::Write as _, sync::Mutex};
 
     use karma_ipc::{
         BootstrapStatus, ComponentState, RequestEnvelope, ServiceErrorCode, ServiceFailure,
@@ -912,7 +926,7 @@ mod service_backend {
             "schedules": [],
             "evidence": [],
             "audit": [],
-            "rememberedTitles": [],
+            "rememberedTitleTotal": 0,
             "activeBans": []
         })
     }
@@ -920,7 +934,12 @@ mod service_backend {
     fn opaque() -> String {
         let mut bytes = [0_u8; 24];
         OsRng.fill_bytes(&mut bytes);
-        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+        bytes
+            .iter()
+            .fold(String::with_capacity(48), |mut hex, byte| {
+                let _ = write!(hex, "{byte:02x}");
+                hex
+            })
     }
 
     fn request(body: ServiceRequest) -> Result<ServiceResult, ConsoleError> {
@@ -1057,8 +1076,12 @@ mod service_backend {
             ServiceResult::EvidenceList { items } => items,
             _ => return Err(ConsoleError::InvalidResponse),
         };
+        // Only the bans and the title count; the console pages titles itself.
         let enforcement = match request(ServiceRequest::ListEnforcement {
             session_token: session_token.clone(),
+            title_offset: 0,
+            title_limit: 1,
+            title_query: None,
         })? {
             ServiceResult::Enforcement(summary) => summary,
             _ => return Err(ConsoleError::InvalidResponse),
@@ -1094,9 +1117,25 @@ mod service_backend {
             })).collect()),
         );
         object.insert("network".into(), network_status_json(&status.network));
-        if let Value::Object(learned) = enforcement_json(&enforcement) {
-            object.extend(learned);
-        }
+        object.insert(
+            "rememberedTitleTotal".into(),
+            Value::from(enforcement.remembered_title_total),
+        );
+        object.insert(
+            "activeBans".into(),
+            Value::Array(
+                enforcement
+                    .active_bans
+                    .iter()
+                    .map(|ban| {
+                        json!({
+                            "executable": ban.executable,
+                            "bannedUntilMs": ban.banned_until_ms
+                        })
+                    })
+                    .collect(),
+            ),
+        );
         object.insert(
             "evidence".into(),
             Value::Array(
@@ -1199,34 +1238,43 @@ mod service_backend {
         })
     }
 
-    fn enforcement_json(summary: &karma_ipc::EnforcementSummary) -> Value {
-        json!({
-            "rememberedTitles": summary.remembered_titles.iter().map(|item| json!({
+    #[tauri::command]
+    fn list_remembered_titles(
+        session_token: String,
+        offset: u32,
+        limit: u32,
+        query: Option<String>,
+    ) -> Result<Value, ConsoleError> {
+        let summary = match request(ServiceRequest::ListEnforcement {
+            session_token,
+            title_offset: offset,
+            title_limit: limit,
+            title_query: query.filter(|query| !query.trim().is_empty()),
+        })? {
+            ServiceResult::Enforcement(summary) => summary,
+            _ => return Err(ConsoleError::InvalidResponse),
+        };
+        Ok(json!({
+            "items": summary.remembered_titles.iter().map(|item| json!({
                 "id": item.id,
                 "executable": item.executable,
                 "title": item.title,
                 "browserHost": item.browser_host,
                 "rememberedAtMs": item.remembered_at_ms
             })).collect::<Vec<_>>(),
-            "activeBans": summary.active_bans.iter().map(|ban| json!({
-                "executable": ban.executable,
-                "bannedUntilMs": ban.banned_until_ms
-            })).collect::<Vec<_>>()
-        })
+            "total": summary.remembered_title_total
+        }))
     }
 
     #[tauri::command]
     fn forget_remembered_title(
         session_token: String,
         title_id: String,
-    ) -> Result<Value, ConsoleError> {
-        match request(ServiceRequest::ForgetRememberedTitle {
+    ) -> Result<(), ConsoleError> {
+        acknowledged(request(ServiceRequest::ForgetRememberedTitle {
             session_token,
             title_id,
-        })? {
-            ServiceResult::Enforcement(summary) => Ok(enforcement_json(&summary)),
-            _ => Err(ConsoleError::InvalidResponse),
-        }
+        })?)
     }
 
     #[tauri::command]
@@ -1261,6 +1309,7 @@ mod service_backend {
                 save_console,
                 reveal_evidence,
                 restore_network,
+                list_remembered_titles,
                 forget_remembered_title,
                 export_settings,
                 import_settings
