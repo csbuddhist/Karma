@@ -99,6 +99,12 @@ pub enum ServiceRequest {
         session_token: String,
         evidence_id: String,
     },
+    /// Lift the active network schedule until its current block ends. The
+    /// administrator password is verified again even with a valid session.
+    RestoreNetwork {
+        session_token: String,
+        password: String,
+    },
     AgentHeartbeat {
         agent_token: String,
         heartbeat: AgentHeartbeat,
@@ -140,6 +146,7 @@ impl ServiceRequest {
             | Self::ListEvidence { .. }
             | Self::RevealEvidence { .. }
             | Self::DeleteEvidence { .. }
+            | Self::RestoreNetwork { .. }
             | Self::ChangePassword { .. } => client == ClientKind::Ui,
             Self::AgentHeartbeat { .. }
             | Self::AgentObservation { .. }
@@ -156,6 +163,7 @@ impl ServiceRequest {
             Self::EnrollAdministrator { password }
             | Self::Authenticate { password }
             | Self::RevealEvidence { password, .. }
+            | Self::RestoreNetwork { password, .. }
             | Self::RequestShutdown { password } => {
                 if password.is_empty() || password.chars().count() > MAX_PASSWORD_CHARS {
                     return Err(ProtocolError::InvalidField);
@@ -182,6 +190,7 @@ impl ServiceRequest {
             | Self::ListEvidence { session_token }
             | Self::RevealEvidence { session_token, .. }
             | Self::DeleteEvidence { session_token, .. }
+            | Self::RestoreNetwork { session_token, .. }
             | Self::ChangePassword { session_token, .. } => {
                 validate_opaque(session_token, MAX_SESSION_TOKEN_CHARS)?;
             }
@@ -485,6 +494,7 @@ pub enum ServiceResult {
     DispositionCompleted {
         report: DispositionReport,
     },
+    NetworkStatus(NetworkStatus),
     Acknowledged,
 }
 
@@ -506,6 +516,22 @@ pub struct ServiceStatus {
     pub monitors: Vec<MonitorHealth>,
     pub evidence_count: u64,
     pub audit_count: u64,
+    #[serde(default)]
+    pub network: NetworkStatus,
+}
+
+/// The weekly network schedule as the Service currently enforces it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkStatus {
+    /// A schedule block is active and has not been lifted by an administrator.
+    pub restricted: bool,
+    /// Identifiers of the schedule rules whose blocks are active right now.
+    pub active_rule_ids: Vec<String>,
+    /// When the active blocks end (Unix milliseconds).
+    pub restricted_until_ms: Option<i64>,
+    /// When an administrator restore expires (Unix milliseconds).
+    pub restored_until_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -723,6 +749,52 @@ mod tests {
             ClientKind::Ui,
         );
         assert_eq!(stale_session.validate(), Err(ProtocolError::InvalidField));
+    }
+
+    #[test]
+    fn restore_network_is_ui_only_and_requires_a_password() {
+        let restore = |client, password: &str| {
+            request(
+                ServiceRequest::RestoreNetwork {
+                    session_token: "session-1".into(),
+                    password: password.into(),
+                },
+                client,
+            )
+        };
+        assert!(
+            restore(ClientKind::Ui, "administrator-secret")
+                .validate()
+                .is_ok()
+        );
+        assert_eq!(
+            restore(ClientKind::Agent, "administrator-secret").validate(),
+            Err(ProtocolError::ClientRoleDenied)
+        );
+        assert_eq!(
+            restore(ClientKind::Installer, "administrator-secret").validate(),
+            Err(ProtocolError::ClientRoleDenied)
+        );
+        assert_eq!(
+            restore(ClientKind::Ui, "").validate(),
+            Err(ProtocolError::InvalidField)
+        );
+    }
+
+    #[test]
+    fn status_without_network_field_still_decodes() {
+        let status: ServiceStatus = serde_json::from_value(serde_json::json!({
+            "service_started_at_ms": 1,
+            "policy_revision": 2,
+            "protection_enabled": true,
+            "agent_connected": false,
+            "agent_last_seen_at_ms": null,
+            "monitors": [],
+            "evidence_count": 0,
+            "audit_count": 0
+        }))
+        .unwrap();
+        assert_eq!(status.network, NetworkStatus::default());
     }
 
     #[test]

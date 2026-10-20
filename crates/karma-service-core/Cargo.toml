@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 argon2 = { version = "0.5", features = ["std"] }
 base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 karma-evidence = { path = "../karma-evidence" }
 karma-ipc = { path = "../karma-ipc" }
 karma-policy = { path = "../karma-policy" }

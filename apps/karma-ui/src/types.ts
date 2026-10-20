@@ -53,14 +53,30 @@ export interface WebsiteRule {
   enabled: boolean;
 }
 
+export type NetworkTarget = "browsers" | "applications" | "all_network";
+
+export interface ScheduleBlock {
+  /** Monday = 0 through Sunday = 6. */
+  day: number;
+  start: string;
+  /** An end that is not after the start continues into the next day. */
+  end: string;
+}
+
 export interface ScheduleRule {
   id: string;
   name: string;
-  days: number[];
-  start: string;
-  end: string;
-  target: "internet" | "browser_player" | "all_restricted";
+  target: NetworkTarget;
+  applications: string[];
+  blocks: ScheduleBlock[];
   enabled: boolean;
+}
+
+export interface NetworkStatus {
+  restricted: boolean;
+  activeRuleIds: string[];
+  restrictedUntilMs: number | null;
+  restoredUntilMs: number | null;
 }
 
 export interface EvidenceItem {
@@ -95,4 +111,5 @@ export interface ConsoleState {
   schedules: ScheduleRule[];
   evidence: EvidenceItem[];
   audit: AuditItem[];
+  network: NetworkStatus;
 }

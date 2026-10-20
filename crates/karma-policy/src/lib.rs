@@ -4,6 +4,7 @@ mod application;
 mod application_policy;
 mod context;
 mod engine;
+mod network_schedule;
 mod repeat_offender;
 mod risk;
 mod schedule;
@@ -18,6 +19,10 @@ pub use context::{
     ContextPolicy, ContextPolicyError, ContextVerdict, WebsiteRule, WebsiteRuleAction,
 };
 pub use engine::{DecisionEngine, EvaluationInput, EvaluationResult};
+pub use network_schedule::{
+    KNOWN_BROWSER_EXECUTABLES, MINUTES_PER_DAY, MINUTES_PER_WEEK, NetworkRestriction,
+    NetworkScheduleError, NetworkSchedulePolicy, NetworkTarget,
+};
 pub use repeat_offender::{
     REPEAT_OFFENDER_WINDOW_MS, StrikeRecord, is_banned, normalize_executable, record_closure,
 };

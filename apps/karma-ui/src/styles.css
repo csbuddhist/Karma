@@ -258,6 +258,32 @@ select, .field input, .toolbar input { height: 39px; padding: 0 11px; color: var
 .schedule-info { min-width: 0; flex: 1; display: flex; flex-direction: column; }
 .schedule-info strong { font-size: 11px; }
 .schedule-info small { margin-top: 3px; color: var(--muted); font-size: 9px; }
+.schedule-info .tag { align-self: flex-start; margin: 5px 0 2px; }
+.schedule-list > div.editing { background: var(--accent-soft); border-radius: 10px; padding-left: 10px; padding-right: 6px; }
+.field-hint { display: block; margin-top: 7px; color: var(--muted); font-size: 9px; line-height: 1.5; }
+.modal-description { margin: 0 0 4px; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.schedule-app-input { display: flex; gap: 8px; }
+.schedule-app-input input { min-width: 0; flex: 1; }
+.schedule-apps { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+.schedule-app { display: inline-flex; align-items: center; gap: 5px; padding: 5px 6px 5px 10px; color: var(--ink); background: #f1f1ec; border-radius: 20px; font-size: 10px; }
+.schedule-app button { display: grid; place-items: center; width: 18px; height: 18px; padding: 0; color: #757b72; background: transparent; border: 0; border-radius: 50%; cursor: pointer; }
+.schedule-app button:hover { color: var(--danger); background: var(--danger-soft); }
+.week-blocks { display: flex; flex-direction: column; border: 1px solid #ecece6; border-radius: 11px; }
+.week-day { display: grid; grid-template-columns: 48px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 8px 10px; border-top: 1px solid #ecece6; }
+.week-day:first-child { border-top: 0; }
+.week-day > strong { font-size: 11px; }
+.week-day-blocks { display: flex; flex-direction: column; gap: 6px; }
+.week-day-empty { color: var(--muted); font-size: 10px; }
+.week-day-actions { display: flex; gap: 2px; }
+.week-day-actions .icon-button { width: 28px; height: 28px; }
+.week-day-actions .icon-button:disabled { opacity: .35; cursor: default; }
+.time-block { display: flex; align-items: center; gap: 6px; }
+.time-block input { width: 96px; height: 32px; padding: 0 8px; color: var(--ink); background: #fafaf7; border: 1px solid #d9dbd3; border-radius: 8px; font-size: 11px; }
+.time-block span { color: var(--muted); font-size: 9px; }
+.time-block small { color: var(--amber); font-size: 9px; }
+.time-block .icon-button { width: 26px; height: 26px; }
+.schedule-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 18px; }
+.schedule-actions .primary-button { flex: 1; }
 
 .privacy-banner { display: flex; align-items: center; gap: 10px; padding: 12px 15px; color: #514e9c; background: var(--accent-soft); border: 1px solid #dcdafa; border-radius: 11px; font-size: 10px; }
 .evidence-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 15px; }

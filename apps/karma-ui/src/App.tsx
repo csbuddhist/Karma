@@ -15,6 +15,7 @@ import {
   Archive,
   CalendarClock,
   Check,
+  Copy,
   ChevronRight,
   CircleAlert,
   Download,
@@ -39,6 +40,7 @@ import {
   Settings,
   Trash2,
   Upload,
+  Wifi,
   WifiOff,
   X,
 } from "lucide-react";
@@ -58,6 +60,7 @@ import {
   lock,
   mergeImportedPolicy,
   parseImportedBackupFile,
+  restoreNetwork,
   revealEvidence,
   saveConsole,
   unlock,
@@ -77,7 +80,10 @@ import type {
   ConsoleState,
   EvidenceItem,
   KeywordRule,
+  NetworkStatus,
+  NetworkTarget,
   PageKey,
+  ScheduleBlock,
   ScheduleRule,
   WebsiteRule,
 } from "./types";
@@ -309,7 +315,7 @@ function ServiceConnectionError({ detail, onRetry }: { detail: string; onRetry: 
   );
 }
 
-function Overview({ state, update }: { state: ConsoleState; update: (next: ConsoleState) => void }) {
+function Overview({ state, update, sessionToken, onNetworkChange }: { state: ConsoleState; update: (next: ConsoleState) => void; sessionToken: string; onNetworkChange: (network: NetworkStatus) => void }) {
   const { t } = useI18n();
   const healthyMonitors = state.monitors.filter((monitor) => monitor.state === "healthy").length;
   const criticalEvents = state.evidence.filter((item) => item.risk === "critical").length;
@@ -325,6 +331,7 @@ function Overview({ state, update }: { state: ConsoleState; update: (next: Conso
           <Toggle checked={state.protectionEnabled} onChange={(value) => update({ ...state, protectionEnabled: value })} label={t("settings.protectionToggle")} />
         </div>
       </Card>
+      <NetworkStatusCard state={state} sessionToken={sessionToken} onNetworkChange={onNetworkChange} />
       <div className="metric-grid">
         <Card className="metric-card primary"><div className="metric-icon"><KarmaShieldIcon /></div><div><span>{t("overview.protectionStatus")}</span><strong>{t(state.protectionEnabled ? "overview.enabled" : "overview.paused")}</strong><small>{t(state.protectionEnabled ? "overview.policyOnConnect" : "overview.noProtectionActions")}</small></div></Card>
         <Card className="metric-card"><div className="metric-icon green"><Monitor /></div><div><span>{t("overview.activeMonitors")}</span><strong>{state.monitors.length}</strong><small>{t(healthyMonitors === 1 ? "overview.healthyMonitor" : "overview.healthyMonitors", { count: healthyMonitors })}</small></div></Card>
@@ -530,12 +537,210 @@ function Applications({ state, update }: { state: ConsoleState; update: (state: 
 }
 
 const dayKeys: MessageKey[] = ["schedule.dayMon", "schedule.dayTue", "schedule.dayWed", "schedule.dayThu", "schedule.dayFri", "schedule.daySat", "schedule.daySun"];
+const dayNameKeys: MessageKey[] = ["schedule.dayNameMon", "schedule.dayNameTue", "schedule.dayNameWed", "schedule.dayNameThu", "schedule.dayNameFri", "schedule.dayNameSat", "schedule.dayNameSun"];
+const networkTargets: Array<{ value: NetworkTarget; label: MessageKey; hint: MessageKey }> = [
+  { value: "browsers", label: "schedule.targetBrowsers", hint: "schedule.targetBrowsersHint" },
+  { value: "applications", label: "schedule.targetApplications", hint: "schedule.targetApplicationsHint" },
+  { value: "all_network", label: "schedule.targetAllNetwork", hint: "schedule.targetAllNetworkHint" },
+];
 
-function Schedule({ state, update }: { state: ConsoleState; update: (state: ConsoleState) => void }) {
+type ScheduleDraft = Omit<ScheduleRule, "id">;
+
+function newScheduleDraft(name: string): ScheduleDraft {
+  return { name, target: "browsers", applications: [], blocks: [0, 1, 2, 3, 4].map((day) => ({ day, start: "21:00", end: "07:00" })), enabled: true };
+}
+
+function sortBlocks(blocks: ScheduleBlock[]): ScheduleBlock[] {
+  return [...blocks].sort((left, right) => left.day - right.day || left.start.localeCompare(right.start));
+}
+
+function scheduleDraftError(draft: ScheduleDraft): MessageKey | undefined {
+  if (!draft.name.trim()) return "schedule.errorName";
+  if (!draft.blocks.length) return "schedule.errorNoBlocks";
+  if (draft.blocks.some((block) => !block.start || !block.end || block.start === block.end)) return "schedule.errorEmptyBlock";
+  if (draft.target === "applications" && !draft.applications.length) return "schedule.errorNoApplications";
+  return undefined;
+}
+
+function formatNetworkTime(ms: number, locale: Locale): string {
+  const date = new Date(ms);
+  const now = new Date();
+  const sameDay = date.toDateString() === now.toDateString();
+  return new Intl.DateTimeFormat(locale, sameDay ? { hour: "2-digit", minute: "2-digit", hour12: false } : { weekday: "short", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(date);
+}
+
+function NetworkStatusCard({ state, sessionToken, onNetworkChange }: { state: ConsoleState; sessionToken: string; onNetworkChange: (network: NetworkStatus) => void }) {
+  const { locale, t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const network = state.network;
+  const ruleNames = network.activeRuleIds.map((id) => state.schedules.find((rule) => rule.id === id)?.name ?? id).join("、");
+  async function submit() {
+    if (!password || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      onNetworkChange(await restoreNetwork(sessionToken, password));
+      setOpen(false);
+      setPassword("");
+    } catch (reason) {
+      setError(localizeError(reason, t));
+    } finally {
+      setBusy(false);
+    }
+  }
+  let icon = <Wifi />;
+  let tone = "green";
+  let title = t("network.idleTitle");
+  let detail = t(state.serviceConnected ? "network.idleDescription" : "network.serviceRequired");
+  if (network.restricted) {
+    icon = <WifiOff />;
+    tone = "amber";
+    title = t("network.restrictedTitle");
+    detail = network.restrictedUntilMs ? t("network.restrictedUntil", { time: formatNetworkTime(network.restrictedUntilMs, locale) }) : t("network.restrictedOngoing");
+  } else if (network.restoredUntilMs) {
+    icon = <Wifi />;
+    tone = "blue";
+    title = t("network.restoredTitle");
+    detail = t("network.restoredUntil", { time: formatNetworkTime(network.restoredUntilMs, locale) });
+  }
+  return (
+    <Card>
+      <div className="setting-row">
+        <div className={`setting-icon ${tone}`}>{icon}</div>
+        <div><strong>{title}</strong><p>{detail}{ruleNames && <><br />{t("network.activeRules", { names: ruleNames })}</>}</p></div>
+        {network.restricted && <button className="secondary-button" onClick={() => { setOpen(true); setError(""); setPassword(""); }}><KeyRound size={16} />{t("network.restoreButton")}</button>}
+      </div>
+      {open && (
+        <Modal title={t("network.restoreTitle")} onClose={() => setOpen(false)}>
+          <p className="modal-description">{t("network.restoreDescription")}</p>
+          <label className="field"><span>{t("network.password")}</span><input type="password" value={password} autoFocus autoComplete="current-password" onChange={(event) => setPassword(event.target.value)} onKeyDown={(event) => event.key === "Enter" && void submit()} /></label>
+          {error && <div className="form-error"><CircleAlert size={16} />{error}</div>}
+          <button className="primary-button modal-submit" disabled={!password || busy} onClick={() => void submit()}><Wifi size={17} />{t(busy ? "network.restoring" : "network.restoreConfirm")}</button>
+        </Modal>
+      )}
+    </Card>
+  );
+}
+
+function Schedule({ state, update, sessionToken, onNetworkChange }: { state: ConsoleState; update: (state: ConsoleState) => void; sessionToken: string; onNetworkChange: (network: NetworkStatus) => void }) {
   const { t } = useI18n();
-  const [draft, setDraft] = useState<Omit<ScheduleRule, "id">>({ name: t("schedule.defaultName"), days: [0, 1, 2, 3, 4], start: "21:00", end: "07:00", target: "browser_player", enabled: true });
-  function add() { update({ ...state, schedules: [...state.schedules, { ...draft, id: crypto.randomUUID() }] }); }
-  return <div className="two-column schedule-layout"><Card><div className="card-heading"><div><h2>{t("schedule.newTitle")}</h2><p>{t("schedule.description")}</p></div></div><label className="field"><span>{t("schedule.name")}</span><input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label><div className="field"><span>{t("schedule.weekdays")}</span><div className="day-picker">{dayKeys.map((key, index) => <button type="button" className={draft.days.includes(index) ? "active" : ""} key={key} onClick={() => setDraft({ ...draft, days: draft.days.includes(index) ? draft.days.filter((day) => day !== index) : [...draft.days, index].sort() })}>{t(key)}</button>)}</div></div><div className="time-grid"><label className="field"><span>{t("schedule.start")}</span><input type="time" step="900" value={draft.start} onChange={(event) => setDraft({ ...draft, start: event.target.value })} /></label><label className="field"><span>{t("schedule.end")}</span><input type="time" step="900" value={draft.end} onChange={(event) => setDraft({ ...draft, end: event.target.value })} /></label></div><label className="field"><span>{t("schedule.target")}</span><select value={draft.target} onChange={(event) => setDraft({ ...draft, target: event.target.value as ScheduleRule["target"] })}><option value="browser_player">{t("schedule.browserPlayer")}</option><option value="internet">{t("schedule.internet")}</option><option value="all_restricted">{t("schedule.allRestricted")}</option></select></label><button className="primary-button modal-submit" onClick={add}><Plus size={17} />{t("schedule.add")}</button></Card><Card><div className="card-heading"><div><h2>{t("schedule.configured")}</h2><p>{t(state.schedules.length === 1 ? "schedule.policyCountOne" : "schedule.policyCount", { count: state.schedules.length })}</p></div></div>{state.schedules.length ? <div className="schedule-list">{state.schedules.map((rule) => <div key={rule.id}><div className="schedule-time"><strong>{rule.start}</strong><span>{t("schedule.to")}</span><strong>{rule.end}</strong></div><div className="schedule-info"><strong>{rule.name}</strong><small>{rule.days.map((day) => t("schedule.weekdayPrefix", { day: t(dayKeys[day]) })).join(" · ")}</small></div><Toggle checked={rule.enabled} onChange={(enabled) => update({ ...state, schedules: state.schedules.map((item) => item.id === rule.id ? { ...item, enabled } : item) })} label={t("schedule.enable", { name: rule.name })} /><button className="icon-button danger" aria-label={t("schedule.delete", { name: rule.name })} onClick={() => update({ ...state, schedules: state.schedules.filter((item) => item.id !== rule.id) })}><Trash2 size={16} /></button></div>)}</div> : <EmptyState icon={<CalendarClock />} title={t("schedule.emptyTitle")} text={t("schedule.emptyDescription")} />}</Card></div>;
+  const [draft, setDraft] = useState<ScheduleDraft>(() => newScheduleDraft(t("schedule.defaultName")));
+  const [editingId, setEditingId] = useState<string>();
+  const [application, setApplication] = useState("");
+  const [error, setError] = useState("");
+  const knownExecutables = useMemo(() => Array.from(new Set(state.applications.map((rule) => rule.executable).filter((value) => /\.exe$/i.test(value)))), [state.applications]);
+  const targetHint = networkTargets.find((target) => target.value === draft.target)?.hint ?? "schedule.targetBrowsersHint";
+  function patch(next: Partial<ScheduleDraft>) { setDraft({ ...draft, ...next }); setError(""); }
+  function patchBlock(index: number, next: Partial<ScheduleBlock>) { patch({ blocks: draft.blocks.map((block, position) => position === index ? { ...block, ...next } : block) }); }
+  function addBlock(day: number) {
+    // Start a new block where the day's latest same-day block ends; an
+    // overnight block leaves the daytime free, so suggest the afternoon.
+    const last = sortBlocks(draft.blocks.filter((block) => block.day === day)).at(-1);
+    const start = last && last.end > last.start && last.end < "22:00" ? last.end : last ? "14:00" : "19:00";
+    const end = `${String(Math.min(Number(start.slice(0, 2)) + 2, 23)).padStart(2, "0")}:${start.slice(3)}`;
+    patch({ blocks: [...draft.blocks, { day, start, end }] });
+  }
+  function copyDay(day: number) {
+    const source = draft.blocks.filter((block) => block.day === day);
+    patch({ blocks: sortBlocks(dayKeys.flatMap((_, target) => source.map((block) => ({ ...block, day: target })))) });
+  }
+  function addApplication() {
+    const value = application.trim();
+    if (!value) return;
+    if (!draft.applications.some((item) => item.toLowerCase() === value.toLowerCase())) patch({ applications: [...draft.applications, value] });
+    setApplication("");
+  }
+  function resetDraft() { setDraft(newScheduleDraft(t("schedule.defaultName"))); setEditingId(undefined); setApplication(""); setError(""); }
+  function submit() {
+    const problem = scheduleDraftError(draft);
+    if (problem) { setError(t(problem)); return; }
+    const rule: ScheduleRule = { ...draft, name: draft.name.trim(), applications: draft.target === "applications" ? draft.applications : [], blocks: sortBlocks(draft.blocks), id: editingId ?? crypto.randomUUID() };
+    update({ ...state, schedules: editingId ? state.schedules.map((item) => item.id === editingId ? rule : item) : [...state.schedules, rule] });
+    resetDraft();
+  }
+  function edit(rule: ScheduleRule) { const { id, ...rest } = rule; setDraft({ ...rest, blocks: sortBlocks(rest.blocks) }); setEditingId(id); setApplication(""); setError(""); }
+  function targetLabel(target: NetworkTarget) { return t(networkTargets.find((item) => item.value === target)?.label ?? "schedule.targetBrowsers"); }
+  function blockLabel(block: ScheduleBlock) { return `${block.start}–${block.end}${block.end <= block.start ? ` (${t("schedule.nextDay")})` : ""}`; }
+  return (
+    <div className="page-stack">
+      <NetworkStatusCard state={state} sessionToken={sessionToken} onNetworkChange={onNetworkChange} />
+      <div className="two-column schedule-layout">
+        <Card>
+          <div className="card-heading"><div><h2>{t(editingId ? "schedule.editTitle" : "schedule.newTitle")}</h2><p>{t("schedule.description")}</p></div></div>
+          <label className="field"><span>{t("schedule.name")}</span><input value={draft.name} onChange={(event) => patch({ name: event.target.value })} /></label>
+          <label className="field"><span>{t("schedule.target")}</span><select value={draft.target} onChange={(event) => patch({ target: event.target.value as NetworkTarget })}>{networkTargets.map((target) => <option key={target.value} value={target.value}>{t(target.label)}</option>)}</select><small className="field-hint">{t(targetHint)}</small></label>
+          {draft.target === "applications" && (
+            <div className="field">
+              <span>{t("schedule.applications")}</span>
+              <div className="schedule-app-input"><input list="schedule-known-executables" value={application} placeholder={t("schedule.applicationPlaceholder")} onChange={(event) => { setApplication(event.target.value); setError(""); }} onKeyDown={(event) => event.key === "Enter" && addApplication()} /><button type="button" className="secondary-button" onClick={addApplication}><Plus size={16} />{t("schedule.addApplication")}</button></div>
+              <datalist id="schedule-known-executables">{knownExecutables.map((value) => <option key={value} value={value} />)}</datalist>
+              {draft.applications.length > 0 && <div className="schedule-apps">{draft.applications.map((item) => <span className="schedule-app" key={item}>{item}<button type="button" aria-label={t("schedule.removeApplication", { name: item })} onClick={() => patch({ applications: draft.applications.filter((value) => value !== item) })}><X size={12} /></button></span>)}</div>}
+            </div>
+          )}
+          <div className="field">
+            <span>{t("schedule.blocks")}</span>
+            <div className="week-blocks">
+              {dayKeys.map((key, day) => {
+                const entries = draft.blocks.map((block, index) => ({ block, index })).filter(({ block }) => block.day === day);
+                return (
+                  <div className="week-day" key={key}>
+                    <strong>{t(dayNameKeys[day])}</strong>
+                    <div className="week-day-blocks">
+                      {entries.length ? entries.map(({ block, index }) => (
+                        <div className="time-block" key={index}>
+                          <input type="time" value={block.start} aria-label={t("schedule.start")} onChange={(event) => patchBlock(index, { start: event.target.value })} />
+                          <span>{t("schedule.to")}</span>
+                          <input type="time" value={block.end} aria-label={t("schedule.end")} onChange={(event) => patchBlock(index, { end: event.target.value })} />
+                          {block.end && block.start && block.end <= block.start && <small>{t("schedule.nextDay")}</small>}
+                          <button type="button" className="icon-button danger" aria-label={t("schedule.removeBlock")} onClick={() => patch({ blocks: draft.blocks.filter((_, position) => position !== index) })}><Trash2 size={14} /></button>
+                        </div>
+                      )) : <small className="week-day-empty">{t("schedule.noBlocks")}</small>}
+                    </div>
+                    <div className="week-day-actions">
+                      <button type="button" className="icon-button" aria-label={t("schedule.addBlock", { day: t(dayNameKeys[day]) })} title={t("schedule.addBlock", { day: t(dayNameKeys[day]) })} onClick={() => addBlock(day)}><Plus size={15} /></button>
+                      <button type="button" className="icon-button" disabled={!entries.length} aria-label={t("schedule.copyDay", { day: t(dayNameKeys[day]) })} title={t("schedule.copyDay", { day: t(dayNameKeys[day]) })} onClick={() => copyDay(day)}><Copy size={14} /></button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+          {error && <div className="form-error"><CircleAlert size={16} />{error}</div>}
+          <div className="schedule-actions">
+            {editingId && <button className="secondary-button" onClick={resetDraft}>{t("schedule.cancelEdit")}</button>}
+            <button className="primary-button" onClick={submit}>{editingId ? <Check size={17} /> : <Plus size={17} />}{t(editingId ? "schedule.save" : "schedule.add")}</button>
+          </div>
+          <small className="field-hint">{t("schedule.pendingSave")}</small>
+        </Card>
+        <Card>
+          <div className="card-heading"><div><h2>{t("schedule.configured")}</h2><p>{t(state.schedules.length === 1 ? "schedule.policyCountOne" : "schedule.policyCount", { count: state.schedules.length })}</p></div></div>
+          {state.schedules.length ? (
+            <div className="schedule-list">
+              {state.schedules.map((rule) => (
+                <div key={rule.id} className={editingId === rule.id ? "editing" : ""}>
+                  <div className="schedule-info">
+                    <strong>{rule.name}</strong>
+                    <span className={`tag ${rule.target === "all_network" ? "block" : "sensitive"}`}>{targetLabel(rule.target)}</span>
+                    {rule.target === "applications" && <small>{rule.applications.join(" · ")}</small>}
+                    {dayKeys.map((key, day) => {
+                      const blocks = rule.blocks.filter((block) => block.day === day);
+                      return blocks.length ? <small key={key}>{t(dayNameKeys[day])}：{blocks.map(blockLabel).join("，")}</small> : null;
+                    })}
+                  </div>
+                  <Toggle checked={rule.enabled} onChange={(enabled) => update({ ...state, schedules: state.schedules.map((item) => item.id === rule.id ? { ...item, enabled } : item) })} label={t("schedule.enable", { name: rule.name })} />
+                  <button className="icon-button" aria-label={t("schedule.edit", { name: rule.name })} onClick={() => edit(rule)}><Pencil size={16} /></button>
+                  <button className="icon-button danger" aria-label={t("schedule.delete", { name: rule.name })} onClick={() => { update({ ...state, schedules: state.schedules.filter((item) => item.id !== rule.id) }); if (editingId === rule.id) resetDraft(); }}><Trash2 size={16} /></button>
+                </div>
+              ))}
+            </div>
+          ) : <EmptyState icon={<CalendarClock />} title={t("schedule.emptyTitle")} text={t("schedule.emptyDescription")} />}
+        </Card>
+      </div>
+    </div>
+  );
 }
 
 function evidenceTimestamp(value: string): number | undefined {
@@ -764,6 +969,8 @@ function AppContent() {
   }, [authMode, sessionToken, dirty]);
   async function authenticated(token: string) { setSessionToken(token); setLoading(true); try { const next = await loadConsole(token); setState(next); setAuthMode("unlocked"); void configureLaunchAtStartup(next.launchAtStartup).catch((reason) => console.error("Failed to synchronize autostart", reason)); } finally { setLoading(false); } }
   function update(next: ConsoleState) { setState(next); setDirty(true); setSaveMessage(""); setSaveError(""); }
+  // Network status is runtime state reported by the Service, not an unsaved policy edit.
+  function updateNetwork(network: NetworkStatus) { setState((current) => ({ ...current, network })); }
   async function save() {
     setSaving(true);
     setSaveError("");
@@ -794,13 +1001,13 @@ function AppContent() {
   }
 
   const content = useMemo(() => {
-    if (page === "overview") return <Overview state={state} update={update} />;
+    if (page === "overview") return <Overview state={state} update={update} sessionToken={sessionToken} onNetworkChange={updateNetwork} />;
     if (page === "monitors") return <Monitors state={state} />;
     if (page === "recognition") return <Recognition state={state} update={update} />;
     if (page === "keywords") return <Keywords state={state} update={update} />;
     if (page === "websites") return <Websites state={state} update={update} />;
     if (page === "applications") return <Applications state={state} update={update} />;
-    if (page === "schedule") return <Schedule state={state} update={update} />;
+    if (page === "schedule") return <Schedule state={state} update={update} sessionToken={sessionToken} onNetworkChange={updateNetwork} />;
     if (page === "evidence") return <Evidence state={state} sessionToken={sessionToken} />;
     if (page === "audit") return <Audit state={state} />;
     return <SettingsPage state={state} update={update} sessionToken={sessionToken} />;

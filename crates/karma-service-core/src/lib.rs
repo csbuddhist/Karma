@@ -16,12 +16,13 @@ use argon2::{
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use karma_evidence::EvidenceVault;
 use karma_ipc::{
-    BootstrapStatus, EvidenceMetadata, RequestEnvelope, ResponseEnvelope, ServiceErrorCode,
-    ServiceFailure, ServiceRequest, ServiceResult, ServiceStatus,
+    BootstrapStatus, EvidenceMetadata, NetworkStatus, RequestEnvelope, ResponseEnvelope,
+    ServiceErrorCode, ServiceFailure, ServiceRequest, ServiceResult, ServiceStatus,
 };
 use karma_policy::{
-    ApplicationEffect, ApplicationPolicy, ContextPolicy, StrikeRecord, is_banned,
-    normalize_executable, record_closure,
+    ApplicationEffect, ApplicationPolicy, ContextPolicy, MINUTES_PER_DAY, MINUTES_PER_WEEK,
+    NetworkRestriction, NetworkSchedulePolicy, StrikeRecord, is_banned, normalize_executable,
+    record_closure,
 };
 use rand::{RngCore, rngs::OsRng};
 use serde::{Deserialize, Serialize};
@@ -40,6 +41,29 @@ const MAX_FAILURES: u32 = 5;
 const FAILURE_COOLDOWN_MS: i64 = 30 * 1000;
 const MAX_REPLAY_ENTRIES: usize = 4096;
 const MAX_AUDIT_ENTRIES: usize = 5000;
+const MS_PER_MINUTE: i64 = 60 * 1000;
+/// 1970-01-01 was a Thursday; schedules number Monday as day 0.
+const EPOCH_WEEKDAY_FROM_MONDAY: i64 = 3;
+
+/// Returns the local UTC offset in seconds at a Unix millisecond instant.
+pub type LocalOffsetFn = fn(i64) -> i32;
+
+fn system_local_offset_seconds(now_ms: i64) -> i32 {
+    use chrono::{Local, Offset, TimeZone};
+    Local
+        .timestamp_millis_opt(now_ms)
+        .earliest()
+        .map_or(0, |local| local.offset().fix().local_minus_utc())
+}
+
+fn local_minute_of_week(now_ms: i64, offset_seconds: i32) -> u16 {
+    let local_minutes = now_ms
+        .saturating_add(i64::from(offset_seconds) * 1000)
+        .div_euclid(MS_PER_MINUTE);
+    let minute = (local_minutes + EPOCH_WEEKDAY_FROM_MONDAY * i64::from(MINUTES_PER_DAY))
+        .rem_euclid(i64::from(MINUTES_PER_WEEK));
+    minute as u16
+}
 
 fn recognition_threshold_millis(policy: &Value) -> u16 {
     policy
@@ -70,6 +94,16 @@ struct StoredState {
     evidence: Vec<StoredEvidence>,
     #[serde(default)]
     repeat_offenders: Vec<StrikeRecord>,
+    #[serde(default)]
+    network_restore: Option<NetworkRestore>,
+}
+
+/// An administrator-approved early end of the active network schedule.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NetworkRestore {
+    granted_at_ms: i64,
+    until_ms: i64,
 }
 
 impl Default for StoredState {
@@ -82,6 +116,7 @@ impl Default for StoredState {
             audit: Vec::new(),
             evidence: Vec::new(),
             repeat_offenders: Vec::new(),
+            network_restore: None,
         }
     }
 }
@@ -116,11 +151,21 @@ struct RuntimeState {
     blocked_until_ms: Option<i64>,
     last_heartbeat: Option<karma_ipc::AgentHeartbeat>,
     pending_dispositions: HashMap<String, karma_ipc::ProcessIdentity>,
+    network_restricted: Option<bool>,
+}
+
+/// What the network enforcement layer must apply right now.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NetworkEnforcement {
+    pub status: NetworkStatus,
+    /// Empty unless `status.restricted` is set.
+    pub restriction: NetworkRestriction,
 }
 
 pub struct ServiceCore {
     state_path: PathBuf,
     started_at_ms: i64,
+    local_offset: LocalOffsetFn,
     agent_token: Zeroizing<String>,
     evidence_vault: EvidenceVault,
     runtime: Mutex<RuntimeState>,
@@ -143,6 +188,7 @@ impl ServiceCore {
         Ok(Self {
             state_path,
             started_at_ms,
+            local_offset: system_local_offset_seconds,
             agent_token: Zeroizing::new(agent_token),
             evidence_vault: EvidenceVault::new(evidence_directory, evidence_key),
             runtime: Mutex::new(RuntimeState {
@@ -154,8 +200,97 @@ impl ServiceCore {
                 blocked_until_ms: None,
                 last_heartbeat: None,
                 pending_dispositions: HashMap::new(),
+                network_restricted: None,
             }),
         })
+    }
+
+    /// Replaces the local time zone source, for hosts and tests that must not
+    /// depend on the machine's configured zone.
+    pub fn with_local_offset(mut self, local_offset: LocalOffsetFn) -> Self {
+        self.local_offset = local_offset;
+        self
+    }
+
+    /// The network schedule restriction to enforce at `now_ms`. Hosts call
+    /// this periodically; transitions into and out of a restricted period are
+    /// written to the audit log.
+    pub fn network_enforcement(&self, now_ms: i64) -> Result<NetworkEnforcement, CoreError> {
+        let mut runtime = self
+            .runtime
+            .lock()
+            .map_err(|_| CoreError::LockUnavailable)?;
+        let (status, restriction) = self.evaluate_network(&mut runtime, now_ms);
+        if runtime.network_restricted != Some(status.restricted) {
+            let previous = runtime.network_restricted.replace(status.restricted);
+            if previous.is_some() || status.restricted {
+                let kind = if status.restricted {
+                    "network_schedule_started"
+                } else {
+                    "network_schedule_ended"
+                };
+                audit(&mut runtime, now_ms, kind, "success");
+                self.persist(&runtime.stored)
+                    .map_err(|_| CoreError::StorageUnavailable)?;
+            }
+        }
+        Ok(NetworkEnforcement {
+            status,
+            restriction: if runtime.network_restricted == Some(true) {
+                restriction
+            } else {
+                NetworkRestriction::default()
+            },
+        })
+    }
+
+    fn evaluate_network(
+        &self,
+        runtime: &mut RuntimeState,
+        now_ms: i64,
+    ) -> (NetworkStatus, NetworkRestriction) {
+        if runtime
+            .stored
+            .network_restore
+            .is_some_and(|restore| restore.until_ms <= now_ms)
+        {
+            runtime.stored.network_restore = None;
+        }
+        let protection_enabled = runtime
+            .stored
+            .policy
+            .get("protectionEnabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        // An unreadable stored schedule fails closed to "no schedule" only
+        // because PutPolicy already rejects every invalid schedule.
+        let schedule =
+            NetworkSchedulePolicy::from_value(&runtime.stored.policy).unwrap_or_default();
+        if !protection_enabled || schedule.is_empty() {
+            return (NetworkStatus::default(), NetworkRestriction::default());
+        }
+        let minute = local_minute_of_week(now_ms, (self.local_offset)(now_ms));
+        let restriction = schedule.restriction_at(minute);
+        if !restriction.is_restricted() {
+            return (NetworkStatus::default(), restriction);
+        }
+        let restricted_until_ms = schedule.minutes_until_clear(minute).map(|minutes| {
+            now_ms
+                .div_euclid(MS_PER_MINUTE)
+                .saturating_add(i64::from(minutes))
+                .saturating_mul(MS_PER_MINUTE)
+        });
+        let restored_until_ms = runtime
+            .stored
+            .network_restore
+            .map(|restore| restore.until_ms);
+        let status = NetworkStatus {
+            restricted: restored_until_ms.is_none(),
+            active_rule_ids: restriction.rule_ids.clone(),
+            restricted_until_ms,
+            restored_until_ms,
+        };
+        (status, restriction)
     }
 
     pub fn handle(&self, request: RequestEnvelope, now_ms: i64) -> ResponseEnvelope {
@@ -280,6 +415,7 @@ impl ServiceCore {
                         .unwrap_or_default(),
                     evidence_count: runtime.stored.evidence.len() as u64,
                     audit_count: runtime.stored.audit.len() as u64,
+                    network: self.evaluate_network(runtime, now_ms).0,
                 }))
             }
             ServiceRequest::GetPolicy { session_token } => {
@@ -300,6 +436,8 @@ impl ServiceCore {
                 }
                 ContextPolicy::from_value(&policy).map_err(|_| ServiceErrorCode::InvalidRequest)?;
                 ApplicationPolicy::from_value(&policy)
+                    .map_err(|_| ServiceErrorCode::InvalidRequest)?;
+                NetworkSchedulePolicy::from_value(&policy)
                     .map_err(|_| ServiceErrorCode::InvalidRequest)?;
                 runtime.stored.policy_revision = runtime.stored.policy_revision.saturating_add(1);
                 runtime.stored.policy = policy;
@@ -547,6 +685,34 @@ impl ServiceCore {
                 audit(runtime, now_ms, "evidence_deleted", "success");
                 self.persist(&runtime.stored)?;
                 Ok(ServiceResult::Acknowledged)
+            }
+            ServiceRequest::RestoreNetwork {
+                session_token,
+                password,
+            } => {
+                authorize(runtime, &session_token, now_ms)?;
+                self.authenticate(runtime, password, now_ms)?;
+                let (status, _) = self.evaluate_network(runtime, now_ms);
+                if !status.restricted {
+                    return Ok(ServiceResult::NetworkStatus(status));
+                }
+                let until_ms = status
+                    .restricted_until_ms
+                    .ok_or(ServiceErrorCode::Internal)?;
+                runtime.stored.network_restore = Some(NetworkRestore {
+                    granted_at_ms: now_ms,
+                    until_ms,
+                });
+                audit(
+                    runtime,
+                    now_ms,
+                    "network_restored_by_administrator",
+                    "success",
+                );
+                self.persist(&runtime.stored)?;
+                Ok(ServiceResult::NetworkStatus(
+                    self.evaluate_network(runtime, now_ms).0,
+                ))
             }
             ServiceRequest::RequestShutdown { password } => {
                 self.authenticate(runtime, password, now_ms)?;
@@ -1878,6 +2044,298 @@ mod tests {
         )) {
             ServiceResult::EvidenceImage { bytes_base64, .. } => {
                 assert_eq!(BASE64.decode(bytes_base64).unwrap(), image);
+            }
+            _ => panic!("unexpected response"),
+        }
+    }
+
+    const UTC_PLUS_EIGHT: LocalOffsetFn = |_| 8 * 3600;
+    /// 1970-01-05 00:00 in UTC+8 was a Monday; shifted forward by whole weeks.
+    const MONDAY_MIDNIGHT_UTC8_MS: i64 = 4 * 86_400_000 - 8 * 3_600_000 + 2_900 * 604_800_000;
+
+    fn local_ms(day: i64, hour: i64, minute: i64) -> i64 {
+        MONDAY_MIDNIGHT_UTC8_MS + ((day * 24 + hour) * 60 + minute) * 60_000
+    }
+
+    fn network_policy() -> Value {
+        json!({
+            "protectionEnabled": true,
+            "schedules": [{
+                "id": "homework",
+                "name": "作业时间",
+                "target": "browsers",
+                "blocks": [
+                    {"day": 0, "start": "19:00", "end": "21:00"},
+                    {"day": 0, "start": "22:00", "end": "07:00"}
+                ],
+                "enabled": true
+            }]
+        })
+    }
+
+    fn network_core(directory: &Path, policy: Value, now_ms: i64) -> (ServiceCore, String) {
+        let core = open_core(directory, now_ms).with_local_offset(UTC_PLUS_EIGHT);
+        let session = match success(core.handle(
+            request(
+                "net-enroll",
+                "net-enroll-nonce",
+                ServiceRequest::EnrollAdministrator {
+                    password: "long-test-password".into(),
+                },
+            ),
+            now_ms,
+        )) {
+            ServiceResult::Session { session_token, .. } => session_token,
+            _ => panic!("unexpected response"),
+        };
+        success(core.handle(
+            request(
+                "net-policy",
+                "net-policy-nonce",
+                ServiceRequest::PutPolicy {
+                    session_token: session.clone(),
+                    expected_revision: 0,
+                    policy,
+                },
+            ),
+            now_ms,
+        ));
+        (core, session)
+    }
+
+    fn restore(
+        core: &ServiceCore,
+        session: &str,
+        password: &str,
+        nonce: &str,
+        now_ms: i64,
+    ) -> ResponseEnvelope {
+        core.handle(
+            request(
+                &format!("restore-{nonce}"),
+                nonce,
+                ServiceRequest::RestoreNetwork {
+                    session_token: session.into(),
+                    password: password.into(),
+                },
+            ),
+            now_ms,
+        )
+    }
+
+    #[test]
+    fn local_minute_of_week_starts_on_monday() {
+        assert_eq!(local_minute_of_week(local_ms(0, 0, 0), 8 * 3600), 0);
+        assert_eq!(local_minute_of_week(local_ms(6, 23, 59), 8 * 3600), 10_079);
+        assert_eq!(local_minute_of_week(local_ms(7, 0, 1), 8 * 3600), 1);
+    }
+
+    #[test]
+    fn network_is_restricted_only_inside_schedule_blocks() {
+        let directory = tempfile::tempdir().unwrap();
+        let start = local_ms(0, 18, 0);
+        let (core, _) = network_core(directory.path(), network_policy(), start);
+
+        let outside = core.network_enforcement(start).unwrap();
+        assert!(!outside.status.restricted);
+        assert!(!outside.restriction.is_restricted());
+
+        let inside = core.network_enforcement(local_ms(0, 19, 30)).unwrap();
+        assert!(inside.status.restricted);
+        assert_eq!(inside.status.active_rule_ids, vec!["homework"]);
+        assert_eq!(inside.status.restricted_until_ms, Some(local_ms(0, 21, 0)));
+        assert!(inside.restriction.block_browsers);
+        assert!(
+            inside
+                .restriction
+                .blocks_executable(r"C:\Program Files\Mozilla Firefox\firefox.exe")
+        );
+        assert!(
+            !inside
+                .restriction
+                .blocks_executable(r"C:\Windows\System32\svchost.exe")
+        );
+
+        assert!(
+            !core
+                .network_enforcement(local_ms(0, 21, 30))
+                .unwrap()
+                .status
+                .restricted
+        );
+        let overnight = core.network_enforcement(local_ms(1, 6, 59)).unwrap();
+        assert!(overnight.status.restricted);
+        assert_eq!(
+            overnight.status.restricted_until_ms,
+            Some(local_ms(1, 7, 0))
+        );
+    }
+
+    #[test]
+    fn restoring_network_requires_the_administrator_password() {
+        let directory = tempfile::tempdir().unwrap();
+        let start = local_ms(0, 19, 0);
+        let (core, session) = network_core(directory.path(), network_policy(), start);
+        let now = local_ms(0, 19, 10);
+        assert!(core.network_enforcement(now).unwrap().status.restricted);
+
+        let denied = restore(&core, &session, "wrong-password", "restore-denied", now);
+        assert_eq!(
+            denied.result.unwrap_err().code,
+            ServiceErrorCode::AuthenticationFailed
+        );
+        assert!(core.network_enforcement(now).unwrap().status.restricted);
+
+        let invalid_session = restore(
+            &core,
+            "unknown-session",
+            "long-test-password",
+            "restore-session",
+            now,
+        );
+        assert_eq!(
+            invalid_session.result.unwrap_err().code,
+            ServiceErrorCode::AuthenticationRequired
+        );
+
+        match success(restore(
+            &core,
+            &session,
+            "long-test-password",
+            "restore-ok",
+            now,
+        )) {
+            ServiceResult::NetworkStatus(status) => {
+                assert!(!status.restricted);
+                assert_eq!(status.restored_until_ms, Some(local_ms(0, 21, 0)));
+            }
+            _ => panic!("unexpected response"),
+        }
+        let lifted = core.network_enforcement(local_ms(0, 20, 0)).unwrap();
+        assert!(!lifted.status.restricted);
+        assert!(!lifted.restriction.is_restricted());
+
+        // The restore ends with the block it lifted; the next block applies.
+        assert!(
+            core.network_enforcement(local_ms(0, 22, 30))
+                .unwrap()
+                .status
+                .restricted
+        );
+    }
+
+    #[test]
+    fn network_restore_survives_restart_and_is_audited() {
+        let directory = tempfile::tempdir().unwrap();
+        let start = local_ms(0, 19, 0);
+        {
+            let (core, session) = network_core(directory.path(), network_policy(), start);
+            core.network_enforcement(start).unwrap();
+            success(restore(
+                &core,
+                &session,
+                "long-test-password",
+                "restore-ok",
+                start,
+            ));
+        }
+        let reopened = open_core(directory.path(), start).with_local_offset(UTC_PLUS_EIGHT);
+        assert!(
+            !reopened
+                .network_enforcement(local_ms(0, 20, 0))
+                .unwrap()
+                .status
+                .restricted
+        );
+        let state: StoredState =
+            serde_json::from_slice(&fs::read(directory.path().join("service.json")).unwrap())
+                .unwrap();
+        let kinds: Vec<&str> = state
+            .audit
+            .iter()
+            .map(|record| record.kind.as_str())
+            .collect();
+        assert!(kinds.contains(&"network_schedule_started"));
+        assert!(kinds.contains(&"network_restored_by_administrator"));
+    }
+
+    #[test]
+    fn restore_outside_a_block_changes_nothing() {
+        let directory = tempfile::tempdir().unwrap();
+        let start = local_ms(0, 12, 0);
+        let (core, session) = network_core(directory.path(), network_policy(), start);
+        match success(restore(
+            &core,
+            &session,
+            "long-test-password",
+            "restore-idle",
+            start,
+        )) {
+            ServiceResult::NetworkStatus(status) => assert_eq!(status, NetworkStatus::default()),
+            _ => panic!("unexpected response"),
+        }
+        assert!(
+            core.network_enforcement(local_ms(0, 19, 30))
+                .unwrap()
+                .status
+                .restricted
+        );
+    }
+
+    #[test]
+    fn disabled_protection_lifts_network_schedules() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut policy = network_policy();
+        policy["protectionEnabled"] = json!(false);
+        let start = local_ms(0, 19, 30);
+        let (core, _) = network_core(directory.path(), policy, start);
+        assert!(!core.network_enforcement(start).unwrap().status.restricted);
+    }
+
+    #[test]
+    fn invalid_network_schedules_are_rejected() {
+        let directory = tempfile::tempdir().unwrap();
+        let start = local_ms(0, 12, 0);
+        let (core, session) = network_core(directory.path(), json!({}), start);
+        let response = core.handle(
+            request(
+                "bad-schedule",
+                "bad-schedule-nonce",
+                ServiceRequest::PutPolicy {
+                    session_token: session,
+                    expected_revision: 1,
+                    policy: json!({"schedules": [{
+                        "id": "x", "name": "x", "target": "applications",
+                        "applications": [], "blocks": [], "enabled": true
+                    }]}),
+                },
+            ),
+            start,
+        );
+        assert_eq!(
+            response.result.unwrap_err().code,
+            ServiceErrorCode::InvalidRequest
+        );
+    }
+
+    #[test]
+    fn status_reports_the_network_schedule() {
+        let directory = tempfile::tempdir().unwrap();
+        let now = local_ms(0, 20, 0);
+        let (core, session) = network_core(directory.path(), network_policy(), now);
+        match success(core.handle(
+            request(
+                "status",
+                "status-nonce",
+                ServiceRequest::GetStatus {
+                    session_token: session,
+                },
+            ),
+            now,
+        )) {
+            ServiceResult::Status(status) => {
+                assert!(status.network.restricted);
+                assert_eq!(status.network.restricted_until_ms, Some(local_ms(0, 21, 0)));
             }
             _ => panic!("unexpected response"),
         }

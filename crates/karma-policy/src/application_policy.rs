@@ -114,7 +114,7 @@ impl ApplicationPolicy {
     }
 }
 
-fn path_components(value: &str) -> Vec<String> {
+pub(crate) fn path_components(value: &str) -> Vec<String> {
     value
         .split(['\\', '/'])
         .filter(|component| !component.is_empty())
@@ -122,7 +122,7 @@ fn path_components(value: &str) -> Vec<String> {
         .collect()
 }
 
-fn trailing_components_match(observed: &[String], rule: &[String]) -> bool {
+pub(crate) fn trailing_components_match(observed: &[String], rule: &[String]) -> bool {
     !rule.is_empty()
         && observed.len() >= rule.len()
         && observed[observed.len() - rule.len()..] == *rule

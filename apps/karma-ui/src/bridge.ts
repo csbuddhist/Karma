@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { disable, enable } from "@tauri-apps/plugin-autostart";
-import type { ConsoleState } from "./types";
+import type { ConsoleState, NetworkStatus, NetworkTarget, ScheduleBlock, ScheduleRule } from "./types";
 
 const browserFallbackKey = "karma-ui-browser-state";
 const browserPasswordKey = "karma-ui-browser-password";
@@ -29,6 +29,7 @@ export const defaultConsoleState: ConsoleState = {
   schedules: [],
   evidence: [],
   audit: [],
+  network: { restricted: false, activeRuleIds: [], restrictedUntilMs: null, restoredUntilMs: null },
 };
 
 function isTauri(): boolean {
@@ -39,7 +40,7 @@ export function isTauriConsole(): boolean {
   return isTauri();
 }
 
-const runtimeStateKeys = ["serviceConnected", "agentConnected", "monitors", "evidence", "audit"];
+const runtimeStateKeys = ["serviceConnected", "agentConnected", "monitors", "evidence", "audit", "network"];
 
 function stripRuntimeState(value: Record<string, unknown>): Record<string, unknown> {
   const stripped = { ...value };
@@ -168,6 +169,28 @@ function hydrateConsoleState(value: Partial<ConsoleState>): ConsoleState {
       ...(value.recognition ?? {}),
     },
     websites: value.websites ?? [],
+    schedules: (value.schedules ?? []).map(normalizeSchedule),
+    network: { ...defaultConsoleState.network, ...(value.network ?? {}) },
+  };
+}
+
+const legacyTargets: Record<string, NetworkTarget> = { browser_player: "browsers", internet: "all_network", all_restricted: "all_network" };
+
+/** Converts single-range rules saved by earlier consoles into weekly blocks. */
+export function normalizeSchedule(rule: ScheduleRule | Record<string, unknown>): ScheduleRule {
+  const value = rule as Record<string, unknown>;
+  if (Array.isArray(value.blocks)) {
+    return { ...(rule as ScheduleRule), applications: Array.isArray(value.applications) ? (value.applications as string[]) : [] };
+  }
+  const days = Array.isArray(value.days) ? (value.days as number[]) : [];
+  const blocks: ScheduleBlock[] = days.map((day) => ({ day, start: String(value.start ?? "21:00"), end: String(value.end ?? "07:00") }));
+  return {
+    id: String(value.id ?? crypto.randomUUID()),
+    name: String(value.name ?? ""),
+    target: legacyTargets[String(value.target)] ?? "browsers",
+    applications: [],
+    blocks,
+    enabled: value.enabled !== false,
   };
 }
 
@@ -193,6 +216,12 @@ export async function getAppVersion(): Promise<string> {
   } catch {
     return "dev";
   }
+}
+
+export async function restoreNetwork(sessionToken: string, password: string): Promise<NetworkStatus> {
+  if (isTauri()) return invoke("restore_network", { sessionToken, password });
+  if (localStorage.getItem(browserPasswordKey) !== await browserPasswordDigest(password)) throw new Error("管理员密码不正确");
+  return defaultConsoleState.network;
 }
 
 export async function revealEvidence(sessionToken: string, evidenceId: string, password: string): Promise<string> {

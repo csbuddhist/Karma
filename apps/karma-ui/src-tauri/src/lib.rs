@@ -29,12 +29,13 @@ fn synchronize_recognition_threshold(state: &mut serde_json::Value) {
 const EXPORT_SCHEMA: &str = "karma-policy-export";
 const EXPORT_VERSION: u32 = 1;
 const MAX_EXPORT_BYTES: usize = 1_048_576;
-const RUNTIME_STATE_KEYS: [&str; 5] = [
+const RUNTIME_STATE_KEYS: [&str; 6] = [
     "serviceConnected",
     "agentConnected",
     "monitors",
     "evidence",
     "audit",
+    "network",
 ];
 
 fn strip_runtime_state(state: &mut serde_json::Value) {
@@ -85,6 +86,7 @@ fn parse_import_document(bytes: &[u8]) -> Option<serde_json::Value> {
     strip_runtime_state(&mut policy);
     // Reject backups whose policy cannot be enforced before the webview sees them.
     karma_policy::ContextPolicy::from_value(&policy).ok()?;
+    karma_policy::NetworkSchedulePolicy::from_value(&policy).ok()?;
     Some(policy)
 }
 
@@ -139,6 +141,9 @@ mod tests {
         let invalid_policy = br#"{"schema":"karma-policy-export","version":1,"exported_at_ms":1,
             "policy":{"websites":[{"id":"bad","pattern":"example.com/path","action":"block","enabled":true}]}}"#;
         assert!(parse_import_document(invalid_policy).is_none());
+        let invalid_schedule = br#"{"schema":"karma-policy-export","version":1,"exported_at_ms":1,
+            "policy":{"schedules":[{"id":"s","name":"s","target":"browsers","blocks":[{"day":9,"start":"08:00","end":"09:00"}],"enabled":true}]}}"#;
+        assert!(parse_import_document(invalid_schedule).is_none());
     }
 }
 
@@ -624,6 +629,26 @@ mod local_backend {
         Err(ConsoleError::EvidenceUnavailable)
     }
 
+    /// Development builds never enforce network schedules, so a verified
+    /// restore only reports the unrestricted state.
+    #[tauri::command]
+    fn restore_network(
+        app: AppHandle,
+        runtime: State<'_, ConsoleRuntime>,
+        session_token: String,
+        password: String,
+    ) -> Result<Value, ConsoleError> {
+        authorize(&runtime, &session_token)?;
+        let stored = load_stored(&config_path(&app)?)?;
+        verify_password(&runtime, &stored, Zeroizing::new(password))?;
+        Ok(json!({
+            "restricted": false,
+            "activeRuleIds": [],
+            "restrictedUntilMs": null,
+            "restoredUntilMs": null
+        }))
+    }
+
     #[cfg_attr(mobile, tauri::mobile_entry_point)]
     pub(super) fn run() {
         super::desktop_builder()
@@ -637,6 +662,7 @@ mod local_backend {
                 load_console,
                 save_console,
                 reveal_evidence,
+                restore_network,
                 export_settings,
                 import_settings
             ])
@@ -1030,6 +1056,7 @@ mod service_backend {
                 "latencyMs": monitor.latency_micros / 1000
             })).collect()),
         );
+        object.insert("network".into(), network_status_json(&status.network));
         object.insert(
             "evidence".into(),
             Value::Array(
@@ -1083,13 +1110,7 @@ mod service_backend {
             .get(&session_token)
             .ok_or(ConsoleError::SessionExpired)?;
         if let Some(object) = state.as_object_mut() {
-            for runtime_key in [
-                "serviceConnected",
-                "agentConnected",
-                "monitors",
-                "evidence",
-                "audit",
-            ] {
+            for runtime_key in super::RUNTIME_STATE_KEYS {
                 object.remove(runtime_key);
             }
         }
@@ -1129,6 +1150,26 @@ mod service_backend {
         }
     }
 
+    fn network_status_json(status: &karma_ipc::NetworkStatus) -> Value {
+        json!({
+            "restricted": status.restricted,
+            "activeRuleIds": status.active_rule_ids,
+            "restrictedUntilMs": status.restricted_until_ms,
+            "restoredUntilMs": status.restored_until_ms
+        })
+    }
+
+    #[tauri::command]
+    fn restore_network(session_token: String, password: String) -> Result<Value, ConsoleError> {
+        match request(ServiceRequest::RestoreNetwork {
+            session_token,
+            password,
+        })? {
+            ServiceResult::NetworkStatus(status) => Ok(network_status_json(&status)),
+            _ => Err(ConsoleError::InvalidResponse),
+        }
+    }
+
     fn acknowledged(result: ServiceResult) -> Result<(), ConsoleError> {
         if matches!(result, ServiceResult::Acknowledged) {
             Ok(())
@@ -1149,6 +1190,7 @@ mod service_backend {
                 load_console,
                 save_console,
                 reveal_evidence,
+                restore_network,
                 export_settings,
                 import_settings
             ])

@@ -325,6 +325,8 @@ The following situations can only be detected or reported afterward; prevention 
 
 Network control governs only which applications may access the network and when. Pornographic-content detection remains the responsibility of the on-screen AI.
 
+Current status: the console's Network Schedules page configures any number of time blocks for each day from Monday to Sunday (blocks may cross midnight) and one of three targets per rule: browsers (common browsers plus applications categorized as browsers), selected applications, or all networked applications. Single-range rules saved by earlier builds are migrated automatically. `KarmaService` validates every schedule, evaluates it in the device's local time zone, reports whether a block is active and when it ends, and records the start and end of each restricted period in the audit log. During a block, network access can be restored early only from the console by entering the administrator password again; the restore lasts until the current block ends, is persisted across Service restarts, and is audited. The WFP enforcement layer that applies `ServiceCore::network_enforcement` to the system is not implemented yet, so this build reports schedules but does not block network traffic.
+
 ### Windows
 
 - Use the WFP ALE connect/accept layers to create persistent filters based on application path, user, and protocol.
