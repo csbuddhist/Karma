@@ -35,6 +35,12 @@ C:\Program Files\Karma\Uninstall-Karma.ps1
 - 应用时段限制、网络过滤和多用户同时登录会话尚未完成；watchdog 当前跟随活动控制台会话。
 - 这是用户态家长控制。管理员仍可接管文件、服务配置或脱机修改系统；没有 ELAM/PPL/内核驱动时，不能诚实承诺对 Windows 管理员绝对不可终止。
 
+## v0.1.14 / Version 0.1.14
+
+新增配套守护服务 KarmaGuardian 与 KarmaService 每 5 秒互相守护：任一被“结束任务”强杀都会被服务控制管理器与对端在数秒内重新拉起。安装时收紧两个服务的 ACL（移除管理员的停止/暂停/更改配置权限）并收紧其注册表键 ACL（仅 SYSTEM 可写、管理员只读），因此在没有 Karma 密码时，services.msc / 任务管理器的“停止”、“启动类型=禁用”以及 regedit 改 `Start`/服务权限都会被拒绝。这面向“仅会使用 GUI 的非专业管理员”；懂终端命令、夺取所有权、恢复环境或离线修改的人仍可绕过。
+
+Adds a companion KarmaGuardian service that mutually guards KarmaService every 5 seconds: an End-task kill of either is restarted within seconds by the Service Control Manager and the peer. Installation hardens both service ACLs (removing the administrator's stop/pause/change-config rights) and their registry-key ACLs (SYSTEM-writable, administrator read-only), so without the Karma password the Stop action in Services.msc / Task Manager, the "Startup type = Disabled" change, and regedit edits to `Start` / the service permissions are all denied. This targets a non-technical, GUI-only administrator; terminal commands, taking ownership, the recovery environment, or offline edits can still bypass it.
+
 ## v0.1.13 / Version 0.1.13
 
 保护总览顶部新增总保护开关。解锁后关闭开关并点击“保存设置”停止保护；重新打开并保存恢复。项目代码采用 GPL-3.0-only，见 LICENSE；第三方资源保留各自许可证。
