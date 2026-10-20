@@ -35,6 +35,14 @@ C:\Program Files\Karma\Uninstall-Karma.ps1
 - 应用时段限制和多用户同时登录会话尚未完成；watchdog 当前跟随活动控制台会话。
 - 这是用户态家长控制。管理员仍可接管文件、服务配置或脱机修改系统；没有 ELAM/PPL/内核驱动时，不能诚实承诺对 Windows 管理员绝对不可终止。
 
+## v0.2.1 / Version 0.2.1
+
+图像色情识别关闭应用后，记住当时的窗口标题（浏览器即网页标题）和域名；以后同一应用再显示相同标题时直接关闭，网站白名单和“允许使用”的应用除外。控制台“内容识别”页可查看、删除已记住的标题或关闭此功能；标题仅保存在本机 Service 状态中（最多 200 条），不写入审计日志。重复关闭限制默认改为“20 分钟内被关闭 5 次即禁止打开 1 小时”，时间与次数可在“应用管控”页设置，当前被限制的应用也会显示在该页。Service 现在把封禁和已记住的标题下发给 Agent，重新打开被封禁的程序会立即被关闭（此前仅在程序再次触发识别时才关闭）。
+
+When explicit image detection closes an application, Karma now remembers that window's title (the page title in browsers) and host; the same application showing the same title again is closed immediately, except on allowlisted sites and for "Allow" applications. The Content Recognition page lists and deletes remembered titles and can turn the feature off; titles stay in the local Service state (at most 200) and never enter the audit log. The repeat-closure limit now defaults to 5 closures within 20 minutes, which blocks the application for 1 hour; both values are configurable on the Application Control page, which also lists currently restricted applications. The Service now publishes bans and remembered titles to the Agent, so a banned program is closed as soon as it is reopened (previously only when it triggered detection again).
+
+**Windows 真机验收待完成 / Windows hardware acceptance pending.** 需验证：图像关闭后同一网页重新打开即被关闭、不同网页不受影响、删除标题后恢复、20 分钟内第 5 次关闭后 1 小时内无法打开、修改时间与次数后生效。Verify that a reopened page is closed after an image closure, other pages are unaffected, deleting a title restores access, the fifth closure within 20 minutes blocks the application for an hour, and changed thresholds take effect.
+
 ## v0.2.0 / Version 0.2.0
 
 新增每周多时段断网和 Windows WFP 执行：覆盖浏览器、指定软件和全部应用的 IPv4/IPv6 TCP、UDP 等联网。服务启动即同步，之后每 60 秒读取一次状态；提前恢复、时段结束和保护开关变更最多约 60 秒生效。更新使用 WFP 事务，异常退出保留持久规则，正常停止及密码授权卸载清理规则。保留核心 Windows 联网基础设施和 Karma 自身，不放行其他位置的同名程序。失败与恢复写入审计日志。
