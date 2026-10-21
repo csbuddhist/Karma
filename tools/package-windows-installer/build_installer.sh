@@ -3,7 +3,8 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/../.." && pwd)"
-version="${1:-0.2.3}"
+product_version="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["version"])' "$repo_root/apps/karma-ui/src-tauri/tauri.conf.json")"
+version="${1:-$product_version}"
 bundle_dir="$repo_root/release/windows-x64-test"
 output_dir="$repo_root/target/release-artifacts"
 output_file="$output_dir/Karma-windows-x64-test-v${version}-setup.exe"
@@ -12,6 +13,10 @@ cleanup_file="$script_dir/Cleanup-InstallDirectory.ps1"
 
 if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   echo "version must use MAJOR.MINOR.PATCH format" >&2
+  exit 1
+fi
+if [[ "$version" != "$product_version" ]]; then
+  echo "installer version must match the built product / 安装器版本必须与产品版本一致" >&2
   exit 1
 fi
 if ! command -v makensis >/dev/null 2>&1; then

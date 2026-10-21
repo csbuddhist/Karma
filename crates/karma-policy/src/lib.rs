@@ -9,6 +9,7 @@ mod remembered_title;
 mod repeat_offender;
 mod risk;
 mod schedule;
+mod weakening;
 
 pub use application::{
     ApplicationFacts, ApplicationMatcher, ApplicationRule, RuleEffect, resolve_application,
@@ -37,3 +38,4 @@ pub use repeat_offender::{
 };
 pub use risk::{RiskOutcome, RiskState};
 pub use schedule::{MinuteRange, ScheduleError, WeeklySchedule};
+pub use weakening::{Weakening, policy_weakenings};

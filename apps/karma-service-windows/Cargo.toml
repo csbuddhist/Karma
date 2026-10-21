@@ -22,7 +22,10 @@ karma-ipc = { path = "../../crates/karma-ipc" }
 karma-disposition = { path = "../../crates/karma-disposition" }
 karma-service-core = { path = "../../crates/karma-service-core" }
 karma-policy = { path = "../../crates/karma-policy" }
+karma-update = { path = "../../crates/karma-update" }
 karma-windows-ipc = { path = "../../crates/karma-windows-ipc" }
+serde.workspace = true
+serde_json.workspace = true
 rand = "0.8"
 thiserror.workspace = true
 zeroize = "1"
@@ -36,6 +39,8 @@ windows = { version = "0.62.2", features = [
     "Win32_Security_Authorization",
     "Win32_Security_Cryptography",
     "Win32_System_RemoteDesktop",
+    "Win32_System_Registry",
+    "Win32_System_RestartManager",
     "Win32_System_Rpc",
     "Win32_System_SystemInformation",
     "Win32_System_Services",
@@ -45,4 +50,4 @@ windows = { version = "0.62.2", features = [
 windows-service = "0.8"
 
 [dev-dependencies]
-serde_json.workspace = true
+tempfile = "3"

@@ -29,7 +29,7 @@ fn synchronize_recognition_threshold(state: &mut serde_json::Value) {
 const EXPORT_SCHEMA: &str = "karma-policy-export";
 const EXPORT_VERSION: u32 = 1;
 const MAX_EXPORT_BYTES: usize = 1_048_576;
-const RUNTIME_STATE_KEYS: [&str; 8] = [
+const RUNTIME_STATE_KEYS: [&str; 12] = [
     "serviceConnected",
     "agentConnected",
     "monitors",
@@ -38,6 +38,10 @@ const RUNTIME_STATE_KEYS: [&str; 8] = [
     "network",
     "rememberedTitleTotal",
     "activeBans",
+    "productVersion",
+    "superPasswordSet",
+    "uninstall",
+    "update",
 ];
 
 fn strip_runtime_state(state: &mut serde_json::Value) {
@@ -111,7 +115,12 @@ mod tests {
             "evidence": [],
             "audit": [],
             "rememberedTitleTotal": 3,
-            "activeBans": []
+            "activeBans": [],
+            "superPasswordSet": true,
+            "productVersion": "0.2.4",
+            "uninstall": {"requestedAtMs": 1, "effectiveAtMs": 2, "expiresAtMs": 3},
+            "update": {"phase": "checking"},
+            "updates": {"autoInstall": false}
         }));
 
         assert_eq!(document["schema"], "karma-policy-export");
@@ -123,6 +132,11 @@ mod tests {
         assert!(policy.get("serviceConnected").is_none());
         assert!(policy.get("monitors").is_none());
         assert!(policy.get("rememberedTitleTotal").is_none());
+        assert!(policy.get("superPasswordSet").is_none());
+        assert!(policy.get("productVersion").is_none());
+        assert!(policy.get("uninstall").is_none());
+        assert!(policy.get("update").is_none());
+        assert_eq!(policy["updates"]["autoInstall"], false);
     }
 
     #[test]
@@ -282,6 +296,8 @@ mod local_backend {
         EvidenceUnavailable,
         #[error("本地安全存储不可用")]
         StorageUnavailable,
+        #[error("KarmaService 尚未运行或命名管道不可用")]
+        ServiceUnavailable,
         #[error("无法写入导出文件")]
         ExportFailed,
         #[error("备份文件无法读取或格式不正确")]
@@ -319,6 +335,7 @@ mod local_backend {
         json!({
             "protectionEnabled": true,
             "launchAtStartup": true,
+            "updates": { "autoInstall": true },
             "serviceConnected": false,
             "agentConnected": false,
             "monitors": [],
@@ -595,7 +612,9 @@ mod local_backend {
         app: AppHandle,
         runtime: State<'_, ConsoleRuntime>,
         session_token: String,
+        runtime_only: Option<bool>,
     ) -> Result<Value, ConsoleError> {
+        let _ = runtime_only;
         authorize(&runtime, &session_token)?;
         Ok(load_stored(&config_path(&app)?)?.state)
     }
@@ -606,7 +625,9 @@ mod local_backend {
         runtime: State<'_, ConsoleRuntime>,
         session_token: String,
         mut state: Value,
+        super_password: Option<String>,
     ) -> Result<(), ConsoleError> {
+        let _ = super_password.map(Zeroizing::new);
         authorize(&runtime, &session_token)?;
         super::synchronize_recognition_threshold(&mut state);
         if serde_json::to_vec(&state)
@@ -682,10 +703,85 @@ mod local_backend {
         runtime: State<'_, ConsoleRuntime>,
         session_token: String,
         title_id: String,
+        super_password: Option<String>,
     ) -> Result<(), ConsoleError> {
         authorize(&runtime, &session_token)?;
-        let _ = title_id;
+        let _ = (title_id, super_password.map(Zeroizing::new));
         Ok(())
+    }
+
+    /// Authorization and update state belongs to the Windows Service.
+    #[tauri::command]
+    fn authorization_status(
+        runtime: State<'_, ConsoleRuntime>,
+        session_token: String,
+    ) -> Result<Value, ConsoleError> {
+        authorize(&runtime, &session_token)?;
+        Ok(json!({
+            "productVersion": karma_ipc::PRODUCT_VERSION,
+            "superPasswordSet": false,
+            "uninstall": null,
+            "update": {"phase": "idle", "lastCheckedAtMs": null, "availableVersion": null, "lastError": null}
+        }))
+    }
+
+    #[tauri::command]
+    fn set_super_password(
+        runtime: State<'_, ConsoleRuntime>,
+        session_token: String,
+        admin_password: String,
+        super_password: String,
+    ) -> Result<(), ConsoleError> {
+        let _ = (
+            Zeroizing::new(admin_password),
+            Zeroizing::new(super_password),
+        );
+        authorize(&runtime, &session_token)?;
+        Err(ConsoleError::ServiceUnavailable)
+    }
+
+    #[tauri::command]
+    fn change_super_password(
+        runtime: State<'_, ConsoleRuntime>,
+        session_token: String,
+        current_super_password: String,
+        new_super_password: String,
+    ) -> Result<(), ConsoleError> {
+        let _ = (
+            Zeroizing::new(current_super_password),
+            Zeroizing::new(new_super_password),
+        );
+        authorize(&runtime, &session_token)?;
+        Err(ConsoleError::ServiceUnavailable)
+    }
+
+    #[tauri::command]
+    fn request_uninstall(
+        runtime: State<'_, ConsoleRuntime>,
+        session_token: String,
+        password: String,
+    ) -> Result<(), ConsoleError> {
+        let _ = Zeroizing::new(password);
+        authorize(&runtime, &session_token)?;
+        Err(ConsoleError::ServiceUnavailable)
+    }
+
+    #[tauri::command]
+    fn cancel_uninstall(
+        runtime: State<'_, ConsoleRuntime>,
+        session_token: String,
+    ) -> Result<(), ConsoleError> {
+        authorize(&runtime, &session_token)?;
+        Err(ConsoleError::ServiceUnavailable)
+    }
+
+    #[tauri::command]
+    fn check_for_updates(
+        runtime: State<'_, ConsoleRuntime>,
+        session_token: String,
+    ) -> Result<(), ConsoleError> {
+        authorize(&runtime, &session_token)?;
+        Err(ConsoleError::ServiceUnavailable)
     }
 
     #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -697,6 +793,12 @@ mod local_backend {
                 enroll,
                 unlock,
                 change_password,
+                authorization_status,
+                set_super_password,
+                change_super_password,
+                request_uninstall,
+                cancel_uninstall,
+                check_for_updates,
                 lock,
                 load_console,
                 save_console,
@@ -863,7 +965,7 @@ mod service_backend {
         ServiceUnavailable,
         #[error("管理员密码至少需要 10 个字符")]
         PasswordTooShort,
-        #[error("管理员密码不正确")]
+        #[error("密码不正确")]
         InvalidPassword,
         #[error("验证失败次数过多，请稍后重试")]
         RateLimited,
@@ -873,10 +975,14 @@ mod service_backend {
         AlreadyEnrolled,
         #[error("控制台尚未设置管理员密码")]
         NotEnrolled,
-        #[error("设置已被另一个管理会话修改，请重新打开控制台")]
+        #[error("设置已被另一个管理会话修改，当前修改已保留，请检查后再次保存")]
         RevisionConflict,
         #[error("该事件没有可用的加密原图")]
         EvidenceUnavailable,
+        #[error("super_password_required")]
+        SuperPasswordRequired,
+        #[error("更新必须为经过签名验证的较新版本")]
+        UpdateRejected,
         #[error("保护服务拒绝了请求")]
         RequestDenied,
         #[error("保护服务返回了无效响应")]
@@ -903,6 +1009,7 @@ mod service_backend {
         json!({
             "protectionEnabled": true,
             "launchAtStartup": true,
+            "updates": { "autoInstall": true },
             "serviceConnected": true,
             "agentConnected": false,
             "monitors": [],
@@ -958,6 +1065,8 @@ mod service_backend {
             ServiceErrorCode::NotEnrolled => ConsoleError::NotEnrolled,
             ServiceErrorCode::RevisionConflict => ConsoleError::RevisionConflict,
             ServiceErrorCode::EvidenceUnavailable => ConsoleError::EvidenceUnavailable,
+            ServiceErrorCode::SuperPasswordRequired => ConsoleError::SuperPasswordRequired,
+            ServiceErrorCode::UpdateRejected => ConsoleError::UpdateRejected,
             ServiceErrorCode::ServiceUnavailable | ServiceErrorCode::StorageUnavailable => {
                 ConsoleError::ServiceUnavailable
             }
@@ -1053,10 +1162,37 @@ mod service_backend {
         acknowledged(result)
     }
 
+    fn authorization_json(status: &karma_ipc::ServiceStatus) -> Value {
+        json!({
+            "productVersion": status.product_version,
+            "superPasswordSet": status.super_password_set,
+            "uninstall": status.uninstall.map(|uninstall| json!({
+                "requestedAtMs": uninstall.requested_at_ms,
+                "effectiveAtMs": uninstall.effective_at_ms,
+                "expiresAtMs": uninstall.expires_at_ms
+            })),
+            "update": {
+                "phase": status.update.phase,
+                "lastCheckedAtMs": status.update.last_checked_at_ms,
+                "availableVersion": status.update.available_version,
+                "lastError": status.update.last_error
+            }
+        })
+    }
+
+    #[tauri::command]
+    fn authorization_status(session_token: String) -> Result<Value, ConsoleError> {
+        match request(ServiceRequest::GetStatus { session_token })? {
+            ServiceResult::Status(status) => Ok(authorization_json(&status)),
+            _ => Err(ConsoleError::InvalidResponse),
+        }
+    }
+
     #[tauri::command]
     fn load_console(
         runtime: State<'_, ServiceUiRuntime>,
         session_token: String,
+        runtime_only: Option<bool>,
     ) -> Result<Value, ConsoleError> {
         let (revision, policy) = match request(ServiceRequest::GetPolicy {
             session_token: session_token.clone(),
@@ -1086,11 +1222,13 @@ mod service_backend {
             ServiceResult::Enforcement(summary) => summary,
             _ => return Err(ConsoleError::InvalidResponse),
         };
-        runtime
-            .0
-            .lock()
-            .map_err(|_| ConsoleError::InvalidResponse)?
-            .insert(session_token, revision);
+        if !runtime_only.unwrap_or(false) {
+            runtime
+                .0
+                .lock()
+                .map_err(|_| ConsoleError::InvalidResponse)?
+                .insert(session_token, revision);
+        }
 
         let mut state = default_console_state();
         if let (Some(target), Some(source)) = (state.as_object_mut(), policy.as_object()) {
@@ -1099,6 +1237,13 @@ mod service_backend {
             }
         }
         let object = state.as_object_mut().ok_or(ConsoleError::InvalidResponse)?;
+        if let Some(authorization) = authorization_json(&status).as_object() {
+            object.extend(
+                authorization
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.clone())),
+            );
+        }
         object.insert("serviceConnected".into(), Value::Bool(true));
         object.insert("agentConnected".into(), Value::Bool(status.agent_connected));
         object.insert(
@@ -1180,6 +1325,7 @@ mod service_backend {
         runtime: State<'_, ServiceUiRuntime>,
         session_token: String,
         mut state: Value,
+        super_password: Option<String>,
     ) -> Result<(), ConsoleError> {
         super::synchronize_recognition_threshold(&mut state);
         let revision = *runtime
@@ -1193,11 +1339,26 @@ mod service_backend {
                 object.remove(runtime_key);
             }
         }
-        match request(ServiceRequest::PutPolicy {
+        let result = request(ServiceRequest::PutPolicy {
             session_token: session_token.clone(),
             expected_revision: revision,
             policy: state,
-        })? {
+            super_password,
+        });
+        if matches!(result, Err(ConsoleError::RevisionConflict)) {
+            // Keep the webview's edits. Refresh only the expected revision so a
+            // reviewed, explicit retry can be accepted by the Service.
+            if let Ok(ServiceResult::Policy { revision, .. }) = request(ServiceRequest::GetPolicy {
+                session_token: session_token.clone(),
+            }) {
+                runtime
+                    .0
+                    .lock()
+                    .map_err(|_| ConsoleError::InvalidResponse)?
+                    .insert(session_token.clone(), revision);
+            }
+        }
+        match result? {
             ServiceResult::PolicySaved { revision } => {
                 runtime
                     .0
@@ -1270,10 +1431,12 @@ mod service_backend {
     fn forget_remembered_title(
         session_token: String,
         title_id: String,
+        super_password: Option<String>,
     ) -> Result<(), ConsoleError> {
         acknowledged(request(ServiceRequest::ForgetRememberedTitle {
             session_token,
             title_id,
+            super_password,
         })?)
     }
 
@@ -1286,6 +1449,50 @@ mod service_backend {
             ServiceResult::NetworkStatus(status) => Ok(network_status_json(&status)),
             _ => Err(ConsoleError::InvalidResponse),
         }
+    }
+
+    #[tauri::command]
+    fn set_super_password(
+        session_token: String,
+        admin_password: String,
+        super_password: String,
+    ) -> Result<(), ConsoleError> {
+        acknowledged(request(ServiceRequest::SetSuperPassword {
+            session_token,
+            admin_password,
+            super_password,
+        })?)
+    }
+
+    #[tauri::command]
+    fn change_super_password(
+        session_token: String,
+        current_super_password: String,
+        new_super_password: String,
+    ) -> Result<(), ConsoleError> {
+        acknowledged(request(ServiceRequest::ChangeSuperPassword {
+            session_token,
+            current_super_password,
+            new_super_password,
+        })?)
+    }
+
+    #[tauri::command]
+    fn request_uninstall(session_token: String, password: String) -> Result<(), ConsoleError> {
+        acknowledged(request(ServiceRequest::RequestUninstall {
+            session_token,
+            password,
+        })?)
+    }
+
+    #[tauri::command]
+    fn cancel_uninstall(session_token: String) -> Result<(), ConsoleError> {
+        acknowledged(request(ServiceRequest::CancelUninstall { session_token })?)
+    }
+
+    #[tauri::command]
+    fn check_for_updates(session_token: String) -> Result<(), ConsoleError> {
+        acknowledged(request(ServiceRequest::CheckForUpdates { session_token })?)
     }
 
     fn acknowledged(result: ServiceResult) -> Result<(), ConsoleError> {
@@ -1304,6 +1511,12 @@ mod service_backend {
                 enroll,
                 unlock,
                 change_password,
+                authorization_status,
+                set_super_password,
+                change_super_password,
+                request_uninstall,
+                cancel_uninstall,
+                check_for_updates,
                 lock,
                 load_console,
                 save_console,

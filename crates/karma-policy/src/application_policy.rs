@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use serde::Deserialize;
 use serde_json::Value;
 use thiserror::Error;
@@ -93,6 +95,15 @@ impl ApplicationPolicy {
             });
         }
         Ok(Self { rules })
+    }
+
+    /// Joined executable rule components of the enabled rules with `effect`.
+    pub(crate) fn executables_with(&self, effect: ApplicationEffect) -> BTreeSet<String> {
+        self.rules
+            .iter()
+            .filter(|rule| rule.effect == effect)
+            .map(|rule| rule.executable_components.join("\\"))
+            .collect()
     }
 
     pub fn effect_for(&self, executable_path: &str) -> ApplicationEffect {

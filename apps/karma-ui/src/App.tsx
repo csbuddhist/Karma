@@ -49,6 +49,9 @@ import {
 import {
   authStatus,
   changePassword,
+  changeSuperPassword,
+  checkForUpdates,
+  cancelUninstall,
   chooseExportPath,
   chooseImportPath,
   configureLaunchAtStartup,
@@ -59,6 +62,9 @@ import {
   getAppVersion,
   importSettings,
   isTauriConsole,
+  isSuperPasswordRequired,
+  isAuthorizationCancelled,
+  loadAuthorizationStatus,
   listRememberedTitles,
   loadConsole,
   lock,
@@ -69,6 +75,8 @@ import {
   restoreNetwork,
   revealEvidence,
   saveConsole,
+  setSuperPassword,
+  requestUninstall,
   unlock,
 } from "./bridge";
 import { bundledKeywordCount, bundledKeywordGroups } from "./bundledKeywords";
@@ -390,6 +398,7 @@ function RememberedTitlesCard({ state, update, sessionToken }: { state: ConsoleS
   const [titles, setTitles] = useState<RememberedTitlePage>({ items: [], total: 0 });
   const [reload, setReload] = useState(0);
   const [busyId, setBusyId] = useState<string>();
+  const authorize = useSuperAuthorization();
   const [error, setError] = useState("");
   const settings = state.recognition;
   const pageCount = Math.max(1, Math.ceil(titles.total / rememberedTitlePageSize));
@@ -415,10 +424,10 @@ function RememberedTitlesCard({ state, update, sessionToken }: { state: ConsoleS
     setBusyId(id);
     setError("");
     try {
-      await forgetRememberedTitle(sessionToken, id);
+      await authorize((superPassword) => forgetRememberedTitle(sessionToken, id, superPassword));
       setReload((value) => value + 1);
     } catch (reason) {
-      setError(localizeError(reason, t));
+      if (!isAuthorizationCancelled(reason)) setError(localizeError(reason, t));
     } finally {
       setBusyId(undefined);
     }
@@ -690,7 +699,7 @@ function NetworkStatusCard({ state, sessionToken, onNetworkChange }: { state: Co
   let icon = <Wifi />;
   let tone = "green";
   let title = t("network.idleTitle");
-  let detail = t(state.serviceConnected ? "network.idleDescription" : "network.serviceRequired");
+  let detail = t(state.serviceConnected ? state.superPasswordSet ? "network.idleSuperDescription" : "network.idleDescription" : "network.serviceRequired");
   if (network.restricted) {
     icon = <WifiOff />;
     tone = "amber";
@@ -712,7 +721,7 @@ function NetworkStatusCard({ state, sessionToken, onNetworkChange }: { state: Co
       {open && (
         <Modal title={t("network.restoreTitle")} onClose={() => setOpen(false)}>
           <p className="modal-description">{t("network.restoreDescription")}</p>
-          <label className="field"><span>{t("network.password")}</span><input type="password" value={password} autoFocus autoComplete="current-password" onChange={(event) => setPassword(event.target.value)} onKeyDown={(event) => event.key === "Enter" && void submit()} /></label>
+          <label className="field"><span>{t(state.superPasswordSet ? "super.password" : "network.password")}</span><input type="password" value={password} autoFocus autoComplete="current-password" onChange={(event) => setPassword(event.target.value)} onKeyDown={(event) => event.key === "Enter" && void submit()} /></label>
           {error && <div className="form-error"><CircleAlert size={16} />{error}</div>}
           <button className="primary-button modal-submit" disabled={!password || busy} onClick={() => void submit()}><Wifi size={17} />{t(busy ? "network.restoring" : "network.restoreConfirm")}</button>
         </Modal>
@@ -1014,14 +1023,182 @@ function BackupCard({
   </Card>;
 }
 
-function SettingsPage({ state, update, sessionToken }: { state: ConsoleState; update: (state: ConsoleState) => void; sessionToken: string }) {
+function SuperPasswordCard({ state, sessionToken, onRefresh }: { state: ConsoleState; sessionToken: string; onRefresh: () => Promise<void> }) {
   const { t } = useI18n();
-  return <div className="settings-grid"><Card className="full-span"><div className="setting-row"><div className="setting-icon green"><KarmaShieldIcon /></div><div><strong>{t("settings.protectionTitle")}</strong><p>{t("settings.protectionDescription")}</p></div><Toggle checked={state.protectionEnabled} onChange={(value) => update({ ...state, protectionEnabled: value })} label={t("settings.protectionToggle")} /></div></Card><Card className="full-span"><div className="setting-row"><div className="setting-icon violet"><Power /></div><div><strong>{t("settings.autostartTitle")}</strong><p>{t("settings.autostartDescription")}</p></div><Toggle checked={state.launchAtStartup} onChange={(value) => update({ ...state, launchAtStartup: value })} label={t("settings.autostartToggle")} /></div></Card><Card className="full-span language-card"><div className="setting-row"><div className="setting-icon blue"><Globe2 /></div><div><strong>{t("settings.languageTitle")}</strong><p>{t("language.description")}</p></div><LanguageSelect /></div></Card><PasswordChangeCard sessionToken={sessionToken} /><BackupCard sessionToken={sessionToken} state={state} update={update} /><Card><div className="card-heading"><div><h2>{t("settings.capabilities")}</h2><p>{t("settings.progress")}</p></div></div><div className="capability-list"><div><Check />{t("settings.capability1")}</div><div><Check />{t("settings.capability2")}</div><div><Check />{t("settings.capability3")}</div><div><Check />{t("settings.capability4")}</div><div><Check />{t("settings.capability5")}</div><div className="pending"><CircleAlert />{t("settings.capabilityPending")}</div></div></Card><Card><div className="card-heading"><div><h2>{t("settings.security")}</h2><p>{t("settings.securitySubtitle")}</p></div></div><div className="security-note"><Lock /><p>{t("settings.securityDescription")}</p></div></Card></div>;
+  const [current, setCurrent] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [saved, setSaved] = useState(false);
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setError("");
+    setSaved(false);
+    if (Array.from(password).length < 10) return setError(t("super.tooShort"));
+    if (password !== confirm) return setError(t("auth.passwordMismatch"));
+    if (!state.superPasswordSet && current === password) return setError(t("super.mustDiffer"));
+    setBusy(true);
+    try {
+      if (state.superPasswordSet) await changeSuperPassword(sessionToken, current, password);
+      else await setSuperPassword(sessionToken, current, password);
+      setCurrent(""); setPassword(""); setConfirm("");
+      await onRefresh();
+      setSaved(true);
+    } catch (reason) { setError(localizeError(reason, t)); }
+    finally { setBusy(false); }
+  }
+  return <Card className="full-span">
+    <div className="card-heading"><div><h2>{t("super.title")}</h2><p>{t("super.description")}</p></div><StatusPill tone={state.superPasswordSet ? "good" : "muted"}>{t(state.superPasswordSet ? "super.configured" : "super.notConfigured")}</StatusPill></div>
+    {!state.serviceConnected && <p className="field-hint">{t("authorization.serviceRequired")}</p>}
+    <form className="password-form" onSubmit={submit}>
+      <label className="field"><span>{t(state.superPasswordSet ? "super.current" : "auth.password")}</span><input type="password" autoComplete="current-password" value={current} onChange={(event) => { setCurrent(event.target.value); setSaved(false); }} /></label>
+      <label className="field"><span>{t("super.new")}</span><input type="password" autoComplete="new-password" value={password} onChange={(event) => { setPassword(event.target.value); setSaved(false); }} /></label>
+      <label className="field"><span>{t("super.confirm")}</span><input type="password" autoComplete="new-password" value={confirm} onChange={(event) => { setConfirm(event.target.value); setSaved(false); }} /></label>
+      <div className="password-form-footer">
+        {error && <div className="form-error"><CircleAlert size={16} />{error}</div>}
+        {saved && !error && <div className="form-success"><Check size={16} />{t("super.saved")}</div>}
+        <button className="primary-button" type="submit" disabled={busy || !state.serviceConnected || !current || !password || !confirm}><KeyRound size={17} />{t(busy ? "common.saving" : state.superPasswordSet ? "super.change" : "super.set")}</button>
+      </div>
+    </form>
+  </Card>;
+}
+
+function countdown(until: number, now: number): string {
+  const seconds = Math.max(0, Math.ceil((until - now) / 1000));
+  return `${Math.floor(seconds / 3600)}:${String(Math.floor(seconds / 60) % 60).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+function UninstallCard({ state, sessionToken, onRefresh }: { state: ConsoleState; sessionToken: string; onRefresh: () => Promise<void> }) {
+  const { locale, t } = useI18n();
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => { const interval = window.setInterval(() => setNow(Date.now()), 1000); return () => window.clearInterval(interval); }, []);
+  const pending = state.uninstall;
+  const waiting = pending !== null && now < pending.effectiveAtMs;
+  const ready = pending !== null && now >= pending.effectiveAtMs && now < pending.expiresAtMs;
+  async function perform(cancel: boolean) {
+    setBusy(true); setError("");
+    try {
+      if (cancel) await cancelUninstall(sessionToken);
+      else await requestUninstall(sessionToken, password);
+      setPassword("");
+      await onRefresh();
+    } catch (reason) { setError(localizeError(reason, t)); }
+    finally { setBusy(false); }
+  }
+  return <Card className="full-span">
+    <div className="card-heading"><div><h2>{t("uninstall.title")}</h2><p>{t("uninstall.description")}</p></div><div className="setting-icon amber"><CalendarClock /></div></div>
+    {!state.serviceConnected && <p className="field-hint">{t("authorization.serviceRequired")}</p>}
+    {pending && <div className="uninstall-status" role="status"><StatusPill tone={ready ? "good" : waiting ? "warn" : "muted"}>{t(waiting ? "uninstall.waiting" : ready ? "uninstall.ready" : "uninstall.expired")}</StatusPill><strong className="countdown">{waiting ? t("uninstall.waitRemaining", { time: countdown(pending.effectiveAtMs, now) }) : ready ? t("uninstall.windowRemaining", { time: countdown(pending.expiresAtMs, now) }) : t("uninstall.requestAgain")}</strong><small>{t("uninstall.window", { start: new Date(pending.effectiveAtMs).toLocaleString(locale), end: new Date(pending.expiresAtMs).toLocaleString(locale) })}</small>{ready && <p>{t("uninstall.instructions")}</p>}</div>}
+    <form className="uninstall-form" onSubmit={(event) => { event.preventDefault(); void perform(false); }}>
+      {(!pending || (!waiting && !ready)) && <><label className="field"><span>{t("auth.password")}</span><input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} /></label><button className="primary-button" type="submit" disabled={busy || !state.serviceConnected || !password}>{t(busy ? "auth.verifying" : "uninstall.request")}</button></>}
+      {pending && <button className="secondary-button" type="button" disabled={busy || !state.serviceConnected} onClick={() => void perform(true)}>{t("uninstall.cancel")}</button>}
+    </form>
+    {error && <div className="form-error backup-feedback"><CircleAlert size={16} />{error}</div>}
+  </Card>;
+}
+
+const updatePhaseKeys: Record<ConsoleState["update"]["phase"], MessageKey> = {
+  idle: "updates.idle", checking: "updates.checking", downloading: "updates.downloading", installing: "updates.installing", up_to_date: "updates.upToDate", failed: "updates.failed",
+};
+
+const updateErrorKeys: Record<string, MessageKey> = {
+  storage: "updates.errorStorage",
+  invalid_manifest: "updates.errorManifest",
+  bad_signature: "updates.errorSignature",
+  not_newer: "updates.errorNotNewer",
+  hash_mismatch: "updates.errorIntegrity",
+  missing_file: "updates.errorIntegrity",
+  too_large: "updates.errorTooLarge",
+  invalid_archive: "updates.errorArchive",
+  network: "updates.errorNetwork",
+  unsafe_path: "updates.errorPath",
+};
+
+function SoftwareUpdatesCard({ state, update, sessionToken, onRefresh }: { state: ConsoleState; update: (state: ConsoleState) => void; sessionToken: string; onRefresh: () => Promise<void> }) {
+  const { locale, t } = useI18n();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const active = ["checking", "downloading", "installing"].includes(state.update.phase);
+  async function check() {
+    setBusy(true); setError("");
+    try { await checkForUpdates(sessionToken); await onRefresh(); }
+    catch (reason) { setError(localizeError(reason, t)); }
+    finally { setBusy(false); }
+  }
+  return <Card className="full-span">
+    <div className="card-heading"><div><h2>{t("updates.title")}</h2><p>{t("updates.version", { version: state.productVersion || t("updates.unknownVersion") })}</p></div><div className="setting-icon blue"><Download /></div></div>
+    <div className="setting-row update-preference"><div><strong>{t("updates.autoTitle")}</strong><p>{t("updates.autoDescription")}</p></div><Toggle checked={state.updates.autoInstall} onChange={(autoInstall) => update({ ...state, updates: { ...state.updates, autoInstall } })} label={t("updates.autoTitle")} /></div>
+    <div className="update-status"><div role="status"><strong>{t(updatePhaseKeys[state.update.phase])}</strong>{state.update.availableVersion && <small>{t("updates.available", { version: state.update.availableVersion })}</small>}{state.update.lastCheckedAtMs && <small>{t("updates.lastChecked", { time: new Date(state.update.lastCheckedAtMs).toLocaleString(locale) })}</small>}</div><button className="secondary-button" disabled={busy || active || !state.serviceConnected} onClick={() => void check()}><Download size={16} />{t(busy || active ? "updates.checking" : "updates.checkNow")}</button></div>
+    {state.update.lastError && <div className="form-error backup-feedback"><CircleAlert size={16} />{t(updateErrorKeys[state.update.lastError] ?? "updates.failed")}</div>}
+    {!state.serviceConnected && <p className="field-hint">{t("authorization.serviceRequired")}</p>}
+    <small className="field-hint">{t("updates.saveHint")}</small>
+    {error && <div className="form-error backup-feedback"><CircleAlert size={16} />{error}</div>}
+  </Card>;
+}
+
+function SettingsPage({ state, update, sessionToken, onRefresh }: { state: ConsoleState; update: (state: ConsoleState) => void; sessionToken: string; onRefresh: () => Promise<void> }) {
+  const { t } = useI18n();
+  return <div className="settings-grid"><Card className="full-span"><div className="setting-row"><div className="setting-icon green"><KarmaShieldIcon /></div><div><strong>{t("settings.protectionTitle")}</strong><p>{t("settings.protectionDescription")}</p></div><Toggle checked={state.protectionEnabled} onChange={(value) => update({ ...state, protectionEnabled: value })} label={t("settings.protectionToggle")} /></div></Card><Card className="full-span"><div className="setting-row"><div className="setting-icon violet"><Power /></div><div><strong>{t("settings.autostartTitle")}</strong><p>{t("settings.autostartDescription")}</p></div><Toggle checked={state.launchAtStartup} onChange={(value) => update({ ...state, launchAtStartup: value })} label={t("settings.autostartToggle")} /></div></Card><Card className="full-span language-card"><div className="setting-row"><div className="setting-icon blue"><Globe2 /></div><div><strong>{t("settings.languageTitle")}</strong><p>{t("language.description")}</p></div><LanguageSelect /></div></Card><PasswordChangeCard sessionToken={sessionToken} /><SuperPasswordCard state={state} sessionToken={sessionToken} onRefresh={onRefresh} /><UninstallCard state={state} sessionToken={sessionToken} onRefresh={onRefresh} /><SoftwareUpdatesCard state={state} update={update} sessionToken={sessionToken} onRefresh={onRefresh} /><BackupCard sessionToken={sessionToken} state={state} update={update} /><Card><div className="card-heading"><div><h2>{t("settings.capabilities")}</h2><p>{t("settings.progress")}</p></div></div><div className="capability-list"><div><Check />{t("settings.capability1")}</div><div><Check />{t("settings.capability2")}</div><div><Check />{t("settings.capability3")}</div><div><Check />{t("settings.capability4")}</div><div><Check />{t("settings.capability5")}</div><div className="pending"><CircleAlert />{t("settings.capabilityPending")}</div></div></Card><Card><div className="card-heading"><div><h2>{t("settings.security")}</h2><p>{t("settings.securitySubtitle")}</p></div></div><div className="security-note"><Lock /><p>{t("settings.securityDescription")}</p></div></Card></div>;
 }
 
 function Modal({ title, children, onClose, wide = false }: { title: string; children: ReactNode; onClose: () => void; wide?: boolean }) {
   const { t } = useI18n();
-  return <div className="modal-backdrop" onMouseDown={onClose}><section className={`modal ${wide ? "wide" : ""}`} onMouseDown={(event) => event.stopPropagation()}><div className="modal-head"><h2>{title}</h2><button className="icon-button" aria-label={t("common.close")} onClick={onClose}><X /></button></div>{children}</section></div>;
+  return <div className="modal-backdrop" onMouseDown={onClose}><section role="dialog" aria-modal="true" aria-label={title} className={`modal ${wide ? "wide" : ""}`} onMouseDown={(event) => event.stopPropagation()}><div className="modal-head"><h2>{title}</h2><button className="icon-button" aria-label={t("common.close")} onClick={onClose}><X /></button></div>{children}</section></div>;
+}
+
+type SuperProtectedAction = (superPassword?: string) => Promise<void>;
+const SuperAuthorizationContext = createContext<((action: SuperProtectedAction) => Promise<void>) | null>(null);
+
+function useSuperAuthorization() {
+  const authorize = useContext(SuperAuthorizationContext);
+  if (!authorize) throw new Error("Super authorization is unavailable");
+  return authorize;
+}
+
+function SuperAuthorizationProvider({ children }: { children: ReactNode }) {
+  const { t } = useI18n();
+  const [pending, setPending] = useState<{ action: SuperProtectedAction; resolve: () => void; reject: (reason: unknown) => void } | null>(null);
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const queue = useRef<Promise<void>>(Promise.resolve());
+  function authorize(action: SuperProtectedAction): Promise<void> {
+    const result = queue.current.then(() => attempt(action));
+    queue.current = result.catch(() => undefined);
+    return result;
+  }
+  async function attempt(action: SuperProtectedAction) {
+    try { await action(); }
+    catch (reason) {
+      // Only the Service may decide that this action needs the super password.
+      if (!isSuperPasswordRequired(reason)) throw reason;
+      setPassword(""); setError("");
+      await new Promise<void>((resolve, reject) => setPending({ action, resolve, reject }));
+    }
+  }
+  function cancel() {
+    if (busy || !pending) return;
+    pending.reject(new Error("super_password_cancelled"));
+    setPending(null); setPassword(""); setError("");
+  }
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (!pending || !password || busy) return;
+    setBusy(true); setError("");
+    try {
+      await pending.action(password);
+      pending.resolve(); setPending(null); setPassword("");
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : String(reason);
+      if (isSuperPasswordRequired(reason) || message === "密码不正确" || message === "验证失败次数过多，请稍后重试") setError(localizeError(reason, t));
+      else { pending.reject(reason); setPending(null); setPassword(""); }
+    } finally { setBusy(false); }
+  }
+  return <SuperAuthorizationContext.Provider value={authorize}>{children}{pending && <Modal title={t("super.authorizeTitle")} onClose={cancel}><p className="modal-description">{t("super.authorizeDescription")}</p><form onSubmit={submit}><label className="field"><span>{t("super.password")}</span><input type="password" autoFocus autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} /></label>{error && <div className="form-error backup-feedback"><CircleAlert size={16} />{error}</div>}<button className="primary-button modal-submit" type="submit" disabled={busy || !password}>{t(busy ? "auth.verifying" : "super.authorize")}</button><button className="secondary-button modal-submit" type="button" disabled={busy} onClick={cancel}>{t("common.cancel")}</button></form></Modal>}</SuperAuthorizationContext.Provider>;
 }
 
 function AppContent() {
@@ -1037,6 +1214,8 @@ function AppContent() {
   const [saveError, setSaveError] = useState("");
   const [startupError, setStartupError] = useState("");
   const [appVersion, setAppVersion] = useState("");
+  const editRevision = useRef(0);
+  const authorize = useSuperAuthorization();
 
   async function refreshAuthStatus() { setLoading(true); setStartupError(""); try { setAuthMode(await authStatus()); } catch (reason) { setStartupError(reason instanceof Error ? reason.message : String(reason)); } finally { setLoading(false); } }
   useEffect(() => { document.documentElement.lang = locale; document.title = t("document.title"); }, [locale, t]);
@@ -1051,9 +1230,16 @@ function AppContent() {
     return () => { window.clearTimeout(timeout); events.forEach((eventName) => window.removeEventListener(eventName, reset)); };
   }, [authMode, sessionToken]);
   useEffect(() => {
-    if (authMode !== "unlocked" || !sessionToken || dirty) return;
+    if (authMode !== "unlocked" || !sessionToken) return;
+    let current = true;
     const refresh = () => {
-      void loadConsole(sessionToken).then(setState).catch((reason) => {
+      void loadConsole(sessionToken, true).then((next) => {
+        if (!current) return;
+        // Runtime refreshes never replace an administrator's policy draft or
+        // change the revision against which that draft will be saved.
+        setState((previous) => ({ ...previous, serviceConnected: next.serviceConnected, agentConnected: next.agentConnected, monitors: next.monitors, network: next.network, evidence: next.evidence, audit: next.audit, rememberedTitleTotal: next.rememberedTitleTotal, activeBans: next.activeBans, productVersion: next.productVersion, superPasswordSet: next.superPasswordSet, uninstall: next.uninstall, update: next.update }));
+      }).catch((reason) => {
+        if (!current) return;
         // A restarted service invalidates every in-memory session; return to the
         // unlock screen so a fresh token is issued instead of reporting offline.
         if (isSessionExpiredError(reason)) { void signOut(); return; }
@@ -1061,26 +1247,30 @@ function AppContent() {
       });
     };
     const interval = window.setInterval(refresh, 5000);
-    return () => window.clearInterval(interval);
-  }, [authMode, sessionToken, dirty]);
+    return () => { current = false; window.clearInterval(interval); };
+  }, [authMode, sessionToken]);
   async function authenticated(token: string) { setSessionToken(token); setLoading(true); try { const next = await loadConsole(token); setState(next); setAuthMode("unlocked"); void configureLaunchAtStartup(next.launchAtStartup).catch((reason) => console.error("Failed to synchronize autostart", reason)); } finally { setLoading(false); } }
-  function update(next: ConsoleState) { setState(next); setDirty(true); setSaveMessage(""); setSaveError(""); }
+  function update(next: ConsoleState) { editRevision.current += 1; setState(next); setDirty(true); setSaveMessage(""); setSaveError(""); }
   // Network status is runtime state reported by the Service, not an unsaved policy edit.
   function updateNetwork(network: NetworkStatus) { setState((current) => ({ ...current, network })); }
+  async function refreshAuthorization() {
+    const status = await loadAuthorizationStatus(sessionToken);
+    setState((current) => ({ ...current, ...status }));
+  }
   async function save() {
+    const revision = editRevision.current;
     setSaving(true);
     setSaveError("");
     try {
       const next = { ...state, recognition: { ...state.recognition, immediateThreshold: state.recognition.sensitivity } };
+      await authorize((superPassword) => saveConsole(sessionToken, next, superPassword));
       await configureLaunchAtStartup(next.launchAtStartup);
-      await saveConsole(sessionToken, next);
-      setState(next);
-      setDirty(false);
+      if (editRevision.current === revision) setDirty(false);
       setSaveMessage(t("common.settingsSaved"));
       window.setTimeout(() => setSaveMessage(""), 2200);
     } catch (reason) {
       if (isSessionExpiredError(reason)) { await signOut(); return; }
-      setSaveError(localizeError(reason, t));
+      if (!isAuthorizationCancelled(reason)) setSaveError(localizeError(reason, t));
     } finally {
       setSaving(false);
     }
@@ -1089,6 +1279,8 @@ function AppContent() {
     // The service may be down or the session already invalid; always reset locally.
     await lock(sessionToken).catch(() => undefined);
     setSessionToken("");
+    editRevision.current += 1;
+    setDirty(false);
     setState(defaultConsoleState);
     setAuthMode("locked");
     setPage("overview");
@@ -1106,7 +1298,7 @@ function AppContent() {
     if (page === "schedule") return <Schedule state={state} update={update} sessionToken={sessionToken} onNetworkChange={updateNetwork} />;
     if (page === "evidence") return <Evidence state={state} sessionToken={sessionToken} />;
     if (page === "audit") return <Audit state={state} />;
-    return <SettingsPage state={state} update={update} sessionToken={sessionToken} />;
+    return <SettingsPage state={state} update={update} sessionToken={sessionToken} onRefresh={refreshAuthorization} />;
   }, [page, state, sessionToken, locale]);
 
   if (loading) return <div className="loading-screen"><div className="brand-mark"><KarmaShieldIcon /></div><span>{t("common.loading")}</span></div>;
@@ -1121,5 +1313,5 @@ export function App() {
   const t = useMemo(() => createTranslator(locale), [locale]);
   const setLocale = (nextLocale: Locale) => { persistLocale(nextLocale); setLocaleState(nextLocale); };
   const value = useMemo(() => ({ locale, setLocale, t }), [locale, t]);
-  return <I18nContext.Provider value={value}><AppContent /></I18nContext.Provider>;
+  return <I18nContext.Provider value={value}><SuperAuthorizationProvider><AppContent /></SuperAuthorizationProvider></I18nContext.Provider>;
 }

@@ -57,17 +57,22 @@ fn check(operation: &'static str, code: u32) -> Result<(), NetworkError> {
 pub fn start(
     core: Arc<ServiceCore>,
     shutdown: Arc<AtomicBool>,
+    updating: Arc<AtomicBool>,
 ) -> std::io::Result<JoinHandle<Result<(), NetworkError>>> {
     thread::Builder::new()
         .name("karma-network-enforcement".into())
-        .spawn(move || run(&core, &shutdown))
+        .spawn(move || run(&core, &shutdown, &updating))
 }
 
 pub fn clear_filters() -> Result<(), NetworkError> {
     WfpEngine::open()?.remove()
 }
 
-fn run(core: &ServiceCore, shutdown: &AtomicBool) -> Result<(), NetworkError> {
+fn run(
+    core: &ServiceCore,
+    shutdown: &AtomicBool,
+    updating: &AtomicBool,
+) -> Result<(), NetworkError> {
     let mut reconciler = None;
     let mut next_poll = Instant::now();
     while !shutdown.load(Ordering::Acquire) {
@@ -99,6 +104,10 @@ fn run(core: &ServiceCore, shutdown: &AtomicBool) -> Result<(), NetworkError> {
             next_poll = Instant::now() + POLL_INTERVAL;
         }
         thread::sleep(TICK);
+    }
+    // In-place updates retain the last committed restrictions during restart.
+    if updating.load(Ordering::Acquire) {
+        return Ok(());
     }
     // An authorized stop/uninstall must not leave persistent network restrictions.
     // A crash never reaches this branch, retaining the last committed policy instead.

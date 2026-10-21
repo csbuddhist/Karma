@@ -84,10 +84,10 @@ Karma requires the **Microsoft Visual C++ Redistributable 2015–2022 x64**, ver
 
 ### 3.1 单文件安装器（推荐）
 
-新用户从 [v0.2.3 Windows Test Build](https://github.com/csbuddhist/Karma/releases/tag/v0.2.3) 下载：
+新用户从 [v0.2.4 Windows Test Build](https://github.com/csbuddhist/Karma/releases/tag/v0.2.4) 下载：
 
 ```text
-Karma-windows-x64-test-v0.2.3-setup.exe
+Karma-windows-x64-test-v0.2.4-setup.exe
 ```
 
 右键安装器并选择“以管理员身份运行”。安装器会：
@@ -98,11 +98,21 @@ Karma-windows-x64-test-v0.2.3-setup.exe
 - 注册并启动具有延迟自动启动和崩溃恢复配置的 `KarmaService`；
 - 默认配置管理控制台在用户登录后后台启动，可在控制台“系统设置”中关闭；
 - 创建桌面和开始菜单管理控制台快捷方式；
-- 在 Windows“已安装的应用”中注册卸载入口。卸载仍需输入 Karma 管理员密码。
+- 在 Windows“已安装的应用”中注册卸载入口。卸载需超级密码，或等待期满后的管理员密码（未设置超级密码时使用管理员密码）。
 
-如果安装器检测到现有版本，会先询问是否卸载。选择“是”后，安装器会先确保 KarmaService 已启动（供旧版卸载授权程序验证密码），然后同步运行现有安装目录中的密码授权卸载脚本：在弹出的控制台窗口中输入 Karma 管理员密码，验证通过后脚本会结束管理控制台、Agent 与卸载授权程序，等待进程真正退出，停止并删除 Service，随后删除安装目录（对文件句柄释放延迟做多次重试）。安装器随后再次强制清理可能遗留的 Karma 进程与旧安装目录，确保解包前没有文件被占用，然后继续全新安装。选择“否”、密码验证失败或清理失败时，本次安装会取消并给出明确原因，不再要求用户手动打开卸载程序。安装器不等待旧版 NSIS 卸载器本身：NSIS 卸载器会复制到临时目录异步执行，父进程总是立即返回 0，无法据此判断卸载是否成功。
+安装器检测到 v0.2.4 及以上版本时，使用 `KarmaControl version` 确认升级接口，走原地升级分支：把签名包复制到 `C:\ProgramData\Karma\update-inbox`，提示输入普通管理员密码，再由服务复制至仅 SYSTEM 可访问的暂存区，验签并复验哈希，只接受严格更高版本，执行文件替换、回滚和重启。升级失败不退回卸载；取消安装器不删除保护服务。v0.2.3 及更早版本才使用旧的密码授权卸载后重装流程，并保留本地数据。
 
-安装器和内部 EXE 当前均未签名，SmartScreen 可能显示“未知发布者”。不要因此永久关闭 Windows Defender。
+For v0.2.4 and later, setup detects the updater using `KarmaControl version`, copies the signed bundle to the fixed inbox, and prompts for the ordinary administrator password. The service privately stages and revalidates it, accepts only a strictly newer version, replaces files with rollback, and restarts the services. An update failure never falls back to uninstalling. Only v0.2.3 and earlier use the legacy password-authorized uninstall/reinstall flow, preserving local data.
+
+EXE 和安装器尚无 Authenticode 签名，SmartScreen 可能显示“未知发布者”。Ed25519 升级清单签名验证开发者发布内容，不能代替 Windows 代码签名。EXEs and setup still lack Authenticode signatures; the Ed25519 update-manifest signature authenticates release contents and does not replace Windows code signing.
+
+系统设置可设置由监督人保管的超级密码，首次设置需复验管理员密码，至少 10 个字符且与管理员密码不同；修改需当前超级密码。服务逐项判断策略，任何削弱保护的操作都需超级密码，增强保护使用普通管理员会话。提前恢复网络和删除已记住标题也需超级密码。未设置时保持旧行为。设置与申请保存在 SQLite，日志不记录密码。
+
+System Settings supports an optional supervisor-held super password. Setup rechecks the administrator password, requires at least 10 characters and a different password; changing requires the current super password. The service requires it whenever any policy change weakens protection, when restoring the network early, and when forgetting titles. Tightening protection uses the administrator session. Without a super password, existing behavior remains. State is persisted in SQLite and audit logs contain no passwords.
+
+软件更新默认自动安装（`updates.autoInstall`），服务定期查询 GitHub Releases，控制台可立即检查；自动和安装器升级使用同一签名/哈希/版本校验。The service periodically checks GitHub Releases with automatic installation enabled by default (`updates.autoInstall`); Check now provides a manual trigger. Both entry points use the same signature/hash/version checks. Windows 真机验收仍待完成 / Windows hardware acceptance remains pending: [验收清单 / checklist](windows-update-acceptance.md)。
+
+升级功能要求 SCM 启动的 LocalSystem 服务。管理员 `KarmaService.exe --console` 仅供诊断，不能执行升级。Updating requires the SCM-started LocalSystem service; administrator `KarmaService.exe --console` mode is diagnostic-only and cannot apply updates.
 
 ### 3.2 从仓库安装或诊断
 
@@ -465,7 +475,11 @@ OCR 失败不会阻止图像推理。检查整个 OCR 模型目录及 `reference
 C:\Program Files\Karma\Uninstall-Karma.ps1
 ```
 
-脚本要求输入 Karma 管理员密码，认证通过后才请求 Service 正常关闭并删除服务与程序目录。默认保留：
+已设置超级密码时可立即授权卸载；也可在控制台用管理员密码申请，等待 72 小时后，在随后的 24 小时内用管理员密码卸载。申请可随时取消，过期作废并需重新申请；申请、生效、取消、过期和卸载授权写入审计，控制台显示倒计时。忘记超级密码也使用此恢复途径。未设置超级密码时，管理员密码可立即卸载。服务不可连接或授权失败时脚本中止，不跳过密码。
+
+A super password authorizes immediate uninstall. Alternatively, request uninstall in the console with the administrator password, wait 72 hours, then use that password in the following 24-hour window. Requests can be cancelled, expire, and are audited; the countdown is shown in the console. This also recovers from a forgotten super password. Without one configured, the administrator password still authorizes immediate uninstall. An unreachable service or failed authorization aborts removal.
+
+默认保留 / Kept by default:
 
 ```text
 C:\ProgramData\Karma
@@ -537,14 +551,17 @@ cp -L target/x86_64-pc-windows-msvc/release/DirectML.dll \
 
 ```bash
 brew install nsis osslsigncode
+# Keep the private signing seed outside the repository and back it up offline.
+# 私钥保存在仓库外，并另做离线备份；丢失后无法继续原地升级。
+bash tools/package-windows-test/package_bundle.sh
 bash tools/package-windows-installer/test_installer_contract.sh
-bash tools/package-windows-installer/build_installer.sh 0.2.3
+bash tools/package-windows-installer/build_installer.sh 0.2.4
 ```
 
 生成文件：
 
 ```text
-target/release-artifacts/Karma-windows-x64-test-v0.2.3-setup.exe
+target/release-artifacts/Karma-windows-x64-test-v0.2.4-setup.exe
 ```
 
 构建脚本会通过 `fetch_vc_redist.sh` 下载微软官方 `vc_redist.x64.exe` 到 `target/vc-redist/`（不提交到仓库），用固定指纹的微软根证书校验其 Authenticode 签名并要求版本不低于 14.44，然后嵌入安装器。The build downloads Microsoft's `vc_redist.x64.exe` into `target/vc-redist/` (never committed), verifies its Authenticode signature against pinned Microsoft root fingerprints, requires version 14.44 or later, and embeds it in the installer.
@@ -624,7 +641,7 @@ C:\ProgramData\Karma\
 - 根据家长选择保留或删除审计记录；
 - 生成不含敏感内容的卸载结果。
 
-当前仓库已实现开发测试用 PowerShell 安装和密码授权卸载，但尚未实现签名 MSI/安装 EXE、原子升级与回滚。
+当前仓库已实现开发测试用 PowerShell 安装、两级密码卸载和签名清单原地升级及回滚，Windows 真机验收待完成；尚未实现 Authenticode 签名 MSI/安装 EXE。The test build implements PowerShell setup, two-level uninstall authorization, and manifest-signed in-place updates with rollback, pending Windows hardware acceptance. Authenticode-signed MSI/setup remains future work.
 
 ## 13. 发布前必须完成的工作
 
@@ -635,7 +652,7 @@ C:\ProgramData\Karma\
 - 高风险画面的本地遮罩；
 - 上网时段和应用运行限制；
 - 恢复码、密钥轮换和 IPC Windows 客户端身份校验强化；
-- 安装器、代码签名、模型签名和更新签名；
+- 安装器 Authenticode 代码签名、模型签名和更新真机验收；
 - Windows 10/11 单屏、双屏、三屏真机验收；
 - 准确率、误报率、性能、资源释放和稳定性验证；
 - 安全评审和卸载恢复测试。

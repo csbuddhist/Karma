@@ -10,9 +10,13 @@ The project follows a “single product, shared core, two native executors” ar
 
 ## Windows Test Installer
 
-New users can download the single-file `Karma-windows-x64-test-v0.2.3-setup.exe` from the [v0.2.3 Windows Test Build](https://github.com/csbuddhist/Karma/releases/tag/v0.2.3). On Windows 10 22H2 or Windows 11 x64, run it as an administrator to install the files, verify their hashes, register the Service, and create shortcuts. The installer includes the official Microsoft Visual C++ 2015–2022 x64 Redistributable: it verifies the Microsoft signature and installs it silently only when the runtime is missing or older than 14.44, before registering the Service.
+New users can download the single-file `Karma-windows-x64-test-v0.2.4-setup.exe` from the [v0.2.4 Windows Test Build](https://github.com/csbuddhist/Karma/releases/tag/v0.2.4). On Windows 10 22H2 or Windows 11 x64, run it as an administrator to install the files, verify their hashes, register the Service, and create shortcuts. The installer includes the official Microsoft Visual C++ 2015–2022 x64 Redistributable: it verifies the Microsoft signature and installs it silently only when the runtime is missing or older than 14.44, before registering the Service.
 
-`main` also retains the auditable **cloneable Windows test bundle** at [`release/windows-x64-test/`](release/windows-x64-test/) for diagnostics and reproducible packaging. If setup detects an existing installation, it offers to remove it: it synchronously runs the password-authorized uninstall script from the existing install directory (prompting for the Karma administrator password in a console window), terminates the old console and Agent processes and waits for them to exit, removes the Service and the install directory, then force-cleans any leftover Karma processes before extracting the new build. A failed password check or a blocked cleanup aborts setup with a clear reason. The administration console launches in the background at user sign-in by default and can be disabled in System Settings; the protection Service starts with Windows independently. The installer remains unsigned development/test software, and uninstall still requires the Karma administrator password; it is not a signed production installer. See the [Windows Installation and Testing Guide](docs/windows-installation-guide.md) for details.
+`main` also retains the auditable **cloneable Windows test bundle** at [`release/windows-x64-test/`](release/windows-x64-test/). From v0.2.4, setup upgrades an existing v0.2.4+ installation in place with the administrator password: it submits a signed bundle to the running service, which accepts only a strictly newer version, validates private staged copies, replaces files with rollback, and restarts the services. Protection services remain registered. Only v0.2.3 and earlier use the legacy password-authorized uninstall/reinstall flow. The console starts in the background at sign-in by default; this can be disabled in System Settings. EXEs and setup still lack Authenticode signatures; the Ed25519 release signature authenticates update contents, not the Windows publisher. See the [installation guide](docs/windows-installation-guide.md) and [pending Windows update acceptance checklist](docs/windows-update-acceptance.md).
+
+The optional **super password** should be set and held by a supervisor, separately from the administrator password. The service compares every policy change and requires the super password for weakening protection: disabling protection or recognition, lowering sensitivity, relaxing website/application/keyword/schedule/repeat-closure rules, forgetting a remembered title, or restoring the network early. Tightening protection uses the administrator session. Initial setup rechecks the administrator password; the super password must have at least 10 characters and differ from it. Changing it requires the current super password. Without a super password, existing behavior is preserved.
+
+Uninstall immediately with the super password, or request uninstall in the console with the administrator password, wait **72 hours**, then uninstall with the administrator password during the following **24 hours**. Requests survive restarts, can be cancelled, and are audited; expired requests must be renewed. This is also the recovery route for a forgotten super password. Software updates need only the administrator password. `updates.autoInstall` defaults to enabled; the service checks GitHub Releases periodically, and the console can check immediately. All updates require the embedded developer key's Ed25519 signature, SHA-256 file hashes, and a strictly higher version. Same-version reinstall and downgrade are refused. A technical Windows administrator can still take ownership of files, use safe mode, or otherwise bypass user-mode protection; keeping the Windows administrator account with the supervisor and using a standard account daily remains the strongest supplement.
 
 ## Design Principles
 
@@ -188,7 +192,7 @@ By default, only the following are recorded:
 - Model version, risk level, and normalized score.
 - Policy ID, reason code, and component health status.
 
-By default, screen captures, window contents, full URLs, user input, and dynamically generated site certificates are not recorded. The Windows Agent processes the active window title and browser address transiently in memory, sends only the canonical host plus a bounded title to the local Service for independent policy validation, and never persists either value in audit or evidence records. The one exception is the remembered-title feature (on by default): after explicit image detection successfully closes an application, the Service stores that window's title, canonical host, and executable path so it can close the same page again. They are encrypted with AES-256-GCM, under a key derived from the DPAPI-protected evidence key, inside the Service's ACL-protected SQLite database (`C:\ProgramData\Karma\service-state.db`). At most 5,000 titles are kept, oldest first out. The Agent receives only 128-bit digests, never the titles themselves. The administrator can search, review, and delete them in the console or turn the feature off. Titles never enter the audit log.
+By default, screen captures, window contents, full URLs, user input, and dynamically generated site certificates are not recorded. The Windows Agent processes the active window title and browser address transiently in memory, sends only the canonical host plus a bounded title to the local Service for independent policy validation, and never persists either value in audit or evidence records. The one exception is the remembered-title feature (on by default): after explicit image detection successfully closes an application, the Service stores that window's title, canonical host, and executable path so it can close the same page again. They are encrypted with AES-256-GCM, under a key derived from the DPAPI-protected evidence key, inside the Service's ACL-protected SQLite database (`C:\ProgramData\Karma\service-state.db`). At most 5,000 titles are kept, oldest first out. The Agent receives only 128-bit digests, never the titles themselves. The administrator can search and review them in the console; deleting a title or disabling the feature requires the super password when configured. Titles never enter the audit log.
 
 ## Screen Capture
 
@@ -288,7 +292,7 @@ Hardened mode:
 
 ### Level 1: Password Protection
 
-- Exiting the UI, pausing monitoring, changing policies, uninstalling, and granting temporary access all require the administrator password.
+- The administrator session controls routine settings; weakening protection requires the configured super password. Uninstall uses super-password authorization or the delayed administrator window described above.
 - Closing the UI only hides the management interface; it does not stop the Agent or Service.
 - Consecutive failures trigger exponential backoff and an audit event.
 - A one-time recovery code is provided; it is displayed only once and stored only as a hash.
@@ -331,7 +335,7 @@ The following situations can only be detected or reported afterward; prevention 
 
 Network control governs only which applications may access the network and when. Pornographic-content detection remains the responsibility of the on-screen AI.
 
-Current status: the console's Network Schedules page configures any number of time blocks for each day from Monday to Sunday (blocks may cross midnight) and one of three targets per rule: browsers (common browsers plus applications categorized as browsers), selected applications, or all networked applications. Single-range rules saved by earlier builds are migrated automatically. `KarmaService` validates every schedule, evaluates it in the device's local time zone, reports whether a block is active and when it ends, and records the start and end of each restricted period in the audit log. During a block, network access can be restored early only from the console by entering the administrator password again; the restore lasts until the current block ends, is persisted across Service restarts, and is audited. On Windows, the service now applies `ServiceCore::network_enforcement` through persistent WFP filters immediately on startup and every 60 seconds afterward. Schedule changes, policy changes, and early restore take effect at the next poll (up to about 60 seconds). Windows hardware acceptance is pending; see [the network enforcement checklist](docs/windows-network-enforcement-acceptance.md).
+Current status: the console's Network Schedules page configures any number of time blocks for each day from Monday to Sunday (blocks may cross midnight) and one of three targets per rule: browsers (common browsers plus applications categorized as browsers), selected applications, or all networked applications. Single-range rules saved by earlier builds are migrated automatically. `KarmaService` validates every schedule, evaluates it in the device's local time zone, reports whether a block is active and when it ends, and records the start and end of each restricted period in the audit log. During a block, network access can be restored early only from the console by entering the super password again (the administrator password if none is configured); the restore lasts until the current block ends, is persisted across Service restarts, and is audited. On Windows, the service now applies `ServiceCore::network_enforcement` through persistent WFP filters immediately on startup and every 60 seconds afterward. Schedule changes, policy changes, and early restore take effect at the next poll (up to about 60 seconds). Windows hardware acceptance is pending; see [the network enforcement checklist](docs/windows-network-enforcement-acceptance.md).
 
 ### Windows
 
@@ -388,7 +392,7 @@ Security requirements:
 - Use MSI to install the Service, Agent, UI, and optional driver.
 - Sign every EXE, DLL, MSI, and driver with a trusted code-signing certificate.
 - Configure the service SID, directory ACLs, named-pipe DACLs, and recovery policy during installation.
-- Uninstallation requires the administrator password and UAC approval; in MDM mode, the device policy determines whether removal is permitted.
+- Uninstallation requires UAC and super-password or delayed administrator authorization; in MDM mode, the device policy determines whether removal is permitted.
 
 ### macOS
 
@@ -495,7 +499,7 @@ Karma should be used only for content protection by device owners, guardians, or
 
 ## Protection control
 
-The master switch at the top of Protection Overview lets an authenticated administrator stop or resume protection. Toggle it, then click **Save settings** to apply the change; System Settings exposes the same switch.
+The master switch at the top of Protection Overview stops or resumes protection. Toggle it, then click **Save settings** to apply the change; System Settings exposes the same switch. When a super password is configured, stopping protection requires it; resuming uses the administrator session.
 
 ## Repository and License
 

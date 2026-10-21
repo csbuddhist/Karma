@@ -125,9 +125,30 @@ export interface AuditItem {
   outcome: "success" | "warning" | "denied";
 }
 
-export interface ConsoleState {
+export interface UninstallStatus {
+  requestedAtMs: number;
+  effectiveAtMs: number;
+  expiresAtMs: number;
+}
+
+export interface UpdateStatus {
+  phase: "idle" | "checking" | "downloading" | "installing" | "up_to_date" | "failed";
+  lastCheckedAtMs: number | null;
+  availableVersion: string | null;
+  lastError: string | null;
+}
+
+export interface AuthorizationStatus {
+  productVersion: string;
+  superPasswordSet: boolean;
+  uninstall: UninstallStatus | null;
+  update: UpdateStatus;
+}
+
+export interface ConsoleState extends AuthorizationStatus {
   protectionEnabled: boolean;
   launchAtStartup: boolean;
+  updates: { autoInstall: boolean };
   serviceConnected: boolean;
   agentConnected: boolean;
   monitors: MonitorStatus[];

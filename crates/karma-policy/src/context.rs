@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use serde::Deserialize;
 use serde_json::Value;
 use thiserror::Error;
@@ -219,6 +221,25 @@ impl ContextPolicy {
             }
         }
         ContextVerdict::None
+    }
+
+    /// Normalized hosts of the enabled website rules with `action`.
+    pub(crate) fn website_hosts(&self, action: WebsiteRuleAction) -> BTreeSet<&str> {
+        self.website_rules
+            .iter()
+            .filter(|rule| rule.action == action)
+            .map(|rule| rule.host.as_str())
+            .collect()
+    }
+
+    /// Normalized enforced title keywords (bundled and custom).
+    pub(crate) fn title_keyword_set(&self) -> BTreeSet<&str> {
+        self.title_keywords.iter().map(String::as_str).collect()
+    }
+
+    /// Normalized enabled exemption keywords.
+    pub(crate) fn exempt_keyword_set(&self) -> BTreeSet<&str> {
+        self.exempt_keywords.iter().map(String::as_str).collect()
     }
 
     pub fn allows_host(&self, browser_host: Option<&str>) -> bool {

@@ -103,11 +103,24 @@ pub(crate) struct NetworkRestore {
     pub(crate) until_ms: i64,
 }
 
+/// A requested uninstall; the administrator password may authorize it once
+/// `effective_at_ms` has passed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct UninstallRequest {
+    pub(crate) requested_at_ms: i64,
+    pub(crate) effective_at_ms: i64,
+    #[serde(default)]
+    pub(crate) ready_audited: bool,
+}
+
 /// Everything the service loads at startup. Audit rows are write-mostly and
 /// stay on disk; only their count is loaded.
 #[derive(Debug, Clone)]
 pub(crate) struct PersistedState {
     pub(crate) password_hash: Option<String>,
+    pub(crate) super_password_hash: Option<String>,
+    pub(crate) uninstall_request: Option<UninstallRequest>,
     pub(crate) policy_revision: u64,
     pub(crate) policy: Value,
     pub(crate) evidence: Vec<StoredEvidence>,
@@ -121,6 +134,8 @@ impl Default for PersistedState {
     fn default() -> Self {
         Self {
             password_hash: None,
+            super_password_hash: None,
+            uninstall_request: None,
             policy_revision: 0,
             policy: json!({}),
             evidence: Vec::new(),
@@ -136,6 +151,8 @@ impl Default for PersistedState {
 #[derive(Debug, Clone)]
 pub(crate) enum Change {
     PasswordHash(String),
+    SuperPasswordHash(String),
+    UninstallRequest(Option<UninstallRequest>),
     Policy {
         revision: u64,
         policy: Value,
@@ -355,6 +372,10 @@ impl Store {
         let audit_count: i64 =
             connection.query_row("SELECT COUNT(*) FROM audit", [], |row| row.get(0))?;
         let password_hash = read_setting(connection, "password_hash")?;
+        let super_password_hash = read_setting(connection, "super_password_hash")?;
+        let uninstall_request = read_setting(connection, "uninstall_request")?
+            .map(|value| serde_json::from_str(&value).map_err(|_| StoreError))
+            .transpose()?;
         if !unreadable.is_empty() {
             self.apply(
                 &unreadable
@@ -365,6 +386,8 @@ impl Store {
         }
         Ok(PersistedState {
             password_hash,
+            super_password_hash,
+            uninstall_request,
             policy_revision,
             policy,
             evidence,
@@ -458,6 +481,17 @@ fn write_changes(
     for change in changes {
         match change {
             Change::PasswordHash(hash) => write_setting(transaction, "password_hash", hash)?,
+            Change::SuperPasswordHash(hash) => {
+                write_setting(transaction, "super_password_hash", hash)?
+            }
+            Change::UninstallRequest(Some(request)) => write_setting(
+                transaction,
+                "uninstall_request",
+                &serde_json::to_string(request).map_err(|_| StoreError)?,
+            )?,
+            Change::UninstallRequest(None) => {
+                transaction.execute("DELETE FROM settings WHERE key = 'uninstall_request'", [])?;
+            }
             Change::Policy { revision, policy } => {
                 write_setting(transaction, "policy_revision", &revision.to_string())?;
                 write_setting(
@@ -626,6 +660,12 @@ mod tests {
             store
                 .apply(&[
                     Change::PasswordHash("$argon2id$hash".into()),
+                    Change::SuperPasswordHash("$argon2id$super".into()),
+                    Change::UninstallRequest(Some(UninstallRequest {
+                        requested_at_ms: 10,
+                        effective_at_ms: 20,
+                        ready_audited: false,
+                    })),
                     Change::Policy {
                         revision: 3,
                         policy: json!({"protectionEnabled": false}),
@@ -663,6 +703,18 @@ mod tests {
         }
         let (_, state) = Store::open(&path, &KEY).unwrap();
         assert_eq!(state.password_hash.as_deref(), Some("$argon2id$hash"));
+        assert_eq!(
+            state.super_password_hash.as_deref(),
+            Some("$argon2id$super")
+        );
+        assert_eq!(
+            state.uninstall_request,
+            Some(UninstallRequest {
+                requested_at_ms: 10,
+                effective_at_ms: 20,
+                ready_audited: false,
+            })
+        );
         assert_eq!(state.policy_revision, 3);
         assert_eq!(state.policy, json!({"protectionEnabled": false}));
         assert_eq!(state.evidence.len(), 1);

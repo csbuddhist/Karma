@@ -8,7 +8,9 @@ test -f "$bundle_dir/Verify-KarmaTestBundle.ps1"
 test -f "$bundle_dir/README.md"
 for script in "$bundle_dir"/*.ps1; do
   test "$(head -c 3 "$script" | od -An -t x1 | tr -d ' \n')" = "efbbbf"
+  cmp "$script" "tools/package-windows-test/scripts/$(basename "$script")"
 done
+cmp "$bundle_dir/README.md" tools/package-windows-test/README.bundle.md
 rg -q 'KARMA_IMAGE_MODEL_MANIFEST' "$bundle_dir/Start-KarmaTest.ps1"
 rg -q 'Get-FileHash' "$bundle_dir/Verify-KarmaTestBundle.ps1"
 
@@ -28,6 +30,14 @@ test -f "$bundle_dir/KarmaGuardian.exe"
 test -f "$bundle_dir/Start-KarmaConsole.ps1"
 test -f "$bundle_dir/DirectML.dll"
 test -f "$bundle_dir/SHA256SUMS"
+test -f "$bundle_dir/Update-Karma.ps1"
+test -f "$bundle_dir/release-manifest.json"
+test -f "$bundle_dir/release-manifest.json.sig"
+cargo run --quiet -p karma-update --example sign-release -- verify "$bundle_dir"
+(
+  cd "$bundle_dir"
+  shasum -a 256 -c SHA256SUMS >/dev/null
+)
 for artifact in manifest.json detector.onnx recognizer.onnx dictionary.txt LICENSE NOTICE.md; do
   test -f "$bundle_dir/models/ocr/pp-ocrv5-mobile/$artifact"
 done

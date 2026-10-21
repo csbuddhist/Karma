@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { disable, enable } from "@tauri-apps/plugin-autostart";
-import type { ConsoleState, NetworkStatus, NetworkTarget, RememberedTitle, RememberedTitlePage, ScheduleBlock, ScheduleRule } from "./types";
+import type { AuthorizationStatus, ConsoleState, NetworkStatus, NetworkTarget, RememberedTitle, RememberedTitlePage, ScheduleBlock, ScheduleRule } from "./types";
 
 const browserFallbackKey = "karma-ui-browser-state";
 const browserPasswordKey = "karma-ui-browser-password";
@@ -9,6 +9,11 @@ const browserTitlesKey = "karma-ui-browser-titles";
 export const defaultConsoleState: ConsoleState = {
   protectionEnabled: true,
   launchAtStartup: true,
+  updates: { autoInstall: true },
+  productVersion: "0.2.4",
+  superPasswordSet: false,
+  uninstall: null,
+  update: { phase: "idle", lastCheckedAtMs: null, availableVersion: null, lastError: null },
   serviceConnected: false,
   agentConnected: false,
   monitors: [],
@@ -50,7 +55,7 @@ export function isTauriConsole(): boolean {
   return isTauri();
 }
 
-const runtimeStateKeys = ["serviceConnected", "agentConnected", "monitors", "evidence", "audit", "network", "rememberedTitleTotal", "activeBans"];
+const runtimeStateKeys = ["serviceConnected", "agentConnected", "monitors", "evidence", "audit", "network", "rememberedTitleTotal", "activeBans", "productVersion", "superPasswordSet", "uninstall", "update"];
 
 function stripRuntimeState(value: Record<string, unknown>): Record<string, unknown> {
   const stripped = { ...value };
@@ -125,9 +130,14 @@ export async function parseImportedBackupFile(file: File): Promise<Partial<Conso
 export function mergeImportedPolicy(current: ConsoleState, imported: Partial<ConsoleState>): ConsoleState {
   return hydrateConsoleState({
     ...current,
-    ...imported,
+    ...stripRuntimeState(imported as Record<string, unknown>),
     recognition: { ...current.recognition, ...(imported.recognition ?? {}) },
     repeatOffender: { ...current.repeatOffender, ...(imported.repeatOffender ?? {}) },
+    updates: { ...current.updates, ...(imported.updates ?? {}) },
+    productVersion: current.productVersion,
+    superPasswordSet: current.superPasswordSet,
+    uninstall: current.uninstall,
+    update: current.update,
   });
 }
 
@@ -165,8 +175,8 @@ export async function lock(sessionToken: string): Promise<void> {
   if (isTauri()) await invoke("lock", { sessionToken });
 }
 
-export async function loadConsole(sessionToken: string): Promise<ConsoleState> {
-  if (isTauri()) return hydrateConsoleState(await invoke("load_console", { sessionToken }));
+export async function loadConsole(sessionToken: string, runtimeOnly = false): Promise<ConsoleState> {
+  if (isTauri()) return hydrateConsoleState(await invoke("load_console", { sessionToken, runtimeOnly }));
   const stored = localStorage.getItem(browserFallbackKey);
   return stored ? hydrateConsoleState(JSON.parse(stored)) : defaultConsoleState;
 }
@@ -180,6 +190,8 @@ function hydrateConsoleState(value: Partial<ConsoleState>): ConsoleState {
       ...(value.recognition ?? {}),
     },
     repeatOffender: { ...defaultConsoleState.repeatOffender, ...(value.repeatOffender ?? {}) },
+    updates: { ...defaultConsoleState.updates, ...(value.updates ?? {}) },
+    update: { ...defaultConsoleState.update, ...(value.update ?? {}) },
     websites: value.websites ?? [],
     schedules: (value.schedules ?? []).map(normalizeSchedule),
     network: { ...defaultConsoleState.network, ...(value.network ?? {}) },
@@ -208,8 +220,8 @@ export function normalizeSchedule(rule: ScheduleRule | Record<string, unknown>):
   };
 }
 
-export async function saveConsole(sessionToken: string, state: ConsoleState): Promise<void> {
-  if (isTauri()) return invoke("save_console", { sessionToken, state });
+export async function saveConsole(sessionToken: string, state: ConsoleState, superPassword?: string): Promise<void> {
+  if (isTauri()) return invoke("save_console", { sessionToken, state, superPassword });
   localStorage.setItem(browserFallbackKey, JSON.stringify(state));
 }
 
@@ -260,8 +272,8 @@ export async function listRememberedTitles(sessionToken: string, offset: number,
   return { items: matching.slice(offset, offset + rememberedTitlePageSize), total: matching.length };
 }
 
-export async function forgetRememberedTitle(sessionToken: string, titleId: string): Promise<void> {
-  if (isTauri()) return invoke("forget_remembered_title", { sessionToken, titleId });
+export async function forgetRememberedTitle(sessionToken: string, titleId: string, superPassword?: string): Promise<void> {
+  if (isTauri()) return invoke("forget_remembered_title", { sessionToken, titleId, superPassword });
   localStorage.setItem(browserTitlesKey, JSON.stringify(browserTitles().filter((item) => item.id !== titleId)));
 }
 
@@ -269,4 +281,42 @@ export async function revealEvidence(sessionToken: string, evidenceId: string, p
   if (isTauri()) return invoke("reveal_evidence", { sessionToken, evidenceId, password });
   if (localStorage.getItem(browserPasswordKey) !== await browserPasswordDigest(password)) throw new Error("管理员密码不正确");
   throw new Error("开发模式中没有已加密的证据原图");
+}
+
+export function isSuperPasswordRequired(reason: unknown): boolean {
+  return (reason instanceof Error ? reason.message : String(reason)) === "super_password_required";
+}
+
+export function isAuthorizationCancelled(reason: unknown): boolean {
+  return (reason instanceof Error ? reason.message : String(reason)) === "super_password_cancelled";
+}
+
+export async function loadAuthorizationStatus(sessionToken: string): Promise<AuthorizationStatus> {
+  if (isTauri()) return invoke("authorization_status", { sessionToken });
+  return { productVersion: defaultConsoleState.productVersion, superPasswordSet: false, uninstall: null, update: defaultConsoleState.update };
+}
+
+export async function setSuperPassword(sessionToken: string, adminPassword: string, superPassword: string): Promise<void> {
+  if (isTauri()) return invoke("set_super_password", { sessionToken, adminPassword, superPassword });
+  throw new Error("KarmaService 尚未运行或命名管道不可用");
+}
+
+export async function changeSuperPassword(sessionToken: string, currentSuperPassword: string, newSuperPassword: string): Promise<void> {
+  if (isTauri()) return invoke("change_super_password", { sessionToken, currentSuperPassword, newSuperPassword });
+  throw new Error("KarmaService 尚未运行或命名管道不可用");
+}
+
+export async function requestUninstall(sessionToken: string, password: string): Promise<void> {
+  if (isTauri()) return invoke("request_uninstall", { sessionToken, password });
+  throw new Error("KarmaService 尚未运行或命名管道不可用");
+}
+
+export async function cancelUninstall(sessionToken: string): Promise<void> {
+  if (isTauri()) return invoke("cancel_uninstall", { sessionToken });
+  throw new Error("KarmaService 尚未运行或命名管道不可用");
+}
+
+export async function checkForUpdates(sessionToken: string): Promise<void> {
+  if (isTauri()) return invoke("check_for_updates", { sessionToken });
+  throw new Error("KarmaService 尚未运行或命名管道不可用");
 }

@@ -18,7 +18,7 @@ use windows::{
 
 /// RAII wrapper so every SCM handle is released on the way out, including the
 /// early returns below.
-struct ScmHandle(SC_HANDLE);
+pub(crate) struct ScmHandle(pub(crate) SC_HANDLE);
 
 impl Drop for ScmHandle {
     fn drop(&mut self) {
@@ -28,7 +28,7 @@ impl Drop for ScmHandle {
     }
 }
 
-fn wide(value: &str) -> Vec<u16> {
+pub(crate) fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(Some(0)).collect()
 }
 

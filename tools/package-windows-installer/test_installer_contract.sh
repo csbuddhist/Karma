@@ -8,6 +8,7 @@ builder="$script_dir/build_installer.sh"
 install_script="$repo_root/release/windows-x64-test/Install-Karma.ps1"
 uninstall_script="$repo_root/release/windows-x64-test/Uninstall-Karma.ps1"
 cleanup_script="$script_dir/Cleanup-InstallDirectory.ps1"
+update_script="$repo_root/release/windows-x64-test/Update-Karma.ps1"
 runtime_script="$repo_root/release/windows-x64-test/Install-VCRuntime.ps1"
 fetch_script="$script_dir/fetch_vc_redist.sh"
 contract_failed=0
@@ -159,6 +160,48 @@ if ! cargo_tree="$(cd "$repo_root" && cargo tree -p karma-ui -e features)"; then
   contract_failed=1
 elif ! rg -q 'tauri feature "custom-protocol"' <<<"$cargo_tree"; then
   echo "karma-ui must enable Tauri custom-protocol so release builds embed frontend assets" >&2
+  contract_failed=1
+fi
+
+test -f "$update_script"
+assert_contains 'KarmaControl\.exe" version' "$installer" \
+  'installer must detect in-place update capability before considering legacy removal'
+assert_contains 'StrCpy \$UpdateExisting 1' "$installer" \
+  'new installations must use the in-place update branch'
+assert_contains 'ExecWait .*Update-Karma\.ps1.*ExpectedVersion' "$installer" \
+  'installer must wait for an authenticated update to the requested version'
+assert_contains '\$plain \| & \$control update' "$update_script" \
+  'update password must be passed via stdin, never on the command line'
+assert_contains "Karma\\\\update-inbox" "$update_script" \
+  'update script must copy to the fixed service inbox'
+assert_contains 'Super password.*超级密码' "$uninstall_script" \
+  'uninstaller must explain super-password or delayed administrator authorization'
+if rg -q '跳过 shutdown 授权|skip.*authorization' "$uninstall_script"; then
+  echo 'uninstaller must fail closed when the service cannot authorize shutdown' >&2
+  contract_failed=1
+fi
+if ! python3 - "$repo_root" <<'PY'
+import json
+import re
+import sys
+import tomllib
+from pathlib import Path
+
+root = Path(sys.argv[1])
+ui = root / "apps/karma-ui"
+version = json.loads((ui / "src-tauri/tauri.conf.json").read_text())["version"]
+ipc = (root / "crates/karma-ipc/src/lib.rs").read_text()
+assert re.search(r'PRODUCT_VERSION: &str = "([^"]+)"', ipc).group(1) == version
+assert json.loads((ui / "package.json").read_text())["version"] == version
+lock = json.loads((ui / "package-lock.json").read_text())
+assert lock["version"] == version
+assert lock["packages"][""]["version"] == version
+assert tomllib.loads((ui / "src-tauri/Cargo.toml").read_text())["package"]["version"] == version
+assert json.loads((root / "release/windows-x64-test/release-manifest.json").read_text())["version"] == version
+print(f"product/console/manifest version contract verified: {version}")
+PY
+then
+  echo 'product, console, and signed manifest versions must match' >&2
   contract_failed=1
 fi
 

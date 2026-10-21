@@ -45,6 +45,7 @@ mod agent_watchdog;
 mod evidence_key;
 mod process_disposition;
 mod service_watchdog;
+mod updater;
 
 const SERVICE_NAME: &str = "KarmaService";
 const DATA_DIRECTORY: &str = "Karma";
@@ -76,6 +77,14 @@ impl Drop for ConnectionSlot {
 define_windows_service!(ffi_service_main, service_main);
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
+    if env::args_os().any(|argument| argument == "--apply-staged-update") {
+        updater::run_helper(false)?;
+        return Ok(());
+    }
+    if env::args_os().any(|argument| argument == "--recover-staged-update") {
+        updater::run_helper(true)?;
+        return Ok(());
+    }
     if env::args_os().any(|argument| argument == "--clear-network-filters") {
         // A bounded recovery operation; WFP itself requires administrator/SYSTEM
         // privileges. Used after the service stops during uninstall/upgrade.
@@ -84,7 +93,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     if env::args_os().any(|argument| argument == "--console") {
         let shutdown = Arc::new(AtomicBool::new(false));
-        return serve(shutdown);
+        return serve(shutdown, || Ok(()));
     }
     service_dispatcher::start(SERVICE_NAME, ffi_service_main)?;
     Ok(())
@@ -112,8 +121,10 @@ fn run_service() -> Result<(), Box<dyn std::error::Error>> {
 
     status_handle
         .set_service_status(status(ServiceState::StartPending, Duration::from_secs(10)))?;
-    status_handle.set_service_status(status(ServiceState::Running, Duration::ZERO))?;
-    let result = serve(shutdown);
+    let result = serve(shutdown, || {
+        status_handle.set_service_status(status(ServiceState::Running, Duration::ZERO))?;
+        Ok(())
+    });
     status_handle.set_service_status(status(ServiceState::Stopped, Duration::ZERO))?;
     result
 }
@@ -134,10 +145,21 @@ fn status(current_state: ServiceState, wait_hint: Duration) -> ServiceStatus {
     }
 }
 
-fn serve(shutdown: Arc<AtomicBool>) -> Result<(), Box<dyn std::error::Error>> {
+fn serve(
+    shutdown: Arc<AtomicBool>,
+    on_ready: impl FnOnce() -> Result<(), Box<dyn std::error::Error>>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let directory = service_data_directory()?;
     fs::create_dir_all(&directory).map_err(|_| ServiceHostError::StorageUnavailable)?;
     harden_path(&directory)?;
+    let install_directory = env::current_exe()
+        .map_err(|_| ServiceHostError::StorageUnavailable)?
+        .parent()
+        .map(PathBuf::from)
+        .ok_or(ServiceHostError::StorageUnavailable)?;
+    if !updater::startup(&install_directory)? {
+        return Ok(());
+    }
     let secret_path = directory.join(AGENT_SECRET_FILE);
     let state_path = directory.join(STATE_FILE);
     let evidence_key_path = directory.join(EVIDENCE_KEY_FILE);
@@ -163,19 +185,34 @@ fn serve(shutdown: Arc<AtomicBool>) -> Result<(), Box<dyn std::error::Error>> {
     // explicitly like every other state file.
     harden_path(&state_path)?;
 
-    let install_directory = env::current_exe()
-        .map_err(|_| ServiceHostError::StorageUnavailable)?
-        .parent()
-        .map(PathBuf::from)
-        .ok_or(ServiceHostError::StorageUnavailable)?;
-    let network_worker =
-        crate::network_enforcement::windows::start(Arc::clone(&core), Arc::clone(&shutdown))?;
+    let updating = Arc::new(AtomicBool::new(updater::transaction_active()));
+    if updating.load(Ordering::Acquire) {
+        core.record_update_status(
+            karma_ipc::UpdateStatus {
+                phase: karma_ipc::UpdatePhase::Installing,
+                ..Default::default()
+            },
+            unix_time_ms(),
+        )?;
+    }
+    let network_worker = crate::network_enforcement::windows::start(
+        Arc::clone(&core),
+        Arc::clone(&shutdown),
+        Arc::clone(&updating),
+    )?;
     let watchdog = agent_watchdog::start(
-        install_directory,
+        install_directory.clone(),
         agent_secret.to_string(),
         Arc::clone(&shutdown),
     );
     let guardian_watchdog = service_watchdog::start(Arc::clone(&shutdown));
+    let update_worker = updater::start(
+        Arc::clone(&core),
+        install_directory,
+        Arc::clone(&shutdown),
+        Arc::clone(&updating),
+    );
+    on_ready()?;
     let active_connections = Arc::new(AtomicUsize::new(0));
     let serve_result = (|| -> Result<(), Box<dyn std::error::Error>> {
         while !shutdown.load(Ordering::Acquire) {
@@ -216,6 +253,9 @@ fn serve(shutdown: Arc<AtomicBool>) -> Result<(), Box<dyn std::error::Error>> {
     shutdown.store(true, Ordering::Release);
     let _ = watchdog.join();
     let _ = guardian_watchdog.join();
+    // HTTP operations have hard timeouts. Do not block SCM shutdown waiting for
+    // a periodic network request; the worker never touches protection state.
+    drop(update_worker);
     let network_result = network_worker
         .join()
         .map_err(|_| crate::network_enforcement::windows::NetworkError::WorkerPanicked)?;
@@ -253,11 +293,24 @@ fn handle_connection(
         }
     }
     let authorized_shutdown = shutdown_requested && response.result.is_ok();
-    pipe.send_response(&response)?;
     if authorized_shutdown {
+        let install = env::current_exe()?
+            .parent()
+            .map(PathBuf::from)
+            .ok_or(ServiceHostError::StorageUnavailable)?;
+        if let Err(error) = updater::authorize_uninstall(&install) {
+            eprintln!("KarmaService authorized uninstall preparation failed: {error}");
+            response.result = Err(karma_ipc::ServiceFailure::new(
+                karma_ipc::ServiceErrorCode::Internal,
+            ));
+        }
+        // Authorization is terminal in the core. Honor it even if the client
+        // disconnects before the response; otherwise that core would remain
+        // running while rejecting every future shutdown and update request.
         shutdown.store(true, Ordering::Release);
         wake_pipe_server();
     }
+    pipe.send_response(&response)?;
     Ok(())
 }
 

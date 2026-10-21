@@ -31,6 +31,9 @@ Unicode true
 !define PRODUCT_REGISTRY_KEY "Software\Karma"
 !define PRODUCT_UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\Karma"
 
+Var UpdateExisting
+Var ExistingDirectory
+
 Name "${PRODUCT_NAME}"
 OutFile "${OUTPUT_FILE}"
 InstallDir "$PROGRAMFILES64\Karma"
@@ -68,6 +71,7 @@ VIAddVersionKey /LANG=2052 "LegalCopyright" "GNU GPL v3.0"
 
 Function .onInit
   SetRegView 64
+  StrCpy $UpdateExisting 0
   ${IfNot} ${RunningX64}
     MessageBox MB_OK|MB_ICONSTOP "Karma 仅支持 64 位 Windows。"
     Abort
@@ -75,6 +79,24 @@ Function .onInit
 
   ReadRegStr $0 HKLM "SYSTEM\CurrentControlSet\Services\KarmaService" "ImagePath"
   ${If} $0 != ""
+    ReadRegStr $ExistingDirectory HKLM "${PRODUCT_REGISTRY_KEY}" "InstallDirectory"
+    ${If} $ExistingDirectory == ""
+      StrCpy $ExistingDirectory "$PROGRAMFILES64\Karma"
+    ${EndIf}
+    nsExec::ExecToStack '"$ExistingDirectory\KarmaControl.exe" version'
+    Pop $5
+    Pop $6
+    ${If} $5 == "0"
+      # 0.2.4+ uses the authenticated service updater. Failure must never
+      # fall back to uninstalling protection. 新版升级失败不能退回卸载。
+      StrCpy $UpdateExisting 1
+      Return
+    ${ElseIf} $5 != "2"
+      MessageBox MB_OK|MB_ICONSTOP "Cannot identify the installed updater. Setup cancelled. / 无法识别已安装版本的升级接口，安装已取消。"
+      Abort
+    ${EndIf}
+    # Only legacy KarmaControl returns usage exit code 2 for `version`.
+    # 仅旧版不支持 version 命令时返回 2，允许走旧的授权卸载流程。
     MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2 "检测到已安装的 Karma。是否先卸载现有版本并继续安装？卸载需要输入 Karma 管理员密码。" IDYES uninstall_existing
     Abort
 
@@ -139,6 +161,20 @@ FunctionEnd
 Section "Install" SecInstall
   SetRegView 64
   SetShellVarContext all
+  ${If} $UpdateExisting == 1
+    InitPluginsDir
+    SetOutPath "$PLUGINSDIR\KarmaUpdate"
+    File /r "${BUNDLE_DIR}\*.*"
+    nsExec::ExecToStack '"$SYSDIR\sc.exe" start KarmaService'
+    Pop $5
+    Pop $6
+    ExecWait '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\KarmaUpdate\Update-Karma.ps1" -BundleDirectory "$PLUGINSDIR\KarmaUpdate" -InstallDirectory "$ExistingDirectory" -ExpectedVersion "${VERSION}"' $0
+    ${If} $0 != 0
+      MessageBox MB_OK|MB_ICONSTOP "Update rejected or not confirmed. See console status. Protection remains registered. / 升级被拒绝或尚未确认，请查看控制台状态。保护服务仍保持注册。"
+      Abort
+    ${EndIf}
+    Goto install_done
+  ${EndIf}
   SetOutPath "$INSTDIR"
 
   File /r "${BUNDLE_DIR}\*.*"
@@ -174,6 +210,7 @@ Section "Install" SecInstall
   WriteRegStr HKLM "${PRODUCT_UNINSTALL_KEY}" "UninstallString" '"$INSTDIR\Uninstall-Karma-Launcher.exe"'
   WriteRegDWORD HKLM "${PRODUCT_UNINSTALL_KEY}" "NoModify" 1
   WriteRegDWORD HKLM "${PRODUCT_UNINSTALL_KEY}" "NoRepair" 1
+install_done:
 SectionEnd
 
 Section "Uninstall"
@@ -183,7 +220,7 @@ Section "Uninstall"
   IfFileExists "$INSTDIR\Uninstall-Karma.ps1" 0 uninstall_missing
   ExecWait '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\Uninstall-Karma.ps1" -InstallDirectory "$INSTDIR"' $0
   ${If} $0 != 0
-    MessageBox MB_OK|MB_ICONSTOP "管理员密码验证失败或卸载未完成。Karma 保持安装状态。"
+    MessageBox MB_OK|MB_ICONSTOP "Super password required, or administrator password after the waiting period; uninstall incomplete. / 需要超级密码，或等待期满后的管理员密码；卸载未完成。Karma 保持安装状态。"
     Abort
   ${EndIf}
 

@@ -16,6 +16,9 @@ pub const MAX_BROWSER_HOST_CHARS: usize = 253;
 /// Largest page of remembered titles one console request may read.
 pub const MAX_TITLE_PAGE: u32 = 100;
 pub const MAX_TITLE_QUERY_CHARS: usize = 128;
+/// The product version this build reports and updates from. Kept equal to the
+/// console's `tauri.conf.json` version by the installer contract test.
+pub const PRODUCT_VERSION: &str = "0.2.4";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -85,10 +88,14 @@ pub enum ServiceRequest {
     GetPolicy {
         session_token: String,
     },
+    /// Replace the policy. When a super password is configured and the new
+    /// policy weakens protection, `super_password` must carry it.
     PutPolicy {
         session_token: String,
         expected_revision: u64,
         policy: Value,
+        #[serde(default)]
+        super_password: Option<String>,
     },
     ListEvidence {
         session_token: String,
@@ -113,16 +120,45 @@ pub enum ServiceRequest {
         #[serde(default)]
         title_query: Option<String>,
     },
-    /// Stop closing windows that show one remembered title.
+    /// Stop closing windows that show one remembered title. Requires the
+    /// super password once one is configured.
     ForgetRememberedTitle {
         session_token: String,
         title_id: String,
+        #[serde(default)]
+        super_password: Option<String>,
     },
     /// Lift the active network schedule until its current block ends. The
-    /// administrator password is verified again even with a valid session.
+    /// password is verified again even with a valid session: the super
+    /// password once one is configured, otherwise the administrator password.
     RestoreNetwork {
         session_token: String,
         password: String,
+    },
+    /// Configure the super password for the first time, confirmed with the
+    /// administrator password.
+    SetSuperPassword {
+        session_token: String,
+        admin_password: String,
+        super_password: String,
+    },
+    ChangeSuperPassword {
+        session_token: String,
+        current_super_password: String,
+        new_super_password: String,
+    },
+    /// Start the waiting period after which the administrator password alone
+    /// may authorize an uninstall.
+    RequestUninstall {
+        session_token: String,
+        password: String,
+    },
+    CancelUninstall {
+        session_token: String,
+    },
+    /// Check for, download, and install a newer signed release now.
+    CheckForUpdates {
+        session_token: String,
     },
     AgentHeartbeat {
         agent_token: String,
@@ -147,7 +183,15 @@ pub enum ServiceRequest {
         agent_token: String,
         report: DispositionReport,
     },
+    /// Authorize an uninstall: the super password, or the administrator
+    /// password once a requested uninstall waiting period has elapsed.
     RequestShutdown {
+        password: String,
+    },
+    /// Apply the signed bundle an installer placed in the update inbox, in
+    /// place and without removing protection; the administrator password
+    /// suffices because only newer, signed releases are accepted.
+    ApplyStagedUpdate {
         password: String,
     },
 }
@@ -168,6 +212,11 @@ impl ServiceRequest {
             | Self::ListEnforcement { .. }
             | Self::ForgetRememberedTitle { .. }
             | Self::RestoreNetwork { .. }
+            | Self::SetSuperPassword { .. }
+            | Self::ChangeSuperPassword { .. }
+            | Self::RequestUninstall { .. }
+            | Self::CancelUninstall { .. }
+            | Self::CheckForUpdates { .. }
             | Self::ChangePassword { .. } => client == ClientKind::Ui,
             Self::AgentHeartbeat { .. }
             | Self::AgentObservation { .. }
@@ -175,7 +224,9 @@ impl ServiceRequest {
             | Self::SubmitEvidence { .. }
             | Self::GetAgentPolicy { .. }
             | Self::ReportDisposition { .. } => client == ClientKind::Agent,
-            Self::RequestShutdown { .. } => client == ClientKind::Installer,
+            Self::RequestShutdown { .. } | Self::ApplyStagedUpdate { .. } => {
+                client == ClientKind::Installer
+            }
         };
         if !valid_role {
             return Err(ProtocolError::ClientRoleDenied);
@@ -185,22 +236,35 @@ impl ServiceRequest {
             | Self::Authenticate { password }
             | Self::RevealEvidence { password, .. }
             | Self::RestoreNetwork { password, .. }
-            | Self::RequestShutdown { password } => {
-                if password.is_empty() || password.chars().count() > MAX_PASSWORD_CHARS {
-                    return Err(ProtocolError::InvalidField);
-                }
-            }
+            | Self::RequestUninstall { password, .. }
+            | Self::RequestShutdown { password }
+            | Self::ApplyStagedUpdate { password } => validate_password(password)?,
             Self::ChangePassword {
-                current_password,
-                new_password,
+                current_password: first,
+                new_password: second,
+                ..
+            }
+            | Self::SetSuperPassword {
+                admin_password: first,
+                super_password: second,
+                ..
+            }
+            | Self::ChangeSuperPassword {
+                current_super_password: first,
+                new_super_password: second,
                 ..
             } => {
-                for password in [current_password, new_password] {
-                    if password.is_empty() || password.chars().count() > MAX_PASSWORD_CHARS {
-                        return Err(ProtocolError::InvalidField);
-                    }
-                }
+                validate_password(first)?;
+                validate_password(second)?;
             }
+            Self::PutPolicy {
+                super_password: Some(password),
+                ..
+            }
+            | Self::ForgetRememberedTitle {
+                super_password: Some(password),
+                ..
+            } => validate_password(password)?,
             _ => {}
         }
         match self {
@@ -214,6 +278,11 @@ impl ServiceRequest {
             | Self::ListEnforcement { session_token, .. }
             | Self::ForgetRememberedTitle { session_token, .. }
             | Self::RestoreNetwork { session_token, .. }
+            | Self::SetSuperPassword { session_token, .. }
+            | Self::ChangeSuperPassword { session_token, .. }
+            | Self::RequestUninstall { session_token, .. }
+            | Self::CancelUninstall { session_token }
+            | Self::CheckForUpdates { session_token }
             | Self::ChangePassword { session_token, .. } => {
                 validate_opaque(session_token, MAX_SESSION_TOKEN_CHARS)?;
             }
@@ -604,6 +673,48 @@ pub struct ServiceStatus {
     pub audit_count: u64,
     #[serde(default)]
     pub network: NetworkStatus,
+    #[serde(default)]
+    pub product_version: String,
+    #[serde(default)]
+    pub super_password_set: bool,
+    #[serde(default)]
+    pub uninstall: Option<UninstallStatus>,
+    #[serde(default)]
+    pub update: UpdateStatus,
+}
+
+/// A requested uninstall: the administrator password may authorize it from
+/// `effective_at_ms` until `expires_at_ms`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UninstallStatus {
+    pub requested_at_ms: i64,
+    pub effective_at_ms: i64,
+    pub expires_at_ms: i64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdatePhase {
+    #[default]
+    Idle,
+    Checking,
+    Downloading,
+    Installing,
+    UpToDate,
+    Failed,
+}
+
+/// Progress of the signed in-place updater.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateStatus {
+    pub phase: UpdatePhase,
+    pub last_checked_at_ms: Option<i64>,
+    /// Newest version the last check found, when newer than this build.
+    pub available_version: Option<String>,
+    /// Short machine-readable reason for the last failure.
+    pub last_error: Option<String>,
 }
 
 /// The weekly network schedule as the Service currently enforces it.
@@ -661,6 +772,10 @@ pub enum ServiceErrorCode {
     NotEnrolled,
     RevisionConflict,
     EvidenceUnavailable,
+    /// The change weakens protection and needs the super password.
+    SuperPasswordRequired,
+    /// The offered update is not a newer, correctly signed release.
+    UpdateRejected,
     AgentUnauthorized,
     ServiceUnavailable,
     StorageUnavailable,
@@ -722,6 +837,13 @@ fn validate_opaque(value: &str, maximum_chars: usize) -> Result<(), ProtocolErro
 
 fn validate_identifier(value: &str) -> Result<(), ProtocolError> {
     validate_opaque(value, 128)
+}
+
+fn validate_password(password: &str) -> Result<(), ProtocolError> {
+    if password.is_empty() || password.chars().count() > MAX_PASSWORD_CHARS {
+        return Err(ProtocolError::InvalidField);
+    }
+    Ok(())
 }
 
 fn validate_window_title(title: &str) -> Result<(), ProtocolError> {
@@ -909,6 +1031,7 @@ mod tests {
                 session_token: "session-1".into(),
                 expected_revision: 0,
                 policy,
+                super_password: None,
             },
             ClientKind::Ui,
         );
@@ -958,6 +1081,7 @@ mod tests {
                 ServiceRequest::ForgetRememberedTitle {
                     session_token: "session-1".into(),
                     title_id: title_id.into(),
+                    super_password: None,
                 },
                 client,
             )
@@ -1077,5 +1201,121 @@ mod tests {
             ServiceResult::AgentPolicy { revision: 3, enforcement, .. }
                 if enforcement == AgentEnforcement::default()
         ));
+    }
+
+    #[test]
+    fn super_password_and_uninstall_requests_are_ui_only_and_validated() {
+        let ui_requests = [
+            ServiceRequest::SetSuperPassword {
+                session_token: "session-1".into(),
+                admin_password: "admin-secret".into(),
+                super_password: "super-secret".into(),
+            },
+            ServiceRequest::ChangeSuperPassword {
+                session_token: "session-1".into(),
+                current_super_password: "super-secret".into(),
+                new_super_password: "super-secret-2".into(),
+            },
+            ServiceRequest::RequestUninstall {
+                session_token: "session-1".into(),
+                password: "admin-secret".into(),
+            },
+            ServiceRequest::CancelUninstall {
+                session_token: "session-1".into(),
+            },
+            ServiceRequest::CheckForUpdates {
+                session_token: "session-1".into(),
+            },
+        ];
+        for body in ui_requests {
+            assert!(request(body.clone(), ClientKind::Ui).validate().is_ok());
+            assert_eq!(
+                request(body, ClientKind::Agent).validate(),
+                Err(ProtocolError::ClientRoleDenied)
+            );
+        }
+        assert_eq!(
+            request(
+                ServiceRequest::SetSuperPassword {
+                    session_token: "session-1".into(),
+                    admin_password: "admin-secret".into(),
+                    super_password: String::new(),
+                },
+                ClientKind::Ui,
+            )
+            .validate(),
+            Err(ProtocolError::InvalidField)
+        );
+        assert_eq!(
+            request(
+                ServiceRequest::PutPolicy {
+                    session_token: "session-1".into(),
+                    expected_revision: 0,
+                    policy: serde_json::json!({}),
+                    super_password: Some(String::new()),
+                },
+                ClientKind::Ui,
+            )
+            .validate(),
+            Err(ProtocolError::InvalidField)
+        );
+        let legacy_put: ServiceRequest = serde_json::from_value(serde_json::json!({
+            "type": "put_policy",
+            "payload": {"session_token": "session-1", "expected_revision": 0, "policy": {}}
+        }))
+        .unwrap();
+        assert!(matches!(
+            legacy_put,
+            ServiceRequest::PutPolicy {
+                super_password: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn staged_updates_are_installer_only() {
+        let update = |client| {
+            request(
+                ServiceRequest::ApplyStagedUpdate {
+                    password: "admin-secret".into(),
+                },
+                client,
+            )
+        };
+        assert!(update(ClientKind::Installer).validate().is_ok());
+        assert_eq!(
+            update(ClientKind::Ui).validate(),
+            Err(ProtocolError::ClientRoleDenied)
+        );
+        assert_eq!(
+            request(
+                ServiceRequest::ApplyStagedUpdate {
+                    password: String::new(),
+                },
+                ClientKind::Installer,
+            )
+            .validate(),
+            Err(ProtocolError::InvalidField)
+        );
+    }
+
+    #[test]
+    fn status_from_older_services_defaults_new_fields() {
+        let status: ServiceStatus = serde_json::from_value(serde_json::json!({
+            "service_started_at_ms": 1,
+            "policy_revision": 2,
+            "protection_enabled": true,
+            "agent_connected": false,
+            "agent_last_seen_at_ms": null,
+            "monitors": [],
+            "evidence_count": 0,
+            "audit_count": 0
+        }))
+        .unwrap();
+        assert!(!status.super_password_set);
+        assert_eq!(status.uninstall, None);
+        assert_eq!(status.update, UpdateStatus::default());
+        assert_eq!(status.product_version, "");
     }
 }

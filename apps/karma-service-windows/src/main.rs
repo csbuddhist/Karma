@@ -3,6 +3,10 @@ mod network_enforcement;
 #[cfg(windows)]
 mod scm;
 #[cfg(windows)]
+mod scm_update;
+#[cfg(any(windows, test))]
+mod update_transaction;
+#[cfg(windows)]
 mod windows_service;
 
 #[cfg(windows)]

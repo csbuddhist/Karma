@@ -18,18 +18,20 @@ use karma_evidence::EvidenceVault;
 use karma_ipc::{
     ActiveBan, AgentEnforcement, BootstrapStatus, EnforcementSummary, EvidenceMetadata,
     NetworkStatus, RememberedTitleMetadata, RequestEnvelope, ResponseEnvelope, ServiceErrorCode,
-    ServiceFailure, ServiceRequest, ServiceResult, ServiceStatus,
+    ServiceFailure, ServiceRequest, ServiceResult, ServiceStatus, UninstallStatus, UpdatePhase,
+    UpdateStatus,
 };
 use karma_policy::{
     ApplicationEffect, ApplicationPolicy, ContextPolicy, MINUTES_PER_DAY, MINUTES_PER_WEEK,
     NetworkRestriction, NetworkSchedulePolicy, RememberedTitle, RepeatOffenderRule, active_bans,
-    is_banned, normalize_executable, record_closure, remember_title, remember_titles_enabled,
-    rememberable_title_key, title_digest, title_key,
+    is_banned, normalize_executable, policy_weakenings, record_closure, remember_title,
+    remember_titles_enabled, rememberable_title_key, title_digest, title_key,
 };
 use rand::{RngCore, rngs::OsRng};
 use serde_json::Value;
 use store::{
     AuditRecord, Change, MAX_AUDIT_ENTRIES, NetworkRestore, PersistedState, Store, StoredEvidence,
+    UninstallRequest,
 };
 use subtle::ConstantTimeEq;
 use thiserror::Error;
@@ -41,6 +43,8 @@ const MAX_OBSERVATION_AGE_MS: i64 = 10 * 1000;
 const DISPOSITION_GRACE_MS: u32 = 0;
 const MAX_FAILURES: u32 = 5;
 const FAILURE_COOLDOWN_MS: i64 = 30 * 1000;
+const UNINSTALL_WAIT_MS: i64 = 72 * 60 * 60 * 1000;
+const UNINSTALL_VALIDITY_MS: i64 = 24 * 60 * 60 * 1000;
 const MAX_REPLAY_ENTRIES: usize = 4096;
 const MS_PER_MINUTE: i64 = 60 * 1000;
 /// 1970-01-01 was a Thursday; schedules number Monday as day 0.
@@ -82,6 +86,8 @@ pub enum CoreError {
     StorageUnavailable,
     #[error("service state lock is unavailable")]
     LockUnavailable,
+    #[error("an uninstall shutdown has already been authorized")]
+    ShutdownAuthorized,
 }
 
 struct RuntimeState {
@@ -95,12 +101,15 @@ struct RuntimeState {
     sessions: HashMap<String, i64>,
     recent_nonces: VecDeque<String>,
     nonce_index: HashSet<String>,
-    failures: u32,
-    blocked_until_ms: Option<i64>,
+    administrator_auth: AuthenticationLimit,
+    super_auth: AuthenticationLimit,
     last_heartbeat: Option<karma_ipc::AgentHeartbeat>,
     pending_dispositions: HashMap<String, PendingDisposition>,
     network_restricted: Option<bool>,
     network_enforcement_succeeded: Option<bool>,
+    pending_update: Option<UpdateAction>,
+    update_status: UpdateStatus,
+    shutdown_authorized: bool,
 }
 
 /// A disposition the service authorized and awaits a report for.
@@ -117,12 +126,50 @@ struct TitleCandidate {
     browser_host: Option<String>,
 }
 
+#[derive(Default)]
+struct AuthenticationLimit {
+    failures: u32,
+    blocked_until_ms: Option<i64>,
+}
+
+#[derive(Clone, Copy)]
+enum AuthenticationKind {
+    Administrator,
+    Super,
+    Uninstall,
+}
+
+impl AuthenticationKind {
+    fn audit_kind(self) -> &'static str {
+        match self {
+            Self::Administrator => "administrator_authentication",
+            Self::Super => "super_password_authentication",
+            Self::Uninstall => "uninstall_authentication",
+        }
+    }
+
+    fn limit(self, runtime: &mut RuntimeState) -> &mut AuthenticationLimit {
+        match self {
+            Self::Administrator => &mut runtime.administrator_auth,
+            Self::Super | Self::Uninstall => &mut runtime.super_auth,
+        }
+    }
+}
+
 /// What the network enforcement layer must apply right now.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NetworkEnforcement {
     pub status: NetworkStatus,
     /// Empty unless `status.restricted` is set.
     pub restriction: NetworkRestriction,
+}
+
+/// A bounded updater operation authorized by an IPC request. The host uses
+/// only its fixed release source or protected update inbox, never caller paths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateAction {
+    CheckAndInstall,
+    ApplyStaged,
 }
 
 pub struct ServiceCore {
@@ -154,12 +201,15 @@ impl ServiceCore {
             sessions: HashMap::new(),
             recent_nonces: VecDeque::new(),
             nonce_index: HashSet::new(),
-            failures: 0,
-            blocked_until_ms: None,
+            administrator_auth: AuthenticationLimit::default(),
+            super_auth: AuthenticationLimit::default(),
             last_heartbeat: None,
             pending_dispositions: HashMap::new(),
             network_restricted: None,
             network_enforcement_succeeded: None,
+            pending_update: None,
+            update_status: UpdateStatus::default(),
+            shutdown_authorized: false,
         };
         runtime.rebuild_title_digests();
         Ok(Self {
@@ -178,6 +228,57 @@ impl ServiceCore {
         self
     }
 
+    /// Whether periodic signed updates may install automatically. Explicit
+    /// authenticated update requests remain available when this is disabled.
+    pub fn auto_install_updates(&self) -> Result<bool, CoreError> {
+        let runtime = self
+            .runtime
+            .lock()
+            .map_err(|_| CoreError::LockUnavailable)?;
+        Ok(runtime
+            .stored
+            .policy
+            .pointer("/updates/autoInstall")
+            .and_then(Value::as_bool)
+            .unwrap_or(true))
+    }
+
+    /// Takes one previously authenticated updater request. Only one operation
+    /// may be queued or in progress at a time.
+    pub fn take_update_action(&self) -> Result<Option<UpdateAction>, CoreError> {
+        let mut runtime = self
+            .runtime
+            .lock()
+            .map_err(|_| CoreError::LockUnavailable)?;
+        Ok(runtime.pending_update.take())
+    }
+
+    /// Reports host updater progress without accepting executable paths or
+    /// process identities through the service protocol.
+    pub fn record_update_status(&self, status: UpdateStatus, now_ms: i64) -> Result<(), CoreError> {
+        let mut runtime = self
+            .runtime
+            .lock()
+            .map_err(|_| CoreError::LockUnavailable)?;
+        if runtime.shutdown_authorized && update_phase_in_progress(status.phase) {
+            return Err(CoreError::ShutdownAuthorized);
+        }
+        if runtime.update_status != status {
+            let outcome = match status.phase {
+                UpdatePhase::Idle => "idle",
+                UpdatePhase::Checking => "checking",
+                UpdatePhase::Downloading => "downloading",
+                UpdatePhase::Installing => "installing",
+                UpdatePhase::UpToDate => "up_to_date",
+                UpdatePhase::Failed => "failed",
+            };
+            audit(&mut runtime, now_ms, "signed_update", outcome);
+            persist(&mut runtime).map_err(|_| CoreError::StorageUnavailable)?;
+            runtime.update_status = status;
+        }
+        Ok(())
+    }
+
     /// The network schedule restriction to enforce at `now_ms`. Hosts call
     /// this periodically; transitions into and out of a restricted period are
     /// written to the audit log.
@@ -186,6 +287,7 @@ impl ServiceCore {
             .runtime
             .lock()
             .map_err(|_| CoreError::LockUnavailable)?;
+        refresh_uninstall_request(&mut runtime, now_ms);
         let (status, restriction) = self.evaluate_network(&mut runtime, now_ms);
         if runtime.network_restricted != Some(status.restricted) {
             let previous = runtime.network_restricted.replace(status.restricted);
@@ -198,6 +300,9 @@ impl ServiceCore {
                 audit(&mut runtime, now_ms, kind, "success");
                 persist(&mut runtime).map_err(|_| CoreError::StorageUnavailable)?;
             }
+        }
+        if !runtime.pending.is_empty() {
+            persist(&mut runtime).map_err(|_| CoreError::StorageUnavailable)?;
         }
         Ok(NetworkEnforcement {
             status,
@@ -299,7 +404,15 @@ impl ServiceCore {
         if !remember_nonce(&mut runtime, request.nonce) {
             return failure(request_id, ServiceErrorCode::ReplayDetected);
         }
-        let result = self.dispatch(&mut runtime, request.request, now_ms);
+        refresh_uninstall_request(&mut runtime, now_ms);
+        let mut result = self.dispatch(&mut runtime, request.request, now_ms);
+        // Failed authentication and authorization attempts are audit events too.
+        // Commit those events even when dispatch returned a failure.
+        if !runtime.pending.is_empty() {
+            if let Err(error) = persist(&mut runtime) {
+                result = Err(error);
+            }
+        }
         match result {
             Ok(result) => ResponseEnvelope::success(request_id, result),
             Err(code) => failure(request_id, code),
@@ -353,7 +466,6 @@ impl ServiceCore {
             }
             ServiceRequest::Authenticate { password } => {
                 self.authenticate(runtime, password, now_ms)?;
-                audit(runtime, now_ms, "administrator_authenticated", "success");
                 persist(runtime)?;
                 Ok(new_session(runtime, now_ms))
             }
@@ -365,7 +477,13 @@ impl ServiceCore {
                 authorize(runtime, &session_token, now_ms)?;
                 self.authenticate(runtime, current_password, now_ms)?;
                 let new_password = Zeroizing::new(new_password);
-                if new_password.chars().count() < 10 {
+                if new_password.chars().count() < 10
+                    || password_matches(
+                        runtime.stored.super_password_hash.as_deref(),
+                        &new_password,
+                    )?
+                {
+                    audit(runtime, now_ms, "administrator_password_changed", "denied");
                     return Err(ServiceErrorCode::InvalidRequest);
                 }
                 let salt = SaltString::generate(&mut PasswordOsRng);
@@ -375,6 +493,51 @@ impl ServiceCore {
                     .to_string();
                 runtime.set_password_hash(hash);
                 audit(runtime, now_ms, "administrator_password_changed", "success");
+                persist(runtime)?;
+                Ok(ServiceResult::Acknowledged)
+            }
+            ServiceRequest::SetSuperPassword {
+                session_token,
+                admin_password,
+                super_password,
+            } => {
+                authorize(runtime, &session_token, now_ms)?;
+                let super_password = Zeroizing::new(super_password);
+                if runtime.stored.super_password_hash.is_some() {
+                    audit(runtime, now_ms, "super_password_set", "denied");
+                    return Err(ServiceErrorCode::AlreadyEnrolled);
+                }
+                self.authenticate(runtime, admin_password, now_ms)?;
+                if super_password.chars().count() < 10
+                    || password_matches(runtime.stored.password_hash.as_deref(), &super_password)?
+                {
+                    audit(runtime, now_ms, "super_password_set", "denied");
+                    return Err(ServiceErrorCode::InvalidRequest);
+                }
+                runtime.set_super_password_hash(hash_password(&super_password)?);
+                audit(runtime, now_ms, "super_password_set", "success");
+                persist(runtime)?;
+                Ok(ServiceResult::Acknowledged)
+            }
+            ServiceRequest::ChangeSuperPassword {
+                session_token,
+                current_super_password,
+                new_super_password,
+            } => {
+                authorize(runtime, &session_token, now_ms)?;
+                self.authenticate_super(runtime, Some(current_super_password), now_ms)?;
+                let new_super_password = Zeroizing::new(new_super_password);
+                if new_super_password.chars().count() < 10
+                    || password_matches(
+                        runtime.stored.password_hash.as_deref(),
+                        &new_super_password,
+                    )?
+                {
+                    audit(runtime, now_ms, "super_password_changed", "denied");
+                    return Err(ServiceErrorCode::InvalidRequest);
+                }
+                runtime.set_super_password_hash(hash_password(&new_super_password)?);
+                audit(runtime, now_ms, "super_password_changed", "success");
                 persist(runtime)?;
                 Ok(ServiceResult::Acknowledged)
             }
@@ -405,6 +568,10 @@ impl ServiceCore {
                     evidence_count: runtime.stored.evidence.len() as u64,
                     audit_count: runtime.stored.audit_count,
                     network: self.evaluate_network(runtime, now_ms).0,
+                    product_version: karma_ipc::PRODUCT_VERSION.into(),
+                    super_password_set: runtime.stored.super_password_hash.is_some(),
+                    uninstall: runtime.stored.uninstall_request.map(uninstall_status),
+                    update: runtime.update_status.clone(),
                 }))
             }
             ServiceRequest::GetPolicy { session_token } => {
@@ -418,6 +585,7 @@ impl ServiceCore {
                 session_token,
                 expected_revision,
                 policy,
+                super_password,
             } => {
                 authorize(runtime, &session_token, now_ms)?;
                 if expected_revision != runtime.stored.policy_revision {
@@ -430,6 +598,15 @@ impl ServiceCore {
                     .map_err(|_| ServiceErrorCode::InvalidRequest)?;
                 RepeatOffenderRule::from_value(&policy)
                     .map_err(|_| ServiceErrorCode::InvalidRequest)?;
+                if runtime.stored.super_password_hash.is_some()
+                    && !policy_weakenings(&runtime.stored.policy, &policy).is_empty()
+                {
+                    if let Err(error) = self.authenticate_super(runtime, super_password, now_ms) {
+                        audit(runtime, now_ms, "policy_weakening", "denied");
+                        return Err(error);
+                    }
+                    audit(runtime, now_ms, "policy_weakening", "authorized");
+                }
                 runtime.set_policy(policy);
                 audit(runtime, now_ms, "policy_updated", "success");
                 persist(runtime)?;
@@ -735,8 +912,15 @@ impl ServiceCore {
             ServiceRequest::ForgetRememberedTitle {
                 session_token,
                 title_id,
+                super_password,
             } => {
                 authorize(runtime, &session_token, now_ms)?;
+                if runtime.stored.super_password_hash.is_some() {
+                    if let Err(error) = self.authenticate_super(runtime, super_password, now_ms) {
+                        audit(runtime, now_ms, "remembered_title_forgotten", "denied");
+                        return Err(error);
+                    }
+                }
                 let index = runtime
                     .stored
                     .remembered_titles
@@ -753,7 +937,11 @@ impl ServiceCore {
                 password,
             } => {
                 authorize(runtime, &session_token, now_ms)?;
-                self.authenticate(runtime, password, now_ms)?;
+                if runtime.stored.super_password_hash.is_some() {
+                    self.authenticate_super(runtime, Some(password), now_ms)?;
+                } else {
+                    self.authenticate(runtime, password, now_ms)?;
+                }
                 let (status, _) = self.evaluate_network(runtime, now_ms);
                 if !status.restricted {
                     return Ok(ServiceResult::NetworkStatus(status));
@@ -776,10 +964,85 @@ impl ServiceCore {
                     self.evaluate_network(runtime, now_ms).0,
                 ))
             }
-            ServiceRequest::RequestShutdown { password } => {
+            ServiceRequest::RequestUninstall {
+                session_token,
+                password,
+            } => {
+                authorize(runtime, &session_token, now_ms)?;
                 self.authenticate(runtime, password, now_ms)?;
+                let effective_at_ms = now_ms
+                    .checked_add(UNINSTALL_WAIT_MS)
+                    .filter(|effective| effective.checked_add(UNINSTALL_VALIDITY_MS).is_some())
+                    .ok_or(ServiceErrorCode::InvalidRequest)?;
+                runtime.set_uninstall_request(Some(UninstallRequest {
+                    requested_at_ms: now_ms,
+                    effective_at_ms,
+                    ready_audited: false,
+                }));
+                audit(runtime, now_ms, "uninstall_requested", "success");
+                persist(runtime)?;
+                Ok(ServiceResult::Acknowledged)
+            }
+            ServiceRequest::CancelUninstall { session_token } => {
+                authorize(runtime, &session_token, now_ms)?;
+                runtime.set_uninstall_request(None);
+                audit(runtime, now_ms, "uninstall_cancelled", "success");
+                persist(runtime)?;
+                Ok(ServiceResult::Acknowledged)
+            }
+            ServiceRequest::CheckForUpdates { session_token } => {
+                authorize(runtime, &session_token, now_ms)?;
+                queue_update(runtime, UpdateAction::CheckAndInstall, now_ms)?;
+                Ok(ServiceResult::Acknowledged)
+            }
+            ServiceRequest::ApplyStagedUpdate { password } => {
+                self.authenticate(runtime, password, now_ms)?;
+                queue_update(runtime, UpdateAction::ApplyStaged, now_ms)?;
+                Ok(ServiceResult::Acknowledged)
+            }
+            ServiceRequest::RequestShutdown { password } => {
+                if runtime.pending_update.is_some() || update_in_progress(runtime) {
+                    audit(
+                        runtime,
+                        now_ms,
+                        "uninstall_authorization",
+                        "update_in_progress",
+                    );
+                    return Err(ServiceErrorCode::ServiceUnavailable);
+                }
+                if runtime.stored.super_password_hash.is_some() {
+                    let password = Zeroizing::new(password);
+                    self.check_authentication_limit(
+                        runtime,
+                        AuthenticationKind::Uninstall,
+                        now_ms,
+                    )?;
+                    let admin_allowed = runtime
+                        .stored
+                        .uninstall_request
+                        .map(uninstall_status)
+                        .is_some_and(|request| {
+                            now_ms >= request.effective_at_ms && now_ms < request.expires_at_ms
+                        });
+                    let valid =
+                        password_matches(runtime.stored.super_password_hash.as_deref(), &password)?
+                            || (admin_allowed
+                                && password_matches(
+                                    runtime.stored.password_hash.as_deref(),
+                                    &password,
+                                )?);
+                    self.finish_authentication(
+                        runtime,
+                        valid,
+                        AuthenticationKind::Uninstall,
+                        now_ms,
+                    )?;
+                } else {
+                    self.authenticate(runtime, password, now_ms)?;
+                }
                 audit(runtime, now_ms, "service_shutdown_requested", "success");
                 persist(runtime)?;
+                runtime.shutdown_authorized = true;
                 Ok(ServiceResult::Acknowledged)
             }
         }
@@ -788,34 +1051,78 @@ impl ServiceCore {
     fn authenticate(
         &self,
         runtime: &mut RuntimeState,
-        mut password: String,
+        password: String,
         now_ms: i64,
     ) -> Result<(), ServiceErrorCode> {
-        if runtime.blocked_until_ms.is_some_and(|until| until > now_ms) {
-            password.zeroize();
+        let password = Zeroizing::new(password);
+        self.check_authentication_limit(runtime, AuthenticationKind::Administrator, now_ms)?;
+        if runtime.stored.password_hash.is_none() {
+            return Err(ServiceErrorCode::NotEnrolled);
+        }
+        let valid = password_matches(runtime.stored.password_hash.as_deref(), &password)?;
+        self.finish_authentication(runtime, valid, AuthenticationKind::Administrator, now_ms)
+    }
+
+    fn authenticate_super(
+        &self,
+        runtime: &mut RuntimeState,
+        password: Option<String>,
+        now_ms: i64,
+    ) -> Result<(), ServiceErrorCode> {
+        let password = password.map(Zeroizing::new);
+        self.check_authentication_limit(runtime, AuthenticationKind::Super, now_ms)?;
+        let Some(password) = password.filter(|_| runtime.stored.super_password_hash.is_some())
+        else {
+            audit(runtime, now_ms, "super_password_authentication", "denied");
+            return Err(ServiceErrorCode::SuperPasswordRequired);
+        };
+        let valid = password_matches(runtime.stored.super_password_hash.as_deref(), &password)?;
+        self.finish_authentication(runtime, valid, AuthenticationKind::Super, now_ms)
+    }
+
+    fn check_authentication_limit(
+        &self,
+        runtime: &mut RuntimeState,
+        kind: AuthenticationKind,
+        now_ms: i64,
+    ) -> Result<(), ServiceErrorCode> {
+        if kind
+            .limit(runtime)
+            .blocked_until_ms
+            .is_some_and(|until| until > now_ms)
+        {
+            audit(runtime, now_ms, kind.audit_kind(), "rate_limited");
             return Err(ServiceErrorCode::RateLimited);
         }
-        let Some(stored_hash) = runtime.stored.password_hash.as_ref() else {
-            password.zeroize();
-            return Err(ServiceErrorCode::NotEnrolled);
-        };
-        let parsed =
-            PasswordHash::new(stored_hash).map_err(|_| ServiceErrorCode::StorageUnavailable)?;
-        let valid = Argon2::default()
-            .verify_password(password.as_bytes(), &parsed)
-            .is_ok();
-        password.zeroize();
+        Ok(())
+    }
+
+    fn finish_authentication(
+        &self,
+        runtime: &mut RuntimeState,
+        valid: bool,
+        kind: AuthenticationKind,
+        now_ms: i64,
+    ) -> Result<(), ServiceErrorCode> {
         if valid {
-            runtime.failures = 0;
-            runtime.blocked_until_ms = None;
+            let limit = kind.limit(runtime);
+            limit.failures = 0;
+            limit.blocked_until_ms = None;
+            let kind = if matches!(kind, AuthenticationKind::Administrator) {
+                "administrator_authenticated"
+            } else {
+                kind.audit_kind()
+            };
+            audit(runtime, now_ms, kind, "success");
             return Ok(());
         }
-        runtime.failures = runtime.failures.saturating_add(1);
-        audit(runtime, now_ms, "administrator_authentication", "denied");
-        if runtime.failures >= MAX_FAILURES {
-            runtime.failures = 0;
-            runtime.blocked_until_ms = Some(now_ms.saturating_add(FAILURE_COOLDOWN_MS));
+        let limit = kind.limit(runtime);
+        limit.failures = limit.failures.saturating_add(1);
+        if limit.failures >= MAX_FAILURES {
+            limit.failures = 0;
+            limit.blocked_until_ms = Some(now_ms.saturating_add(FAILURE_COOLDOWN_MS));
         }
+        audit(runtime, now_ms, kind.audit_kind(), "denied");
         Err(ServiceErrorCode::AuthenticationFailed)
     }
 
@@ -831,6 +1138,88 @@ impl ServiceCore {
             Err(ServiceErrorCode::AgentUnauthorized)
         }
     }
+}
+
+fn password_matches(stored_hash: Option<&str>, password: &str) -> Result<bool, ServiceErrorCode> {
+    let Some(stored_hash) = stored_hash else {
+        return Ok(false);
+    };
+    let parsed =
+        PasswordHash::new(stored_hash).map_err(|_| ServiceErrorCode::StorageUnavailable)?;
+    Ok(Argon2::default()
+        .verify_password(password.as_bytes(), &parsed)
+        .is_ok())
+}
+
+fn hash_password(password: &str) -> Result<String, ServiceErrorCode> {
+    let salt = SaltString::generate(&mut PasswordOsRng);
+    Argon2::default()
+        .hash_password(password.as_bytes(), &salt)
+        .map(|hash| hash.to_string())
+        .map_err(|_| ServiceErrorCode::Internal)
+}
+
+fn uninstall_status(request: UninstallRequest) -> UninstallStatus {
+    UninstallStatus {
+        requested_at_ms: request.requested_at_ms,
+        effective_at_ms: request.effective_at_ms,
+        expires_at_ms: request
+            .effective_at_ms
+            .saturating_add(UNINSTALL_VALIDITY_MS),
+    }
+}
+
+fn refresh_uninstall_request(runtime: &mut RuntimeState, now_ms: i64) {
+    let Some(mut request) = runtime.stored.uninstall_request else {
+        return;
+    };
+    if now_ms >= uninstall_status(request).expires_at_ms {
+        runtime.set_uninstall_request(None);
+        audit(runtime, now_ms, "uninstall_request_expired", "success");
+    } else if now_ms >= request.effective_at_ms && !request.ready_audited {
+        request.ready_audited = true;
+        runtime.set_uninstall_request(Some(request));
+        audit(runtime, now_ms, "uninstall_request_ready", "success");
+    }
+}
+
+fn queue_update(
+    runtime: &mut RuntimeState,
+    action: UpdateAction,
+    now_ms: i64,
+) -> Result<(), ServiceErrorCode> {
+    if runtime.shutdown_authorized
+        || runtime.pending_update.is_some()
+        || update_in_progress(runtime)
+    {
+        audit(runtime, now_ms, "signed_update_requested", "busy");
+        return Err(ServiceErrorCode::ServiceUnavailable);
+    }
+    audit(
+        runtime,
+        now_ms,
+        "signed_update_requested",
+        match action {
+            UpdateAction::CheckAndInstall => "check_and_install",
+            UpdateAction::ApplyStaged => "apply_staged",
+        },
+    );
+    persist(runtime)?;
+    runtime.pending_update = Some(action);
+    runtime.update_status.phase = UpdatePhase::Checking;
+    runtime.update_status.last_error = None;
+    Ok(())
+}
+
+fn update_in_progress(runtime: &RuntimeState) -> bool {
+    update_phase_in_progress(runtime.update_status.phase)
+}
+
+fn update_phase_in_progress(phase: UpdatePhase) -> bool {
+    matches!(
+        phase,
+        UpdatePhase::Checking | UpdatePhase::Downloading | UpdatePhase::Installing
+    )
 }
 
 fn authorize(runtime: &mut RuntimeState, token: &str, now_ms: i64) -> Result<(), ServiceErrorCode> {
@@ -897,6 +1286,16 @@ impl RuntimeState {
     fn set_password_hash(&mut self, hash: String) {
         self.stored.password_hash = Some(hash.clone());
         self.pending.push(Change::PasswordHash(hash));
+    }
+
+    fn set_super_password_hash(&mut self, hash: String) {
+        self.stored.super_password_hash = Some(hash.clone());
+        self.pending.push(Change::SuperPasswordHash(hash));
+    }
+
+    fn set_uninstall_request(&mut self, request: Option<UninstallRequest>) {
+        self.stored.uninstall_request = request;
+        self.pending.push(Change::UninstallRequest(request));
     }
 
     fn set_policy(&mut self, policy: Value) {
@@ -1277,6 +1676,7 @@ mod tests {
                 "put-policy",
                 "put-policy-nonce",
                 ServiceRequest::PutPolicy {
+                    super_password: None,
                     session_token: session,
                     expected_revision: 0,
                     policy,
@@ -1489,6 +1889,7 @@ mod tests {
                 "disable",
                 "disable-nonce",
                 ServiceRequest::PutPolicy {
+                    super_password: None,
                     session_token: session,
                     expected_revision: 1,
                     policy: disabled,
@@ -1712,6 +2113,7 @@ mod tests {
                 "forget",
                 "forget-nonce",
                 ServiceRequest::ForgetRememberedTitle {
+                    super_password: None,
                     session_token: session.clone(),
                     title_id: remembered.id.clone(),
                 },
@@ -1738,6 +2140,7 @@ mod tests {
                     "forget-missing",
                     "forget-missing-nonce",
                     ServiceRequest::ForgetRememberedTitle {
+                        super_password: None,
                         session_token: session,
                         title_id: remembered.id.clone(),
                     },
@@ -1867,6 +2270,7 @@ mod tests {
                 "disable",
                 "disable-nonce",
                 ServiceRequest::PutPolicy {
+                    super_password: None,
                     session_token: session,
                     expected_revision: 1,
                     policy: disabled,
@@ -1892,6 +2296,7 @@ mod tests {
                     "invalid-repeat",
                     "invalid-repeat-nonce",
                     ServiceRequest::PutPolicy {
+                        super_password: None,
                         session_token: session,
                         expected_revision: 1,
                         policy: json!({"repeatOffender": {"windowMinutes": 0, "strikeLimit": 5}}),
@@ -2188,6 +2593,7 @@ mod tests {
                     "3",
                     "n3",
                     ServiceRequest::PutPolicy {
+                        super_password: None,
                         session_token: session,
                         expected_revision: 0,
                         policy: json!({"protectionEnabled": false})
@@ -2380,6 +2786,7 @@ mod tests {
                     "policy",
                     "policy-nonce",
                     ServiceRequest::PutPolicy {
+                        super_password: None,
                         session_token: session,
                         expected_revision: 0,
                         policy: json!({
@@ -2523,6 +2930,7 @@ mod tests {
                     "policy",
                     "policy-nonce",
                     ServiceRequest::PutPolicy {
+                        super_password: None,
                         session_token: session,
                         expected_revision: 0,
                         policy: json!({
@@ -2698,6 +3106,7 @@ mod tests {
                 "policy",
                 "policy-nonce",
                 ServiceRequest::PutPolicy {
+                    super_password: None,
                     session_token: session,
                     expected_revision: 0,
                     policy: json!({
@@ -2767,6 +3176,7 @@ mod tests {
                     "policy",
                     "policy-nonce",
                     ServiceRequest::PutPolicy {
+                        super_password: None,
                         session_token: session.clone(),
                         expected_revision: 0,
                         policy: json!({
@@ -2912,6 +3322,7 @@ mod tests {
                 "net-policy",
                 "net-policy-nonce",
                 ServiceRequest::PutPolicy {
+                    super_password: None,
                     session_token: session.clone(),
                     expected_revision: 0,
                     policy,
@@ -3119,6 +3530,7 @@ mod tests {
                 "bad-schedule",
                 "bad-schedule-nonce",
                 ServiceRequest::PutPolicy {
+                    super_password: None,
                     session_token: session,
                     expected_revision: 1,
                     policy: json!({"schedules": [{
@@ -3156,5 +3568,1026 @@ mod tests {
             }
             _ => panic!("unexpected response"),
         }
+    }
+    fn set_super(core: &ServiceCore, session: &str, now_ms: i64) {
+        success(core.handle(
+            request(
+                "set-super",
+                "set-super",
+                ServiceRequest::SetSuperPassword {
+                    session_token: session.into(),
+                    admin_password: "long-test-password".into(),
+                    super_password: "distinct-super-password".into(),
+                },
+            ),
+            now_ms,
+        ));
+    }
+
+    fn status_at(core: &ServiceCore, session: &str, nonce: &str, now_ms: i64) -> ServiceStatus {
+        match success(core.handle(
+            request(
+                nonce,
+                nonce,
+                ServiceRequest::GetStatus {
+                    session_token: session.into(),
+                },
+            ),
+            now_ms,
+        )) {
+            ServiceResult::Status(status) => status,
+            _ => panic!("expected service status"),
+        }
+    }
+
+    fn installer(
+        core: &ServiceCore,
+        body: ServiceRequest,
+        nonce: &str,
+        now_ms: i64,
+    ) -> ResponseEnvelope {
+        core.handle(
+            RequestEnvelope::new(nonce, nonce, ClientKind::Installer, body),
+            now_ms,
+        )
+    }
+
+    fn shutdown(core: &ServiceCore, password: &str, nonce: &str, now_ms: i64) -> ResponseEnvelope {
+        installer(
+            core,
+            ServiceRequest::RequestShutdown {
+                password: password.into(),
+            },
+            nonce,
+            now_ms,
+        )
+    }
+
+    #[test]
+    fn super_password_setup_requires_session_admin_and_distinct_long_secret() {
+        let directory = tempfile::tempdir().unwrap();
+        let (core, session) = network_core(directory.path(), json!({}), 0);
+        for (nonce, token, admin, secret, expected) in [
+            (
+                "bad-session",
+                "unknown",
+                "long-test-password",
+                "distinct-super-password",
+                ServiceErrorCode::AuthenticationRequired,
+            ),
+            (
+                "bad-admin",
+                session.as_str(),
+                "wrong-password",
+                "distinct-super-password",
+                ServiceErrorCode::AuthenticationFailed,
+            ),
+            (
+                "short-super",
+                session.as_str(),
+                "long-test-password",
+                "short",
+                ServiceErrorCode::InvalidRequest,
+            ),
+            (
+                "equal-super",
+                session.as_str(),
+                "long-test-password",
+                "long-test-password",
+                ServiceErrorCode::InvalidRequest,
+            ),
+        ] {
+            let response = core.handle(
+                request(
+                    nonce,
+                    nonce,
+                    ServiceRequest::SetSuperPassword {
+                        session_token: token.into(),
+                        admin_password: admin.into(),
+                        super_password: secret.into(),
+                    },
+                ),
+                1,
+            );
+            assert_eq!(response.result.unwrap_err().code, expected, "{nonce}");
+        }
+        assert!(!status_at(&core, &session, "before-super", 2).super_password_set);
+        set_super(&core, &session, 3);
+        let status = status_at(&core, &session, "after-super", 4);
+        assert!(status.super_password_set);
+        assert_eq!(status.product_version, karma_ipc::PRODUCT_VERSION);
+        let reset = core.handle(
+            request(
+                "reset",
+                "reset",
+                ServiceRequest::SetSuperPassword {
+                    session_token: session,
+                    admin_password: "long-test-password".into(),
+                    super_password: "replacement-super".into(),
+                },
+            ),
+            5,
+        );
+        assert_eq!(
+            reset.result.unwrap_err().code,
+            ServiceErrorCode::AlreadyEnrolled
+        );
+        drop(core);
+        let reopened = open_core(directory.path(), 6);
+        success(shutdown(
+            &reopened,
+            "distinct-super-password",
+            "persisted-super",
+            7,
+        ));
+        let events = disk_state(directory.path()).audit;
+        assert!(
+            events
+                .iter()
+                .any(|event| event.kind == "super_password_set" && event.outcome == "denied")
+        );
+        assert!(!format!("{events:?}").contains("distinct-super-password"));
+    }
+
+    #[test]
+    fn changing_either_password_preserves_distinct_secrets_and_requires_current_secret() {
+        let directory = tempfile::tempdir().unwrap();
+        let (core, session) = network_core(directory.path(), json!({}), 0);
+        set_super(&core, &session, 1);
+        let admin_equal = core.handle(
+            request(
+                "admin-equal",
+                "admin-equal",
+                ServiceRequest::ChangePassword {
+                    session_token: session.clone(),
+                    current_password: "long-test-password".into(),
+                    new_password: "distinct-super-password".into(),
+                },
+            ),
+            2,
+        );
+        assert_eq!(
+            admin_equal.result.unwrap_err().code,
+            ServiceErrorCode::InvalidRequest
+        );
+        for (nonce, current, new, expected) in [
+            (
+                "super-wrong",
+                "long-test-password",
+                "replacement-super",
+                ServiceErrorCode::AuthenticationFailed,
+            ),
+            (
+                "super-short",
+                "distinct-super-password",
+                "short",
+                ServiceErrorCode::InvalidRequest,
+            ),
+            (
+                "super-equal",
+                "distinct-super-password",
+                "long-test-password",
+                ServiceErrorCode::InvalidRequest,
+            ),
+        ] {
+            let result = core.handle(
+                request(
+                    nonce,
+                    nonce,
+                    ServiceRequest::ChangeSuperPassword {
+                        session_token: session.clone(),
+                        current_super_password: current.into(),
+                        new_super_password: new.into(),
+                    },
+                ),
+                3,
+            );
+            assert_eq!(result.result.unwrap_err().code, expected, "{nonce}");
+        }
+        success(core.handle(
+            request(
+                "super-change",
+                "super-change",
+                ServiceRequest::ChangeSuperPassword {
+                    session_token: session,
+                    current_super_password: "distinct-super-password".into(),
+                    new_super_password: "replacement-super".into(),
+                },
+            ),
+            4,
+        ));
+        drop(core);
+        let reopened = open_core(directory.path(), 5);
+        assert_eq!(
+            shutdown(&reopened, "distinct-super-password", "old-super", 6)
+                .result
+                .unwrap_err()
+                .code,
+            ServiceErrorCode::AuthenticationFailed
+        );
+        success(shutdown(&reopened, "replacement-super", "new-super", 7));
+    }
+
+    fn guarded_policy() -> Value {
+        json!({
+            "protectionEnabled": true,
+            "recognition": {"imageEnabled": true, "ocrEnabled": true, "titleMatchingEnabled": true, "rememberTitlesEnabled": true, "sensitivity": 80},
+            "repeatOffender": {"windowMinutes": 20, "strikeLimit": 5},
+            "websites": [{"id":"b", "pattern":"blocked.example", "action":"block", "enabled":true}],
+            "applications": [{"id":"g", "name":"Game", "executable":"game.exe", "category":"game", "action":"block", "enabled":true}],
+            "keywords": [{"id":"k", "phrase":"赌球直播", "category":"high_risk", "enabled":true}],
+            "schedules": [{"id":"night", "name":"night", "target":"browsers", "blocks":[{"day":0,"start":"21:00","end":"23:00"}], "enabled":true}]
+        })
+    }
+
+    #[test]
+    fn service_rejects_every_policy_weakening_without_super_authorization() {
+        let directory = tempfile::tempdir().unwrap();
+        let original = guarded_policy();
+        let (core, session) = network_core(directory.path(), original.clone(), 0);
+        set_super(&core, &session, 1);
+        let mut weakened = Vec::new();
+        for pointer in [
+            "/protectionEnabled",
+            "/recognition/imageEnabled",
+            "/recognition/ocrEnabled",
+            "/recognition/titleMatchingEnabled",
+            "/recognition/rememberTitlesEnabled",
+        ] {
+            let mut policy = original.clone();
+            *policy.pointer_mut(pointer).unwrap() = json!(false);
+            weakened.push(policy);
+        }
+        for (pointer, value) in [
+            ("/recognition/sensitivity", json!(90)),
+            ("/websites", json!([])),
+            ("/applications", json!([])),
+            ("/keywords", json!([])),
+            ("/schedules", json!([])),
+            ("/repeatOffender/windowMinutes", json!(10)),
+            ("/repeatOffender/strikeLimit", json!(6)),
+        ] {
+            let mut policy = original.clone();
+            *policy.pointer_mut(pointer).unwrap() = value;
+            weakened.push(policy);
+        }
+        for (index, policy) in weakened.into_iter().enumerate() {
+            let nonce = format!("weaken-{index}");
+            let response = core.handle(
+                request(
+                    &nonce,
+                    &nonce,
+                    ServiceRequest::PutPolicy {
+                        session_token: session.clone(),
+                        expected_revision: 1,
+                        policy,
+                        super_password: None,
+                    },
+                ),
+                2,
+            );
+            assert_eq!(
+                response.result.unwrap_err().code,
+                ServiceErrorCode::SuperPasswordRequired,
+                "{index}"
+            );
+        }
+        assert_eq!(
+            status_at(&core, &session, "unchanged-revision", 3).policy_revision,
+            1
+        );
+        let mut disabled = original.clone();
+        disabled["protectionEnabled"] = json!(false);
+        let wrong = core.handle(
+            request(
+                "wrong-weakening",
+                "wrong-weakening",
+                ServiceRequest::PutPolicy {
+                    session_token: session.clone(),
+                    expected_revision: 1,
+                    policy: disabled.clone(),
+                    super_password: Some("long-test-password".into()),
+                },
+            ),
+            4,
+        );
+        assert_eq!(
+            wrong.result.unwrap_err().code,
+            ServiceErrorCode::AuthenticationFailed
+        );
+        let mut tightened = original;
+        tightened["recognition"]["sensitivity"] = json!(70);
+        tightened["updates"] = json!({"autoInstall":false});
+        success(core.handle(
+            request(
+                "tighten",
+                "tighten",
+                ServiceRequest::PutPolicy {
+                    session_token: session.clone(),
+                    expected_revision: 1,
+                    policy: tightened,
+                    super_password: None,
+                },
+            ),
+            5,
+        ));
+        assert!(!core.auto_install_updates().unwrap());
+        success(core.handle(
+            request(
+                "authorized-weaken",
+                "authorized-weaken",
+                ServiceRequest::PutPolicy {
+                    session_token: session,
+                    expected_revision: 2,
+                    policy: disabled,
+                    super_password: Some("distinct-super-password".into()),
+                },
+            ),
+            6,
+        ));
+        assert_eq!(
+            disk_state(directory.path())
+                .audit
+                .iter()
+                .filter(|event| event.kind == "policy_weakening" && event.outcome == "denied")
+                .count(),
+            13
+        );
+    }
+
+    #[test]
+    fn remembered_title_and_network_restore_require_super_once_configured() {
+        let directory = tempfile::tempdir().unwrap();
+        let now = local_ms(0, 19, 0);
+        let (core, session) = network_core(directory.path(), network_policy(), now);
+        set_super(&core, &session, now + 1);
+        {
+            let mut runtime = core.runtime.lock().unwrap();
+            runtime.remember(RememberedTitle {
+                id: "remembered".into(),
+                executable: "chrome.exe".into(),
+                title: "A remembered title".into(),
+                browser_host: None,
+                remembered_at_ms: now,
+            });
+            persist(&mut runtime).unwrap();
+        }
+        let forget = |secret: Option<&str>, nonce: &str| {
+            core.handle(
+                request(
+                    nonce,
+                    nonce,
+                    ServiceRequest::ForgetRememberedTitle {
+                        session_token: session.clone(),
+                        title_id: "remembered".into(),
+                        super_password: secret.map(str::to_owned),
+                    },
+                ),
+                now + 2,
+            )
+        };
+        assert_eq!(
+            forget(None, "forget-missing").result.unwrap_err().code,
+            ServiceErrorCode::SuperPasswordRequired
+        );
+        assert_eq!(
+            forget(Some("long-test-password"), "forget-admin")
+                .result
+                .unwrap_err()
+                .code,
+            ServiceErrorCode::AuthenticationFailed
+        );
+        assert_eq!(disk_state(directory.path()).remembered_titles.len(), 1);
+        success(forget(Some("distinct-super-password"), "forget-super"));
+        assert!(disk_state(directory.path()).remembered_titles.is_empty());
+        assert_eq!(
+            restore(
+                &core,
+                &session,
+                "long-test-password",
+                "restore-admin-with-super",
+                now + 3
+            )
+            .result
+            .unwrap_err()
+            .code,
+            ServiceErrorCode::AuthenticationFailed
+        );
+        assert!(core.network_enforcement(now + 3).unwrap().status.restricted);
+        success(restore(
+            &core,
+            &session,
+            "distinct-super-password",
+            "restore-super",
+            now + 4,
+        ));
+        assert!(!core.network_enforcement(now + 4).unwrap().status.restricted);
+    }
+
+    #[test]
+    fn delayed_uninstall_survives_restart_and_has_exact_wait_and_expiry_boundaries() {
+        let directory = tempfile::tempdir().unwrap();
+        let (core, session) = network_core(directory.path(), json!({}), 0);
+        set_super(&core, &session, 1);
+        assert_eq!(
+            shutdown(&core, "long-test-password", "admin-no-request", 2)
+                .result
+                .unwrap_err()
+                .code,
+            ServiceErrorCode::AuthenticationFailed
+        );
+        assert_eq!(
+            core.handle(
+                request(
+                    "request-wrong",
+                    "request-wrong",
+                    ServiceRequest::RequestUninstall {
+                        session_token: session.clone(),
+                        password: "distinct-super-password".into(),
+                    }
+                ),
+                3
+            )
+            .result
+            .unwrap_err()
+            .code,
+            ServiceErrorCode::AuthenticationFailed
+        );
+        success(core.handle(
+            request(
+                "request-uninstall",
+                "request-uninstall",
+                ServiceRequest::RequestUninstall {
+                    session_token: session.clone(),
+                    password: "long-test-password".into(),
+                },
+            ),
+            100,
+        ));
+        let requested = status_at(&core, &session, "requested-status", 101)
+            .uninstall
+            .unwrap();
+        assert_eq!(requested.requested_at_ms, 100);
+        assert_eq!(requested.effective_at_ms, 100 + UNINSTALL_WAIT_MS);
+        assert_eq!(
+            requested.expires_at_ms,
+            100 + UNINSTALL_WAIT_MS + UNINSTALL_VALIDITY_MS
+        );
+        drop(core);
+        let core = open_core(directory.path(), 102);
+        assert_eq!(
+            shutdown(
+                &core,
+                "long-test-password",
+                "too-soon",
+                requested.effective_at_ms - 1
+            )
+            .result
+            .unwrap_err()
+            .code,
+            ServiceErrorCode::AuthenticationFailed
+        );
+        success(shutdown(
+            &core,
+            "long-test-password",
+            "effective-boundary",
+            requested.effective_at_ms,
+        ));
+        drop(core);
+        let core = open_core(directory.path(), requested.effective_at_ms + 1);
+        success(shutdown(
+            &core,
+            "long-test-password",
+            "before-expiry",
+            requested.expires_at_ms - 1,
+        ));
+        assert_eq!(
+            shutdown(
+                &core,
+                "long-test-password",
+                "expired-boundary",
+                requested.expires_at_ms
+            )
+            .result
+            .unwrap_err()
+            .code,
+            ServiceErrorCode::AuthenticationFailed
+        );
+        success(shutdown(
+            &core,
+            "distinct-super-password",
+            "super-after-expiry",
+            requested.expires_at_ms + 1,
+        ));
+        let session = authenticate_ui(&core, "post-expiry-auth", requested.expires_at_ms + 2);
+        assert!(
+            status_at(
+                &core,
+                &session,
+                "expired-status",
+                requested.expires_at_ms + 3
+            )
+            .uninstall
+            .is_none()
+        );
+        drop(core);
+        let (_, stored) = Store::open(&directory.path().join("service.db"), &[7; 32]).unwrap();
+        assert!(stored.uninstall_request.is_none());
+        let audit = disk_state(directory.path()).audit;
+        assert_eq!(
+            audit
+                .iter()
+                .filter(|event| event.kind == "uninstall_request_ready")
+                .count(),
+            1
+        );
+        assert_eq!(
+            audit
+                .iter()
+                .filter(|event| event.kind == "uninstall_request_expired")
+                .count(),
+            1
+        );
+        assert!(
+            audit
+                .iter()
+                .any(|event| event.kind == "uninstall_authentication" && event.outcome == "denied")
+        );
+    }
+
+    #[test]
+    fn administrator_can_cancel_uninstall_any_time_without_super_password() {
+        let directory = tempfile::tempdir().unwrap();
+        let (core, initial_session) = network_core(directory.path(), json!({}), 0);
+        set_super(&core, &initial_session, 1);
+        for (index, cancel_after) in [
+            1,
+            UNINSTALL_WAIT_MS,
+            UNINSTALL_WAIT_MS + UNINSTALL_VALIDITY_MS,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let request_time = index as i64 * (UNINSTALL_WAIT_MS + UNINSTALL_VALIDITY_MS + 10);
+            let session = authenticate_ui(&core, &format!("cancel-auth-{index}"), request_time);
+            let nonce = format!("cancel-request-{index}");
+            success(core.handle(
+                request(
+                    &nonce,
+                    &nonce,
+                    ServiceRequest::RequestUninstall {
+                        session_token: session,
+                        password: "long-test-password".into(),
+                    },
+                ),
+                request_time,
+            ));
+            let cancel_time = request_time + cancel_after;
+            let session = authenticate_ui(&core, &format!("cancel-session-{index}"), cancel_time);
+            let denied_nonce = format!("cancel-denied-{index}");
+            assert_eq!(
+                core.handle(
+                    request(
+                        &denied_nonce,
+                        &denied_nonce,
+                        ServiceRequest::CancelUninstall {
+                            session_token: "unknown".into()
+                        }
+                    ),
+                    cancel_time
+                )
+                .result
+                .unwrap_err()
+                .code,
+                ServiceErrorCode::AuthenticationRequired
+            );
+            let cancel_nonce = format!("cancel-{index}");
+            success(core.handle(
+                request(
+                    &cancel_nonce,
+                    &cancel_nonce,
+                    ServiceRequest::CancelUninstall {
+                        session_token: session.clone(),
+                    },
+                ),
+                cancel_time,
+            ));
+            assert!(
+                status_at(
+                    &core,
+                    &session,
+                    &format!("cancel-status-{index}"),
+                    cancel_time
+                )
+                .uninstall
+                .is_none()
+            );
+            assert_eq!(
+                shutdown(
+                    &core,
+                    "long-test-password",
+                    &format!("cancel-shutdown-{index}"),
+                    cancel_time
+                )
+                .result
+                .unwrap_err()
+                .code,
+                ServiceErrorCode::AuthenticationFailed
+            );
+        }
+    }
+
+    #[test]
+    fn no_super_password_keeps_immediate_administrator_uninstall() {
+        let directory = tempfile::tempdir().unwrap();
+        let (core, _) = network_core(directory.path(), json!({}), 0);
+        success(shutdown(&core, "long-test-password", "legacy-uninstall", 1));
+        assert!(core.auto_install_updates().unwrap());
+    }
+
+    #[test]
+    fn update_actions_require_authentication_and_have_a_bounded_host_queue() {
+        let directory = tempfile::tempdir().unwrap();
+        let (core, session) = network_core(directory.path(), json!({}), 0);
+        set_super(&core, &session, 1);
+        let denied = core.handle(
+            request(
+                "update-no-session",
+                "update-no-session",
+                ServiceRequest::CheckForUpdates {
+                    session_token: "unknown".into(),
+                },
+            ),
+            2,
+        );
+        assert_eq!(
+            denied.result.unwrap_err().code,
+            ServiceErrorCode::AuthenticationRequired
+        );
+        assert_eq!(
+            installer(
+                &core,
+                ServiceRequest::ApplyStagedUpdate {
+                    password: "distinct-super-password".into()
+                },
+                "update-super",
+                3
+            )
+            .result
+            .unwrap_err()
+            .code,
+            ServiceErrorCode::AuthenticationFailed
+        );
+        assert!(core.take_update_action().unwrap().is_none());
+        success(core.handle(
+            request(
+                "check-one",
+                "check-one",
+                ServiceRequest::CheckForUpdates {
+                    session_token: session.clone(),
+                },
+            ),
+            4,
+        ));
+        assert_eq!(
+            core.handle(
+                request(
+                    "check-two",
+                    "check-two",
+                    ServiceRequest::CheckForUpdates {
+                        session_token: session.clone(),
+                    }
+                ),
+                4
+            )
+            .result
+            .unwrap_err()
+            .code,
+            ServiceErrorCode::ServiceUnavailable
+        );
+        assert_eq!(
+            status_at(&core, &session, "update-checking", 5)
+                .update
+                .phase,
+            UpdatePhase::Checking
+        );
+        assert_eq!(
+            core.take_update_action().unwrap(),
+            Some(UpdateAction::CheckAndInstall)
+        );
+        assert_eq!(core.take_update_action().unwrap(), None);
+        core.record_update_status(
+            UpdateStatus {
+                phase: UpdatePhase::UpToDate,
+                ..UpdateStatus::default()
+            },
+            5,
+        )
+        .unwrap();
+        success(installer(
+            &core,
+            ServiceRequest::ApplyStagedUpdate {
+                password: "long-test-password".into(),
+            },
+            "stage-admin",
+            6,
+        ));
+        assert_eq!(
+            core.take_update_action().unwrap(),
+            Some(UpdateAction::ApplyStaged)
+        );
+        let updated = UpdateStatus {
+            phase: UpdatePhase::Failed,
+            last_checked_at_ms: Some(7),
+            available_version: None,
+            last_error: Some("signature_invalid".into()),
+        };
+        core.record_update_status(updated.clone(), 7).unwrap();
+        core.record_update_status(updated.clone(), 8).unwrap();
+        assert_eq!(
+            status_at(&core, &session, "update-failed", 9).update,
+            updated
+        );
+        assert_eq!(
+            disk_state(directory.path())
+                .audit
+                .iter()
+                .filter(|event| event.kind == "signed_update" && event.outcome == "failed")
+                .count(),
+            1
+        );
+        assert_eq!(
+            disk_state(directory.path())
+                .audit
+                .iter()
+                .filter(|event| event.kind == "signed_update_requested" && event.outcome != "busy")
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn valid_admin_authentication_cannot_reset_super_password_rate_limits() {
+        let directory = tempfile::tempdir().unwrap();
+        let (core, session) = network_core(directory.path(), json!({}), 0);
+        set_super(&core, &session, 1);
+        for index in 0..MAX_FAILURES {
+            let session = authenticate_ui(&core, &format!("alternating-admin-{index}"), 2);
+            let nonce = format!("alternating-super-{index}");
+            let denied = core.handle(
+                request(
+                    &nonce,
+                    &nonce,
+                    ServiceRequest::ChangeSuperPassword {
+                        session_token: session,
+                        current_super_password: "wrong-secret".into(),
+                        new_super_password: "replacement-super".into(),
+                    },
+                ),
+                2,
+            );
+            assert_eq!(
+                denied.result.unwrap_err().code,
+                ServiceErrorCode::AuthenticationFailed
+            );
+        }
+        let session = authenticate_ui(&core, "admin-during-super-cooldown", 3);
+        assert_eq!(
+            shutdown(&core, "distinct-super-password", "limited-super", 3)
+                .result
+                .unwrap_err()
+                .code,
+            ServiceErrorCode::RateLimited
+        );
+        success(core.handle(
+            request(
+                "check-during-super-cooldown",
+                "check-during-super-cooldown",
+                ServiceRequest::CheckForUpdates {
+                    session_token: session,
+                },
+            ),
+            3,
+        ));
+        assert_eq!(
+            core.take_update_action().unwrap(),
+            Some(UpdateAction::CheckAndInstall)
+        );
+        core.record_update_status(
+            UpdateStatus {
+                phase: UpdatePhase::UpToDate,
+                ..UpdateStatus::default()
+            },
+            3,
+        )
+        .unwrap();
+        success(installer(
+            &core,
+            ServiceRequest::ApplyStagedUpdate {
+                password: "long-test-password".into(),
+            },
+            "stage-during-super-cooldown",
+            3,
+        ));
+        assert_eq!(
+            core.take_update_action().unwrap(),
+            Some(UpdateAction::ApplyStaged)
+        );
+        core.record_update_status(
+            UpdateStatus {
+                phase: UpdatePhase::UpToDate,
+                ..UpdateStatus::default()
+            },
+            3,
+        )
+        .unwrap();
+        success(shutdown(
+            &core,
+            "distinct-super-password",
+            "cooldown-super",
+            2 + FAILURE_COOLDOWN_MS,
+        ));
+    }
+
+    #[test]
+    fn administrator_cooldown_does_not_block_valid_super_authentication() {
+        let directory = tempfile::tempdir().unwrap();
+        let (core, session) = network_core(directory.path(), json!({}), 0);
+        set_super(&core, &session, 1);
+        for index in 0..MAX_FAILURES {
+            let nonce = format!("wrong-admin-{index}");
+            let denied = core.handle(
+                request(
+                    &nonce,
+                    &nonce,
+                    ServiceRequest::Authenticate {
+                        password: "wrong-admin-password".into(),
+                    },
+                ),
+                2,
+            );
+            assert_eq!(
+                denied.result.unwrap_err().code,
+                ServiceErrorCode::AuthenticationFailed
+            );
+        }
+        success(shutdown(
+            &core,
+            "distinct-super-password",
+            "unlimited-super",
+            3,
+        ));
+        let denied = core.handle(
+            request(
+                "limited-admin",
+                "limited-admin",
+                ServiceRequest::Authenticate {
+                    password: "long-test-password".into(),
+                },
+            ),
+            3,
+        );
+        assert_eq!(
+            denied.result.unwrap_err().code,
+            ServiceErrorCode::RateLimited
+        );
+        authenticate_ui(&core, "admin-after-cooldown", 2 + FAILURE_COOLDOWN_MS);
+    }
+    #[test]
+    fn uninstall_and_update_handoffs_are_mutually_exclusive_under_the_core_lock() {
+        let directory = tempfile::tempdir().unwrap();
+        let (core, session) = network_core(directory.path(), json!({}), 0);
+        set_super(&core, &session, 1);
+        success(core.handle(
+            request(
+                "queued-update",
+                "queued-update",
+                ServiceRequest::CheckForUpdates {
+                    session_token: session.clone(),
+                },
+            ),
+            2,
+        ));
+        assert_eq!(
+            shutdown(
+                &core,
+                "distinct-super-password",
+                "uninstall-while-queued",
+                3
+            )
+            .result
+            .unwrap_err()
+            .code,
+            ServiceErrorCode::ServiceUnavailable
+        );
+        assert_eq!(
+            core.take_update_action().unwrap(),
+            Some(UpdateAction::CheckAndInstall)
+        );
+        for (index, phase) in [
+            UpdatePhase::Checking,
+            UpdatePhase::Downloading,
+            UpdatePhase::Installing,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            core.record_update_status(
+                UpdateStatus {
+                    phase,
+                    ..UpdateStatus::default()
+                },
+                4,
+            )
+            .unwrap();
+            assert_eq!(
+                shutdown(
+                    &core,
+                    "distinct-super-password",
+                    &format!("uninstall-while-busy-{index}"),
+                    5
+                )
+                .result
+                .unwrap_err()
+                .code,
+                ServiceErrorCode::ServiceUnavailable
+            );
+            assert_eq!(
+                installer(
+                    &core,
+                    ServiceRequest::ApplyStagedUpdate {
+                        password: "long-test-password".into()
+                    },
+                    &format!("update-while-busy-{index}"),
+                    5
+                )
+                .result
+                .unwrap_err()
+                .code,
+                ServiceErrorCode::ServiceUnavailable
+            );
+            assert!(core.take_update_action().unwrap().is_none());
+        }
+        core.record_update_status(
+            UpdateStatus {
+                phase: UpdatePhase::Failed,
+                ..UpdateStatus::default()
+            },
+            6,
+        )
+        .unwrap();
+        success(shutdown(
+            &core,
+            "distinct-super-password",
+            "authorized-uninstall",
+            7,
+        ));
+        for phase in [
+            UpdatePhase::Checking,
+            UpdatePhase::Downloading,
+            UpdatePhase::Installing,
+        ] {
+            assert!(matches!(
+                core.record_update_status(
+                    UpdateStatus {
+                        phase,
+                        ..UpdateStatus::default()
+                    },
+                    8
+                ),
+                Err(CoreError::ShutdownAuthorized)
+            ));
+        }
+        assert_eq!(
+            core.handle(
+                request(
+                    "update-after-uninstall",
+                    "update-after-uninstall",
+                    ServiceRequest::CheckForUpdates {
+                        session_token: session
+                    }
+                ),
+                9
+            )
+            .result
+            .unwrap_err()
+            .code,
+            ServiceErrorCode::ServiceUnavailable
+        );
+        assert_eq!(
+            installer(
+                &core,
+                ServiceRequest::ApplyStagedUpdate {
+                    password: "long-test-password".into()
+                },
+                "staged-after-uninstall",
+                9
+            )
+            .result
+            .unwrap_err()
+            .code,
+            ServiceErrorCode::ServiceUnavailable
+        );
+        assert!(core.take_update_action().unwrap().is_none());
     }
 }
