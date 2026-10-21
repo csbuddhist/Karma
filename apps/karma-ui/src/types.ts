@@ -29,6 +29,8 @@ export interface RecognitionSettings {
   evidenceEnabled: boolean;
   evidenceRetentionDays: number;
   rememberTitlesEnabled: boolean;
+  /** Also enforce built-in keywords that are likely to cause false positives. */
+  ambiguousTitleKeywordsEnabled: boolean;
 }
 
 export interface RepeatOffenderSettings {
@@ -43,7 +45,16 @@ export interface RememberedTitle {
   executable: string;
   title: string;
   browserHost: string | null;
+  /** When it was remembered, or marked as misjudged. */
   rememberedAtMs: number;
+  /** The image recognition result that remembered it; null for older titles and misjudged ones. */
+  reason?: TitleReason | null;
+}
+
+export interface TitleReason {
+  reasonCode: string;
+  riskMillis: number;
+  thresholdMillis: number;
 }
 
 export interface ActiveBan {
@@ -106,6 +117,18 @@ export interface NetworkStatus {
   restoredUntilMs: number | null;
 }
 
+export type TitleKeywordCategory = "organ" | "sexual";
+export type TitleKeywordMatch = "word" | "substring" | "prefix";
+
+export interface TitleKeywordAddition {
+  id: string;
+  term: string;
+  /** Lowercase ISO 639 language code, such as "zh". */
+  language: string;
+  category: TitleKeywordCategory;
+  match: TitleKeywordMatch;
+}
+
 export interface EvidenceItem {
   id: string;
   capturedAt: string;
@@ -113,6 +136,8 @@ export interface EvidenceItem {
   applicationName: string;
   reason: string;
   risk: "high" | "critical";
+  /** Image risk score that saved it, 0–1000; absent in development builds. */
+  riskMillis?: number;
   thumbnailUrl?: string;
   originalAvailable: boolean;
 }
@@ -155,6 +180,8 @@ export interface ConsoleState extends AuthorizationStatus {
   recognition: RecognitionSettings;
   repeatOffender: RepeatOffenderSettings;
   keywords: KeywordRule[];
+  /** Keywords administrators added to the built-in list. */
+  titleKeywordAdditions: TitleKeywordAddition[];
   websites: WebsiteRule[];
   applications: ApplicationRule[];
   schedules: ScheduleRule[];
@@ -163,5 +190,7 @@ export interface ConsoleState extends AuthorizationStatus {
   network: NetworkStatus;
   /** Remembered titles in the Service; the console reads them page by page. */
   rememberedTitleTotal: number;
+  /** Titles marked as misjudged, which are never remembered again. */
+  misjudgedTitleTotal: number;
   activeBans: ActiveBan[];
 }

@@ -26,9 +26,11 @@ export const defaultConsoleState: ConsoleState = {
     evidenceEnabled: false,
     evidenceRetentionDays: 7,
     rememberTitlesEnabled: true,
+    ambiguousTitleKeywordsEnabled: false,
   },
   repeatOffender: { windowMinutes: 20, strikeLimit: 5 },
   keywords: [],
+  titleKeywordAdditions: [],
   websites: [],
   applications: [
     { id: "browser", name: "浏览器", executable: "受支持浏览器", category: "browser", action: "content_only", enabled: true },
@@ -39,6 +41,7 @@ export const defaultConsoleState: ConsoleState = {
   audit: [],
   network: { restricted: false, activeRuleIds: [], restrictedUntilMs: null, restoredUntilMs: null },
   rememberedTitleTotal: 0,
+  misjudgedTitleTotal: 0,
   activeBans: [],
 };
 
@@ -55,7 +58,7 @@ export function isTauriConsole(): boolean {
   return isTauri();
 }
 
-const runtimeStateKeys = ["serviceConnected", "agentConnected", "monitors", "evidence", "audit", "network", "rememberedTitleTotal", "activeBans", "productVersion", "superPasswordSet", "uninstall", "update"];
+const runtimeStateKeys = ["serviceConnected", "agentConnected", "monitors", "evidence", "audit", "network", "rememberedTitleTotal", "misjudgedTitleTotal", "activeBans", "productVersion", "superPasswordSet", "uninstall", "update"];
 
 function stripRuntimeState(value: Record<string, unknown>): Record<string, unknown> {
   const stripped = { ...value };
@@ -192,10 +195,12 @@ function hydrateConsoleState(value: Partial<ConsoleState>): ConsoleState {
     repeatOffender: { ...defaultConsoleState.repeatOffender, ...(value.repeatOffender ?? {}) },
     updates: { ...defaultConsoleState.updates, ...(value.updates ?? {}) },
     update: { ...defaultConsoleState.update, ...(value.update ?? {}) },
+    titleKeywordAdditions: value.titleKeywordAdditions ?? [],
     websites: value.websites ?? [],
     schedules: (value.schedules ?? []).map(normalizeSchedule),
     network: { ...defaultConsoleState.network, ...(value.network ?? {}) },
     rememberedTitleTotal: isTauri() ? value.rememberedTitleTotal ?? 0 : browserTitles().length,
+    misjudgedTitleTotal: isTauri() ? value.misjudgedTitleTotal ?? 0 : 0,
     activeBans: value.activeBans ?? [],
   };
 }
@@ -262,9 +267,10 @@ function browserTitles(): RememberedTitle[] {
 
 export const rememberedTitlePageSize = 20;
 
-export async function listRememberedTitles(sessionToken: string, offset: number, query: string): Promise<RememberedTitlePage> {
+export async function listRememberedTitles(sessionToken: string, offset: number, query: string, misjudged = false): Promise<RememberedTitlePage> {
   const trimmed = query.trim();
-  if (isTauri()) return invoke("list_remembered_titles", { sessionToken, offset, limit: rememberedTitlePageSize, query: trimmed || null });
+  if (isTauri()) return invoke("list_remembered_titles", { sessionToken, offset, limit: rememberedTitlePageSize, query: trimmed || null, misjudged });
+  if (misjudged) return { items: [], total: 0 };
   const needle = trimmed.toLowerCase();
   const matching = browserTitles()
     .filter((item) => !needle || [item.title, item.browserHost ?? "", item.executable].some((value) => value.toLowerCase().includes(needle)))
@@ -283,9 +289,26 @@ export async function allowBannedApplication(sessionToken: string, executable: s
   throw new Error("KarmaService 尚未运行或命名管道不可用");
 }
 
+/** Forgets a remembered title and keeps it from being remembered again. */
+export async function markTitleMisjudged(sessionToken: string, titleId: string, superPassword?: string): Promise<void> {
+  if (isTauri()) return invoke("mark_title_misjudged", { sessionToken, titleId, superPassword });
+  localStorage.setItem(browserTitlesKey, JSON.stringify(browserTitles().filter((item) => item.id !== titleId)));
+}
+
+export async function restoreMisjudgedTitle(sessionToken: string, titleId: string): Promise<void> {
+  if (isTauri()) return invoke("restore_misjudged_title", { sessionToken, titleId });
+}
+
 export async function revealEvidence(sessionToken: string, evidenceId: string, password: string): Promise<string> {
   if (isTauri()) return invoke("reveal_evidence", { sessionToken, evidenceId, password });
   if (localStorage.getItem(browserPasswordKey) !== await browserPasswordDigest(password)) throw new Error("管理员密码不正确");
+  throw new Error("开发模式中没有已加密的证据原图");
+}
+
+/** Deletes evidence items; an ordinary administrator session is enough. */
+export async function deleteEvidence(sessionToken: string, evidenceIds: string[]): Promise<void> {
+  if (!evidenceIds.length) return;
+  if (isTauri()) return invoke("delete_evidence", { sessionToken, evidenceIds });
   throw new Error("开发模式中没有已加密的证据原图");
 }
 

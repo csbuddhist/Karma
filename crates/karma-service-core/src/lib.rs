@@ -18,14 +18,15 @@ use karma_evidence::EvidenceVault;
 use karma_ipc::{
     ActiveBan, AgentEnforcement, BootstrapStatus, EnforcementSummary, EvidenceMetadata,
     NetworkStatus, RememberedTitleMetadata, RequestEnvelope, ResponseEnvelope, ServiceErrorCode,
-    ServiceFailure, ServiceRequest, ServiceResult, ServiceStatus, UninstallStatus, UpdatePhase,
-    UpdateStatus,
+    ServiceFailure, ServiceRequest, ServiceResult, ServiceStatus, TitleReasonMetadata,
+    UninstallStatus, UpdatePhase, UpdateStatus,
 };
 use karma_policy::{
-    ApplicationEffect, ApplicationPolicy, ContextPolicy, MINUTES_PER_DAY, MINUTES_PER_WEEK,
-    NetworkRestriction, NetworkSchedulePolicy, RememberedTitle, RepeatOffenderRule, active_bans,
-    allow_application, is_banned, normalize_executable, policy_weakenings, record_closure,
-    remember_title, remember_titles_enabled, rememberable_title_key, title_digest, title_key,
+    ApplicationEffect, ApplicationPolicy, ContextPolicy, MAX_MISJUDGED_TITLES, MINUTES_PER_DAY,
+    MINUTES_PER_WEEK, NetworkRestriction, NetworkSchedulePolicy, RememberedTitle,
+    RepeatOffenderRule, TitleReason, active_bans, allow_application, is_banned,
+    normalize_executable, policy_weakenings, record_closure, remember_title,
+    remember_titles_enabled, rememberable_title_key, title_digest, title_key,
 };
 use rand::{RngCore, rngs::OsRng};
 use serde_json::Value;
@@ -98,6 +99,8 @@ struct RuntimeState {
     pending: Vec<Change>,
     /// `title_digest` of every remembered title, for constant-time matching.
     title_digests: HashSet<String>,
+    /// `title_digest` of every title marked as misjudged.
+    misjudged_digests: HashSet<String>,
     sessions: HashMap<String, i64>,
     recent_nonces: VecDeque<String>,
     nonce_index: HashSet<String>,
@@ -124,6 +127,7 @@ struct PendingDisposition {
 struct TitleCandidate {
     title: String,
     browser_host: Option<String>,
+    reason: TitleReason,
 }
 
 #[derive(Default)]
@@ -198,6 +202,7 @@ impl ServiceCore {
             store,
             pending: Vec::new(),
             title_digests: HashSet::new(),
+            misjudged_digests: HashSet::new(),
             sessions: HashMap::new(),
             recent_nonces: VecDeque::new(),
             nonce_index: HashSet::new(),
@@ -681,6 +686,11 @@ impl ServiceCore {
                 if !protection_enabled || !image_enabled || observation.risk_millis < threshold {
                     return Ok(ServiceResult::Acknowledged);
                 }
+                let reason = TitleReason {
+                    reason_code: observation.reason_code,
+                    risk_millis: observation.risk_millis,
+                    threshold_millis: threshold,
+                };
                 let remember = remember_titles_enabled(&runtime.stored.policy)
                     .then_some(observation.window_title)
                     .flatten()
@@ -690,6 +700,7 @@ impl ServiceCore {
                     .map(|title| TitleCandidate {
                         title,
                         browser_host: observation.browser_host,
+                        reason,
                     });
                 Ok(disposition_required(
                     runtime,
@@ -880,25 +891,21 @@ impl ServiceCore {
                 evidence_id,
             } => {
                 authorize(runtime, &session_token, now_ms)?;
-                let index = runtime
-                    .stored
-                    .evidence
-                    .iter()
-                    .position(|item| item.id == evidence_id)
-                    .ok_or(ServiceErrorCode::EvidenceUnavailable)?;
-                self.evidence_vault
-                    .delete(&evidence_id)
-                    .map_err(|_| ServiceErrorCode::EvidenceUnavailable)?;
-                runtime.remove_evidence(index);
-                audit(runtime, now_ms, "evidence_deleted", "success");
-                persist(runtime)?;
-                Ok(ServiceResult::Acknowledged)
+                self.delete_evidence(runtime, &[evidence_id], now_ms)
+            }
+            ServiceRequest::DeleteEvidenceBatch {
+                session_token,
+                evidence_ids,
+            } => {
+                authorize(runtime, &session_token, now_ms)?;
+                self.delete_evidence(runtime, &evidence_ids, now_ms)
             }
             ServiceRequest::ListEnforcement {
                 session_token,
                 title_offset,
                 title_limit,
                 title_query,
+                misjudged,
             } => {
                 authorize(runtime, &session_token, now_ms)?;
                 Ok(ServiceResult::Enforcement(enforcement_summary(
@@ -907,7 +914,48 @@ impl ServiceCore {
                     title_offset as usize,
                     title_limit as usize,
                     title_query.as_deref(),
+                    misjudged,
                 )))
+            }
+            ServiceRequest::MarkTitleMisjudged {
+                session_token,
+                title_id,
+                super_password,
+            } => {
+                authorize(runtime, &session_token, now_ms)?;
+                if runtime.stored.super_password_hash.is_some() {
+                    if let Err(error) = self.authenticate_super(runtime, super_password, now_ms) {
+                        audit(runtime, now_ms, "remembered_title_misjudged", "denied");
+                        return Err(error);
+                    }
+                }
+                let index = runtime
+                    .stored
+                    .remembered_titles
+                    .iter()
+                    .position(|record| record.id == title_id)
+                    .ok_or(ServiceErrorCode::InvalidRequest)?;
+                runtime.mark_misjudged(index, now_ms);
+                audit(runtime, now_ms, "remembered_title_misjudged", "success");
+                persist(runtime)?;
+                Ok(ServiceResult::Acknowledged)
+            }
+            ServiceRequest::RestoreMisjudgedTitle {
+                session_token,
+                title_id,
+            } => {
+                // Remembering the title again only strengthens protection.
+                authorize(runtime, &session_token, now_ms)?;
+                let index = runtime
+                    .stored
+                    .misjudged_titles
+                    .iter()
+                    .position(|record| record.id == title_id)
+                    .ok_or(ServiceErrorCode::InvalidRequest)?;
+                runtime.restore_misjudged(index);
+                audit(runtime, now_ms, "misjudged_title_restored", "success");
+                persist(runtime)?;
+                Ok(ServiceResult::Acknowledged)
             }
             ServiceRequest::ForgetRememberedTitle {
                 session_token,
@@ -1098,6 +1146,40 @@ impl ServiceCore {
         }
         let valid = password_matches(runtime.stored.password_hash.as_deref(), &password)?;
         self.finish_authentication(runtime, valid, AuthenticationKind::Administrator, now_ms)
+    }
+
+    /// Deletes the named evidence items, skipping ids that no longer exist. An
+    /// item whose encrypted original is already gone still loses its record.
+    fn delete_evidence(
+        &self,
+        runtime: &mut RuntimeState,
+        evidence_ids: &[String],
+        now_ms: i64,
+    ) -> Result<ServiceResult, ServiceErrorCode> {
+        let mut deleted = false;
+        for evidence_id in evidence_ids {
+            let Some(index) = runtime
+                .stored
+                .evidence
+                .iter()
+                .position(|item| &item.id == evidence_id)
+            else {
+                continue;
+            };
+            if self.evidence_vault.delete(evidence_id).is_err()
+                && self.evidence_vault.exists(evidence_id)
+            {
+                return Err(ServiceErrorCode::EvidenceUnavailable);
+            }
+            runtime.remove_evidence(index);
+            audit(runtime, now_ms, "evidence_deleted", "success");
+            deleted = true;
+        }
+        if !deleted {
+            return Err(ServiceErrorCode::EvidenceUnavailable);
+        }
+        persist(runtime)?;
+        Ok(ServiceResult::Acknowledged)
     }
 
     fn authenticate_super(
@@ -1412,7 +1494,55 @@ impl RuntimeState {
         self.rebuild_title_digests();
     }
 
+    /// Forgets the remembered title at `index` and records it as misjudged,
+    /// dropping the oldest misjudged titles beyond the cap.
+    fn mark_misjudged(&mut self, index: usize, now_ms: i64) {
+        let record = self.stored.remembered_titles[index].clone();
+        self.forget_title(index);
+        if self.is_misjudged(&record.executable, &record.title) {
+            return;
+        }
+        let misjudged = RememberedTitle {
+            id: format!("misjudged-{}", random_token()),
+            remembered_at_ms: now_ms,
+            reason: None,
+            ..record
+        };
+        self.pending
+            .push(Change::InsertMisjudgedTitle(misjudged.clone()));
+        self.stored.misjudged_titles.push(misjudged);
+        while self.stored.misjudged_titles.len() > MAX_MISJUDGED_TITLES {
+            let oldest = self
+                .stored
+                .misjudged_titles
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, record)| record.remembered_at_ms)
+                .map_or(0, |(index, _)| index);
+            let removed = self.stored.misjudged_titles.remove(oldest);
+            self.pending.push(Change::DeleteMisjudgedTitle(removed.id));
+        }
+        self.rebuild_title_digests();
+    }
+
+    fn restore_misjudged(&mut self, index: usize) {
+        let record = self.stored.misjudged_titles.remove(index);
+        self.pending.push(Change::DeleteMisjudgedTitle(record.id));
+        self.rebuild_title_digests();
+    }
+
+    fn is_misjudged(&self, executable: &str, title: &str) -> bool {
+        title_digest(executable, title)
+            .is_some_and(|digest| self.misjudged_digests.contains(&digest))
+    }
+
     fn rebuild_title_digests(&mut self) {
+        self.misjudged_digests = self
+            .stored
+            .misjudged_titles
+            .iter()
+            .filter_map(|record| title_digest(&record.executable, &record.title))
+            .collect();
         self.title_digests = self
             .stored
             .remembered_titles
@@ -1484,19 +1614,23 @@ fn agent_enforcement(runtime: &RuntimeState, now_ms: i64) -> AgentEnforcement {
     }
 }
 
-/// One page of remembered titles, newest first, whose title, host, or
-/// executable contains `query` (compared like titles are matched).
+/// One page of remembered (or misjudged) titles, newest first, whose title,
+/// host, or executable contains `query` (compared like titles are matched).
 fn enforcement_summary(
     runtime: &RuntimeState,
     now_ms: i64,
     offset: usize,
     limit: usize,
     query: Option<&str>,
+    misjudged: bool,
 ) -> EnforcementSummary {
     let query = query.map(title_key).filter(|query| !query.is_empty());
-    let mut matching: Vec<&RememberedTitle> = runtime
-        .stored
-        .remembered_titles
+    let titles = if misjudged {
+        &runtime.stored.misjudged_titles
+    } else {
+        &runtime.stored.remembered_titles
+    };
+    let mut matching: Vec<&RememberedTitle> = titles
         .iter()
         .filter(|record| {
             query.as_ref().is_none_or(|query| {
@@ -1527,6 +1661,11 @@ fn enforcement_summary(
                 title: record.title.clone(),
                 browser_host: record.browser_host.clone(),
                 remembered_at_ms: record.remembered_at_ms,
+                reason: record.reason.as_ref().map(|reason| TitleReasonMetadata {
+                    reason_code: reason.reason_code.clone(),
+                    risk_millis: reason.risk_millis,
+                    threshold_millis: reason.threshold_millis,
+                }),
             })
             .collect(),
         active_bans: active_bans(&runtime.stored.repeat_offenders, now_ms)
@@ -1535,6 +1674,7 @@ fn enforcement_summary(
                 banned_until_ms,
             })
             .collect(),
+        misjudged_title_total: runtime.stored.misjudged_titles.len() as u64,
     }
 }
 
@@ -1590,13 +1730,17 @@ fn record_disposition(
         karma_ipc::DispositionOutcome::ClosedGracefully | karma_ipc::DispositionOutcome::Terminated
     ) {
         let executable = normalize_executable(&executable_name);
-        if let Some(candidate) = remember {
+        // The window is still closed; a misjudged title is just not remembered.
+        if let Some(candidate) =
+            remember.filter(|candidate| !runtime.is_misjudged(&executable, &candidate.title))
+        {
             let entry = RememberedTitle {
                 id: format!("title-{}", random_token()),
                 executable: executable.clone(),
                 title: candidate.title,
                 browser_host: candidate.browser_host,
                 remembered_at_ms: now_ms,
+                reason: Some(candidate.reason),
             };
             if runtime.remember(entry) {
                 audit(runtime, now_ms, "window_title_remembered", "success");
@@ -1663,6 +1807,7 @@ mod tests {
         audit: Vec<AuditRecord>,
         repeat_offenders: Vec<karma_policy::StrikeRecord>,
         remembered_titles: Vec<RememberedTitle>,
+        misjudged_titles: Vec<RememberedTitle>,
     }
 
     fn disk_state(directory: &Path) -> DiskState {
@@ -1672,6 +1817,7 @@ mod tests {
             audit: store::audit_records(&path),
             repeat_offenders: state.repeat_offenders,
             remembered_titles: state.remembered_titles,
+            misjudged_titles: state.misjudged_titles,
         }
     }
 
@@ -2154,6 +2300,7 @@ mod tests {
                     title_offset: 0,
                     title_limit: 50,
                     title_query: None,
+                    misjudged: false,
                 },
             ),
             now_ms,
@@ -2522,6 +2669,7 @@ mod tests {
                     title_offset: offset,
                     title_limit: limit,
                     title_query: query.map(str::to_owned),
+                    misjudged: false,
                 },
             ),
             90_000,
@@ -2529,6 +2677,159 @@ mod tests {
             ServiceResult::Enforcement(summary) => summary,
             _ => panic!("unexpected response"),
         }
+    }
+
+    fn list_title_kind(
+        core: &ServiceCore,
+        session: &str,
+        nonce: &str,
+        misjudged: bool,
+        now_ms: i64,
+    ) -> EnforcementSummary {
+        match success(core.handle(
+            request(
+                nonce,
+                nonce,
+                ServiceRequest::ListEnforcement {
+                    session_token: session.into(),
+                    title_offset: 0,
+                    title_limit: 50,
+                    title_query: None,
+                    misjudged,
+                },
+            ),
+            now_ms,
+        )) {
+            ServiceResult::Enforcement(summary) => summary,
+            _ => panic!("unexpected response"),
+        }
+    }
+
+    #[test]
+    fn misjudged_titles_record_their_reason_and_are_never_remembered_again() {
+        let directory = tempfile::tempdir().unwrap();
+        let core = open_core(directory.path(), 0);
+        configure_policy(&core, remembered_title_policy());
+        close_by_image(
+            &core,
+            "image-1",
+            Some("Homework - Google Chrome"),
+            42,
+            1_000,
+        );
+        let session = authenticate_ui(&core, "auth-misjudged", 1_100);
+        set_super(&core, &session, 1_101);
+
+        let listed = list_title_kind(&core, &session, "list-1", false, 1_102);
+        let title = &listed.remembered_titles[0];
+        assert_eq!(
+            title.reason,
+            Some(TitleReasonMetadata {
+                reason_code: "image_immediate".into(),
+                risk_millis: 990,
+                threshold_millis: recognition_threshold_millis(&remembered_title_policy()),
+            })
+        );
+        let mark = |nonce: &str, super_password: Option<&str>, now_ms| {
+            core.handle(
+                request(
+                    nonce,
+                    nonce,
+                    ServiceRequest::MarkTitleMisjudged {
+                        session_token: session.clone(),
+                        title_id: title.id.clone(),
+                        super_password: super_password.map(str::to_owned),
+                    },
+                ),
+                now_ms,
+            )
+            .result
+            .err()
+            .map(|failure| failure.code)
+        };
+        assert_eq!(
+            mark("mark-no-super", None, 1_103),
+            Some(ServiceErrorCode::SuperPasswordRequired)
+        );
+        assert_eq!(mark("mark", Some("distinct-super-password"), 1_104), None);
+
+        let after = list_title_kind(&core, &session, "list-2", false, 1_105);
+        assert_eq!(
+            (after.remembered_title_total, after.misjudged_title_total),
+            (0, 1)
+        );
+        assert!(
+            agent_enforcement_at(&core, "agent-misjudged", 1_106)
+                .remembered_title_digests
+                .is_empty()
+        );
+        // Another misjudged frame still closes the window but is not remembered.
+        close_by_image(
+            &core,
+            "image-2",
+            Some("homework - GOOGLE chrome"),
+            43,
+            2_000,
+        );
+        let misjudged = list_title_kind(&core, &session, "list-3", true, 2_100);
+        assert_eq!(
+            (
+                misjudged.remembered_title_total,
+                misjudged.remembered_titles[0].reason.clone()
+            ),
+            (1, None)
+        );
+        assert_eq!(
+            list_title_kind(&core, &session, "list-4", false, 2_101).remembered_title_total,
+            0
+        );
+
+        // Restoring needs only the session and lets the title be remembered again.
+        success(core.handle(
+            request(
+                "restore",
+                "restore",
+                ServiceRequest::RestoreMisjudgedTitle {
+                    session_token: session.clone(),
+                    title_id: misjudged.remembered_titles[0].id.clone(),
+                },
+            ),
+            2_200,
+        ));
+        close_by_image(
+            &core,
+            "image-3",
+            Some("Homework - Google Chrome"),
+            44,
+            3_000,
+        );
+        let restored = list_title_kind(&core, &session, "list-5", false, 3_100);
+        assert_eq!(
+            (
+                restored.remembered_title_total,
+                restored.misjudged_title_total
+            ),
+            (1, 0)
+        );
+        let state = disk_state(directory.path());
+        assert!(state.misjudged_titles.is_empty());
+        let kinds: Vec<_> = state
+            .audit
+            .iter()
+            .filter(|event| {
+                event.kind == "remembered_title_misjudged"
+                    || event.kind == "misjudged_title_restored"
+            })
+            .map(|event| (event.kind.as_str(), event.outcome.as_str()))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                ("remembered_title_misjudged", "denied"),
+                ("remembered_title_misjudged", "success"),
+                ("misjudged_title_restored", "success")
+            ]
+        );
     }
 
     #[test]
@@ -3472,6 +3773,116 @@ mod tests {
         }
     }
 
+    #[test]
+    fn evidence_batch_delete_skips_missing_items_and_tolerates_lost_originals() {
+        let directory = tempfile::tempdir().unwrap();
+        let core = open_core(directory.path(), 0);
+        let session = match success(core.handle(
+            request(
+                "1",
+                "n1",
+                ServiceRequest::EnrollAdministrator {
+                    password: "long-test-password".into(),
+                },
+            ),
+            1,
+        )) {
+            ServiceResult::Session { session_token, .. } => session_token,
+            _ => panic!("unexpected response"),
+        };
+        success(core.handle(
+            request(
+                "policy",
+                "policy-nonce",
+                ServiceRequest::PutPolicy {
+                    super_password: None,
+                    session_token: session.clone(),
+                    expected_revision: 0,
+                    policy: json!({
+                        "protectionEnabled": true,
+                        "recognition": {"evidenceEnabled": true, "immediateThreshold": 95}
+                    }),
+                },
+            ),
+            1,
+        ));
+        let image = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3];
+        for id in ["evidence-1", "evidence-2", "evidence-3"] {
+            let submit = RequestEnvelope::new(
+                format!("submit-{id}"),
+                format!("nonce-{id}"),
+                ClientKind::Agent,
+                ServiceRequest::SubmitEvidence {
+                    agent_token: "agent-secret".into(),
+                    evidence: EvidenceSubmission {
+                        evidence_id: id.into(),
+                        captured_at_ms: 2,
+                        monitor_name: "显示器 1".into(),
+                        application_name: "browser.exe".into(),
+                        reason_code: "image_immediate".into(),
+                        risk_millis: 980,
+                        media_type: "image/png".into(),
+                        bytes_base64: BASE64.encode(image),
+                    },
+                },
+            );
+            success(core.handle(submit, 2));
+        }
+        fs::remove_file(directory.path().join("evidence/evidence-2.kme")).unwrap();
+        let delete = |id: &str, ids: &[&str]| {
+            core.handle(
+                request(
+                    id,
+                    &format!("nonce-{id}"),
+                    ServiceRequest::DeleteEvidenceBatch {
+                        session_token: session.clone(),
+                        evidence_ids: ids.iter().map(|id| (*id).to_owned()).collect(),
+                    },
+                ),
+                3,
+            )
+        };
+        assert!(matches!(
+            success(delete("d1", &["evidence-1", "evidence-2", "evidence-gone"])),
+            ServiceResult::Acknowledged
+        ));
+        assert!(!directory.path().join("evidence/evidence-1.kme").exists());
+        assert_eq!(
+            delete("d2", &["evidence-1"]).result.unwrap_err().code,
+            ServiceErrorCode::EvidenceUnavailable
+        );
+        assert!(matches!(
+            success(core.handle(
+                request("list", "list-nonce", ServiceRequest::ListEvidence { session_token: session.clone() }),
+                4,
+            )),
+            ServiceResult::EvidenceList { items } if items.len() == 1 && items[0].id == "evidence-3"
+        ));
+        // Deletions survive a restart.
+        drop(core);
+        let reopened = open_core(directory.path(), 0);
+        let session = match success(reopened.handle(
+            request(
+                "auth",
+                "auth-nonce",
+                ServiceRequest::Authenticate {
+                    password: "long-test-password".into(),
+                },
+            ),
+            5,
+        )) {
+            ServiceResult::Session { session_token, .. } => session_token,
+            _ => panic!("unexpected response"),
+        };
+        assert!(matches!(
+            success(reopened.handle(
+                request("list2", "list2-nonce", ServiceRequest::ListEvidence { session_token: session }),
+                6,
+            )),
+            ServiceResult::EvidenceList { items } if items.len() == 1
+        ));
+    }
+
     const UTC_PLUS_EIGHT: LocalOffsetFn = |_| 8 * 3600;
     /// 1970-01-05 00:00 in UTC+8 was a Monday; shifted forward by whole weeks.
     const MONDAY_MIDNIGHT_UTC8_MS: i64 = 4 * 86_400_000 - 8 * 3_600_000 + 2_900 * 604_800_000;
@@ -4123,6 +4534,7 @@ mod tests {
                 title: "A remembered title".into(),
                 browser_host: None,
                 remembered_at_ms: now,
+                reason: None,
             });
             persist(&mut runtime).unwrap();
         }

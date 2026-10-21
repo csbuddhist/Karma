@@ -18,6 +18,8 @@ pub const MAX_TITLE_PAGE: u32 = 100;
 pub const MAX_TITLE_QUERY_CHARS: usize = 128;
 /// Longest executable path an agent may report, and so the longest ban key.
 pub const MAX_EXECUTABLE_CHARS: usize = 260;
+/// Most evidence items one `DeleteEvidenceBatch` request may name.
+pub const MAX_EVIDENCE_BATCH: usize = 200;
 /// The product version this build reports and updates from. Kept equal to the
 /// console's `tauri.conf.json` version by the installer contract test.
 pub const PRODUCT_VERSION: &str = "0.2.6";
@@ -111,6 +113,12 @@ pub enum ServiceRequest {
         session_token: String,
         evidence_id: String,
     },
+    /// Delete several evidence items at once. Items that no longer exist are
+    /// skipped; the request fails only when none of them exists.
+    DeleteEvidenceBatch {
+        session_token: String,
+        evidence_ids: Vec<String>,
+    },
     /// One page of remembered window titles, newest first, optionally
     /// filtered by a case-insensitive query, plus active repeat-offender bans.
     ListEnforcement {
@@ -121,6 +129,9 @@ pub enum ServiceRequest {
         title_limit: u32,
         #[serde(default)]
         title_query: Option<String>,
+        /// Page the titles marked as misjudged instead of remembered titles.
+        #[serde(default)]
+        misjudged: bool,
     },
     /// Stop closing windows that show one remembered title. Requires the
     /// super password once one is configured.
@@ -139,6 +150,20 @@ pub enum ServiceRequest {
         executable: String,
         #[serde(default)]
         super_password: Option<String>,
+    },
+    /// Forget one remembered title and never remember it again, because image
+    /// recognition misjudged it. Requires the super password once one is
+    /// configured.
+    MarkTitleMisjudged {
+        session_token: String,
+        title_id: String,
+        #[serde(default)]
+        super_password: Option<String>,
+    },
+    /// Let a title marked as misjudged be remembered again.
+    RestoreMisjudgedTitle {
+        session_token: String,
+        title_id: String,
     },
     /// Lift the active network schedule until its current block ends. The
     /// password is verified again even with a valid session: the super
@@ -221,9 +246,12 @@ impl ServiceRequest {
             | Self::ListEvidence { .. }
             | Self::RevealEvidence { .. }
             | Self::DeleteEvidence { .. }
+            | Self::DeleteEvidenceBatch { .. }
             | Self::ListEnforcement { .. }
             | Self::ForgetRememberedTitle { .. }
             | Self::AllowBannedApplication { .. }
+            | Self::MarkTitleMisjudged { .. }
+            | Self::RestoreMisjudgedTitle { .. }
             | Self::RestoreNetwork { .. }
             | Self::SetSuperPassword { .. }
             | Self::ChangeSuperPassword { .. }
@@ -281,6 +309,10 @@ impl ServiceRequest {
             | Self::AllowBannedApplication {
                 super_password: Some(password),
                 ..
+            }
+            | Self::MarkTitleMisjudged {
+                super_password: Some(password),
+                ..
             } => validate_password(password)?,
             _ => {}
         }
@@ -292,9 +324,12 @@ impl ServiceRequest {
             | Self::ListEvidence { session_token }
             | Self::RevealEvidence { session_token, .. }
             | Self::DeleteEvidence { session_token, .. }
+            | Self::DeleteEvidenceBatch { session_token, .. }
             | Self::ListEnforcement { session_token, .. }
             | Self::ForgetRememberedTitle { session_token, .. }
             | Self::AllowBannedApplication { session_token, .. }
+            | Self::MarkTitleMisjudged { session_token, .. }
+            | Self::RestoreMisjudgedTitle { session_token, .. }
             | Self::RestoreNetwork { session_token, .. }
             | Self::SetSuperPassword { session_token, .. }
             | Self::ChangeSuperPassword { session_token, .. }
@@ -318,7 +353,21 @@ impl ServiceRequest {
             Self::RevealEvidence { evidence_id, .. } | Self::DeleteEvidence { evidence_id, .. } => {
                 validate_identifier(evidence_id)?
             }
-            Self::ForgetRememberedTitle { title_id, .. } => validate_identifier(title_id)?,
+            Self::DeleteEvidenceBatch { evidence_ids, .. } => {
+                if evidence_ids.is_empty() || evidence_ids.len() > MAX_EVIDENCE_BATCH {
+                    return Err(ProtocolError::InvalidField);
+                }
+                let mut unique = std::collections::HashSet::with_capacity(evidence_ids.len());
+                for evidence_id in evidence_ids {
+                    validate_identifier(evidence_id)?;
+                    if !unique.insert(evidence_id.as_str()) {
+                        return Err(ProtocolError::InvalidField);
+                    }
+                }
+            }
+            Self::ForgetRememberedTitle { title_id, .. }
+            | Self::MarkTitleMisjudged { title_id, .. }
+            | Self::RestoreMisjudgedTitle { title_id, .. } => validate_identifier(title_id)?,
             Self::AllowBannedApplication { executable, .. } => {
                 if executable.trim().is_empty()
                     || executable.chars().count() > MAX_EXECUTABLE_CHARS
@@ -657,9 +706,12 @@ pub struct AgentEnforcement {
 pub struct EnforcementSummary {
     /// The requested page of remembered titles.
     pub remembered_titles: Vec<RememberedTitleMetadata>,
-    /// Remembered titles matching the query, across all pages.
+    /// Titles in the requested list matching the query, across all pages.
     pub remembered_title_total: u64,
     pub active_bans: Vec<ActiveBan>,
+    /// All titles marked as misjudged, regardless of the query.
+    #[serde(default)]
+    pub misjudged_title_total: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -669,7 +721,20 @@ pub struct RememberedTitleMetadata {
     pub executable: String,
     pub title: String,
     pub browser_host: Option<String>,
+    /// When it was remembered, or marked as misjudged.
     pub remembered_at_ms: i64,
+    /// The recognition result that remembered it; absent for titles from
+    /// builds that did not record one, and for misjudged titles.
+    #[serde(default)]
+    pub reason: Option<TitleReasonMetadata>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TitleReasonMetadata {
+    pub reason_code: String,
+    pub risk_millis: u16,
+    pub threshold_millis: u16,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -902,6 +967,44 @@ mod tests {
 
     fn request(body: ServiceRequest, client: ClientKind) -> RequestEnvelope {
         RequestEnvelope::new("request-1", "nonce-1", client, body)
+    }
+
+    #[test]
+    fn evidence_batch_delete_is_bounded_unique_and_ui_only() {
+        let batch = |ids: Vec<String>, client| {
+            request(
+                ServiceRequest::DeleteEvidenceBatch {
+                    session_token: "session-1".into(),
+                    evidence_ids: ids,
+                },
+                client,
+            )
+        };
+        let ids = |count: usize| {
+            (0..count)
+                .map(|index| format!("evidence-{index}"))
+                .collect()
+        };
+        assert!(
+            batch(ids(MAX_EVIDENCE_BATCH), ClientKind::Ui)
+                .validate()
+                .is_ok()
+        );
+        assert_eq!(
+            batch(ids(1), ClientKind::Agent).validate(),
+            Err(ProtocolError::ClientRoleDenied)
+        );
+        for invalid in [
+            Vec::new(),
+            ids(MAX_EVIDENCE_BATCH + 1),
+            vec!["evidence-1".into(), "evidence-1".into()],
+            vec!["../evidence".into()],
+        ] {
+            assert_eq!(
+                batch(invalid, ClientKind::Ui).validate(),
+                Err(ProtocolError::InvalidField)
+            );
+        }
     }
 
     #[test]
@@ -1162,11 +1265,39 @@ mod tests {
                     title_offset: 0,
                     title_limit,
                     title_query: title_query.map(str::to_owned),
+                    misjudged: false,
                 },
                 client,
             )
         };
         assert!(list(ClientKind::Ui, 50, Some("视频")).validate().is_ok());
+        let mark = |client, title_id: &str| {
+            request(
+                ServiceRequest::MarkTitleMisjudged {
+                    session_token: "session-1".into(),
+                    title_id: title_id.into(),
+                    super_password: None,
+                },
+                client,
+            )
+        };
+        assert!(mark(ClientKind::Ui, "title-1").validate().is_ok());
+        assert_eq!(
+            mark(ClientKind::Agent, "title-1").validate(),
+            Err(ProtocolError::ClientRoleDenied)
+        );
+        assert_eq!(
+            mark(ClientKind::Ui, "../title").validate(),
+            Err(ProtocolError::InvalidField)
+        );
+        let restore = request(
+            ServiceRequest::RestoreMisjudgedTitle {
+                session_token: "session-1".into(),
+                title_id: "../title".into(),
+            },
+            ClientKind::Ui,
+        );
+        assert_eq!(restore.validate(), Err(ProtocolError::InvalidField));
         assert_eq!(
             list(ClientKind::Installer, 50, None).validate(),
             Err(ProtocolError::ClientRoleDenied)

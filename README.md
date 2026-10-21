@@ -26,17 +26,17 @@ The following describes the current **installed Windows Service**, with a super 
 
 | Area | Ordinary administrator password or session | Additional super password required |
 | --- | --- | --- |
-| Console and status | Unlock or lock the console; view Service/Agent/display health, policy, network state, current application bans, update status, and uninstall countdown; search and page through remembered titles | Forgetting a remembered title |
+| Console and status | Unlock or lock the console; view Service/Agent/display health, policy, network state, current application bans, update status, and uninstall countdown; search and page through remembered titles, with the recognition reason for each; review titles marked as misjudged and let one be remembered again | Forgetting a remembered title, or marking it as misjudged |
 | Ordinary administrator password | Change it after entering the current ordinary password again; the new password must have at least 10 characters and differ from the configured super password | No super password needed for this change |
 | Super password setup | Set it for the first time after entering the ordinary password again; it must have at least 10 characters and differ from the ordinary password. The supervisor should enter and keep it | Changing an existing super password requires the current super password; the ordinary password cannot overwrite or clear it |
 | Protection and recognition | Enable protection, image recognition, OCR, title matching, or remembered titles; increase sensitivity by lowering the enforcement threshold | Disable any of those switches, or reduce sensitivity by raising the threshold |
 | Website rules | Add or enable block rules; remove or disable allow rules | Add or enable allow rules; remove, disable, or narrow block rules |
 | Application rules | Add or enable “Always block” rules; remove or disable “Allow” rules | Add or enable “Allow” rules; remove, disable, or narrow “Always block” rules |
-| Keywords | Add or enable enforced keywords; remove or disable exemptions | Remove, disable, or replace enforced custom keywords; add or enable exemptions |
+| Keywords | Add or enable enforced keywords; add keywords to the built-in list; turn on the built-in terms prone to false positives; remove or disable exemptions | Remove, disable, or replace enforced custom keywords; remove a keyword added to the built-in list; turn off the terms prone to false positives; add or enable exemptions |
 | Network schedules | Add, enable, or extend restricted periods; expand restricted targets while preserving all existing coverage | Remove, disable, shorten, move, or retarget periods in a way that reduces existing restricted coverage; restore network access before a block ends |
 | Repeat-closure limits | Lengthen the counting window or reduce the number of closures needed to trigger a ban | Shorten the counting window or increase the number of closures needed |
 | Currently restricted applications | View each restricted application and when its restriction ends | **Always allow**: one click sets that application to “Allow” in the application list (an “Always block” rule matching it also becomes “Allow”) and lifts its current restriction immediately. It is saved at once, separately from other unsaved edits, and audited |
-| Event evidence | View and filter the evidence list; enter the ordinary password again to view each original; enable or disable evidence saving. The authenticated service interface also permits deleting event evidence | These evidence operations do not require the super password; forgetting a remembered title is a separate protected operation |
+| Event evidence | View and filter the evidence list, with the reason each item was saved; enter the ordinary password again to view each original; delete one item or several selected items after confirming; enable or disable evidence saving | These evidence operations do not require the super password; forgetting a remembered title is a separate protected operation |
 | Policy backups | Export policy, import a backup for review, and save it when it preserves or strengthens protection | Saving an imported policy that weakens protection; importing does not bypass service authorization |
 | Console preferences | Change the interface language or whether the console starts at sign-in. Closing the console hides its window while protection continues | These preferences do not require the super password |
 | Software updates | Enable or disable automatic installation; check and install updates now; enter the ordinary password in setup to request an in-place upgrade | No super password needed. Every upgrade still requires a valid developer signature, matching file hashes, and a strictly higher version |
@@ -50,7 +50,7 @@ Uninstall keeps local data by default, including the super-password hash; reinst
 
 **When no super password is configured**, the ordinary administrator session can also save weakening policies and forget remembered titles; early network restore and immediate uninstall recheck the ordinary password. The 72-hour uninstall wait is not required. Signed-update and version restrictions still apply.
 
-The table includes service-interface capabilities: the current console does **not** expose event-evidence deletion or a complete persisted audit-log reader. The service status interface provides the audit-record count. Deleting an evidence image does not remove a remembered title or relax the enforcement rules.
+The current console does **not** expose a complete persisted audit-log reader. The service status interface provides the audit-record count. Deleting an evidence image does not remove a remembered title or relax the enforcement rules.
 
 These are Karma application permissions. UAC/Windows administrator rights are still required where the installer or uninstaller requests elevation. A technical Windows administrator can bypass user-mode protection through ownership changes, safe mode, or offline edits; using a standard Windows account with a supervisor-held administrator account remains recommended.
 
@@ -150,15 +150,19 @@ The unified engine supports:
 - Blocklists, allowlists, and a default policy.
 - Browser-domain allowlists and blocklists. An allowlisted domain always wins; a blocklisted
   domain closes immediately without waiting for an image-risk threshold.
-- Foreground-window title matching with a versioned high-precision English, Chinese, Japanese,
-  and Russian explicit-content list, extended by console-managed custom high-risk and sensitive
-  keywords; console-managed exemption keywords suppress keyword matches. The console keyword
-  page browses and searches the built-in read-only list by language and supports adding,
-  editing, enabling, deleting, and searching custom keywords.
+- Foreground-window title matching with a versioned explicit-content list of 2,543 terms in 26
+  languages (`assets/keyword-lists/`). Each term has a category (sexual activity or body parts),
+  a match mode (whole word, contains, or word prefix), and a confidence: the 1,592 strict terms are
+  always active, while the 951 terms that also appear in ordinary titles (such as “奶” or
+  “adult”) are off by default and can be turned on. Administrators can add their own terms to the
+  built-in list with a language, category, and match mode; added terms are always active. Console
+  custom high-risk and sensitive keywords also join matching, and exemption keywords suppress
+  matches. The console keyword page filters the built-in list by language, category, and
+  confidence, and supports adding, editing, enabling, deleting, and searching custom keywords.
 - Remembered window titles: when explicit image detection closes an application, the Service
   remembers that window's title (the page title in browsers) and canonical host; the same
   application showing the same title again is closed on sight. The console's Content
-  Recognition page lists and deletes remembered titles and can switch the behavior off.
+  Recognition page lists remembered titles with why each was remembered (image risk score and the threshold at the time; titles from v0.2.6 or earlier show "not recorded"), deletes them, and can switch the behavior off. A misjudged title can be marked **Misjudged**: it is forgotten and never remembered again, though a window closed by a later misjudgment is still closed. Misjudged titles are listed separately, encrypted like remembered titles, and can be remembered again.
 - Temporary allowances, remaining usage time, and cooldown periods.
 - Corrections for screen locking, sleep, time-zone changes, and daylight saving time.
 - Policy priority and conflict explanations.

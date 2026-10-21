@@ -13,6 +13,19 @@ pub const MAX_REMEMBERED_TITLES: usize = 5000;
 const TITLE_DIGEST_BYTES: usize = 16;
 /// Titles shorter than this after normalization are too generic to remember.
 const MIN_TITLE_KEY_CHARS: usize = 2;
+/// Upper bound on titles marked as misjudged; the oldest are dropped first,
+/// which only lets them be remembered again.
+pub const MAX_MISJUDGED_TITLES: usize = 1000;
+
+/// Why a title was remembered: the image recognition result that closed it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TitleReason {
+    pub reason_code: String,
+    pub risk_millis: u16,
+    /// The enforcement threshold in effect at that moment.
+    pub threshold_millis: u16,
+}
 
 /// A window title that was open when image recognition closed its
 /// application. Persisted by the service; a later window of the same
@@ -27,6 +40,9 @@ pub struct RememberedTitle {
     pub title: String,
     pub browser_host: Option<String>,
     pub remembered_at_ms: i64,
+    /// Absent for titles remembered before reasons were recorded.
+    #[serde(default)]
+    pub reason: Option<TitleReason>,
 }
 
 /// Case-, width- and whitespace-insensitive identity of a window title.
@@ -75,6 +91,7 @@ pub fn remember_title(records: &mut Vec<RememberedTitle>, entry: RememberedTitle
     {
         existing.remembered_at_ms = entry.remembered_at_ms;
         existing.browser_host = entry.browser_host;
+        existing.reason = entry.reason;
         return false;
     }
     records.push(entry);
@@ -127,6 +144,7 @@ mod tests {
             title: title.into(),
             browser_host: Some("video.example".into()),
             remembered_at_ms: at,
+            reason: None,
         }
     }
 

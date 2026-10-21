@@ -14,6 +14,7 @@ Karma is a Rust 2024 workspace. Shared libraries live in `crates/karma-*`; Windo
 - `cd apps/karma-ui && npm ci && npm run dev` — install locked UI dependencies and start Vite.
 - `cd apps/karma-ui && npm run build` — type-check and produce the frontend bundle; use `npm run tauri -- dev` for the desktop app.
 - `python3 -m unittest discover -s tools/ocr-export/tests` — run OCR exporter tests.
+- `python3 tools/keyword-lists/build_title_keywords.py` — regenerate the bundled title keyword JSON after editing its CSV; `python3 -m unittest discover -s tools/keyword-lists/tests` verifies it is current.
 - `bash tools/package-windows-test/test_bundle_contract.sh` — validate the packaged Windows bundle contract.
 
 ## Coding Style & Naming Conventions

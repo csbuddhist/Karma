@@ -23,7 +23,8 @@ pub enum Weakening {
     WebsiteRelaxed,
     /// An application was allowed or removed from the always-block list.
     ApplicationRelaxed,
-    /// A custom title keyword was removed or an exemption was added.
+    /// A custom title keyword or an addition to the built-in list was removed,
+    /// ambiguous built-in keywords were turned off, or an exemption was added.
     KeywordRelaxed,
     /// A network schedule stopped covering a time, target, or application.
     ScheduleRelaxed,
@@ -297,6 +298,29 @@ mod tests {
                 .as_array_mut()
                 .unwrap()
                 .push(json!({"id":"e","phrase":"医学","category":"exemption","enabled":true}))),
+            vec![Weakening::KeywordRelaxed]
+        );
+        let addition =
+            json!({"id":"a","term":"spicyclip","language":"en","category":"sexual","match":"word"});
+        assert!(
+            weakenings(|policy| policy["titleKeywordAdditions"] = json!([addition])).is_empty()
+        );
+        let mut with_addition = base();
+        with_addition["titleKeywordAdditions"] = json!([addition]);
+        assert_eq!(
+            policy_weakenings(&with_addition, &base()),
+            vec![Weakening::KeywordRelaxed]
+        );
+        assert!(
+            weakenings(
+                |policy| policy["recognition"]["ambiguousTitleKeywordsEnabled"] = json!(true)
+            )
+            .is_empty()
+        );
+        let mut ambiguous = base();
+        ambiguous["recognition"]["ambiguousTitleKeywordsEnabled"] = json!(true);
+        assert_eq!(
+            policy_weakenings(&ambiguous, &base()),
             vec![Weakening::KeywordRelaxed]
         );
         // Editing a rule's id alone keeps the same enforcement.

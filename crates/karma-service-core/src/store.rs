@@ -11,7 +11,7 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
     aead::{Aead, KeyInit, Payload},
 };
-use karma_policy::{RememberedTitle, StrikeRecord};
+use karma_policy::{RememberedTitle, StrikeRecord, TitleReason};
 use rand::{RngCore, rngs::OsRng};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
@@ -63,6 +63,23 @@ CREATE TABLE remembered_titles (
     sealed BLOB NOT NULL
 ) STRICT;
 CREATE INDEX remembered_titles_by_age ON remembered_titles (remembered_at_ms);
+";
+
+/// Additions after schema 1, applied idempotently without raising
+/// `user_version`: an update rolls back only program files, so the previous
+/// build must still open this database. Older builds ignore the new table and
+/// columns, and their title upserts leave the reason columns untouched.
+const TITLE_REASON_COLUMNS: [&str; 3] = [
+    "reason_code TEXT",
+    "risk_millis INTEGER",
+    "threshold_millis INTEGER",
+];
+const MISJUDGED_TITLES_TABLE: &str = "
+CREATE TABLE IF NOT EXISTS misjudged_titles (
+    id TEXT PRIMARY KEY NOT NULL,
+    misjudged_at_ms INTEGER NOT NULL,
+    sealed BLOB NOT NULL
+) STRICT;
 ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
@@ -127,6 +144,9 @@ pub(crate) struct PersistedState {
     pub(crate) repeat_offenders: Vec<StrikeRecord>,
     pub(crate) network_restore: Option<NetworkRestore>,
     pub(crate) remembered_titles: Vec<RememberedTitle>,
+    /// Titles an administrator marked as misjudged; never remembered again.
+    /// `remembered_at_ms` holds when they were marked.
+    pub(crate) misjudged_titles: Vec<RememberedTitle>,
     pub(crate) audit_count: u64,
 }
 
@@ -142,6 +162,7 @@ impl Default for PersistedState {
             repeat_offenders: Vec::new(),
             network_restore: None,
             remembered_titles: Vec::new(),
+            misjudged_titles: Vec::new(),
             audit_count: 0,
         }
     }
@@ -165,6 +186,8 @@ pub(crate) enum Change {
     NetworkRestore(Option<NetworkRestore>),
     UpsertTitle(RememberedTitle),
     DeleteTitle(String),
+    InsertMisjudgedTitle(RememberedTitle),
+    DeleteMisjudgedTitle(String),
 }
 
 /// The JSON state file written by builds before the SQLite store.
@@ -253,6 +276,21 @@ impl Store {
             transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             transaction.commit()?;
         }
+        let transaction = self.connection.transaction()?;
+        let columns = transaction
+            .prepare("SELECT name FROM pragma_table_info('remembered_titles')")?
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        for column in TITLE_REASON_COLUMNS {
+            let name = column.split_whitespace().next().unwrap_or(column);
+            if !columns.iter().any(|existing| existing == name) {
+                transaction.execute_batch(&format!(
+                    "ALTER TABLE remembered_titles ADD COLUMN {column};"
+                ))?;
+            }
+        }
+        transaction.execute_batch(MISJUDGED_TITLES_TABLE)?;
+        transaction.commit()?;
         Ok(())
     }
 
@@ -342,8 +380,49 @@ impl Store {
             .collect::<Result<Vec<_>, StoreError>>()?;
         let sealed_titles = connection
             .prepare(
-                "SELECT id, remembered_at_ms, sealed FROM remembered_titles
-                 ORDER BY remembered_at_ms, id",
+                "SELECT id, remembered_at_ms, sealed, reason_code, risk_millis, threshold_millis
+                 FROM remembered_titles ORDER BY remembered_at_ms, id",
+            )?
+            .query_map([], |row| {
+                let reason = match (row.get(3)?, row.get(4)?, row.get(5)?) {
+                    (Some(reason_code), Some(risk_millis), Some(threshold_millis)) => {
+                        Some(TitleReason {
+                            reason_code,
+                            risk_millis,
+                            threshold_millis,
+                        })
+                    }
+                    _ => None,
+                };
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                    reason,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut remembered_titles = Vec::with_capacity(sealed_titles.len());
+        let mut unreadable = Vec::new();
+        for (id, remembered_at_ms, sealed, reason) in sealed_titles {
+            match unseal_title(&self.sealing_key, &id, &sealed) {
+                Some(payload) => remembered_titles.push(RememberedTitle {
+                    id,
+                    executable: payload.executable,
+                    title: payload.title,
+                    browser_host: payload.browser_host,
+                    remembered_at_ms,
+                    reason,
+                }),
+                // A replaced or lost key makes old rows unreadable forever;
+                // drop them instead of refusing to start protection.
+                None => unreadable.push(Change::DeleteTitle(id)),
+            }
+        }
+        let sealed_misjudged = connection
+            .prepare(
+                "SELECT id, misjudged_at_ms, sealed FROM misjudged_titles
+                 ORDER BY misjudged_at_ms, id",
             )?
             .query_map([], |row| {
                 Ok((
@@ -353,20 +432,18 @@ impl Store {
                 ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
-        let mut remembered_titles = Vec::with_capacity(sealed_titles.len());
-        let mut unreadable = Vec::new();
-        for (id, remembered_at_ms, sealed) in sealed_titles {
+        let mut misjudged_titles = Vec::with_capacity(sealed_misjudged.len());
+        for (id, misjudged_at_ms, sealed) in sealed_misjudged {
             match unseal_title(&self.sealing_key, &id, &sealed) {
-                Some(payload) => remembered_titles.push(RememberedTitle {
+                Some(payload) => misjudged_titles.push(RememberedTitle {
                     id,
                     executable: payload.executable,
                     title: payload.title,
                     browser_host: payload.browser_host,
-                    remembered_at_ms,
+                    remembered_at_ms: misjudged_at_ms,
+                    reason: None,
                 }),
-                // A replaced or lost key makes old rows unreadable forever;
-                // drop them instead of refusing to start protection.
-                None => unreadable.push(id),
+                None => unreadable.push(Change::DeleteMisjudgedTitle(id)),
             }
         }
         let audit_count: i64 =
@@ -377,12 +454,7 @@ impl Store {
             .map(|value| serde_json::from_str(&value).map_err(|_| StoreError))
             .transpose()?;
         if !unreadable.is_empty() {
-            self.apply(
-                &unreadable
-                    .into_iter()
-                    .map(Change::DeleteTitle)
-                    .collect::<Vec<_>>(),
-            )?;
+            self.apply(&unreadable)?;
         }
         Ok(PersistedState {
             password_hash,
@@ -394,6 +466,7 @@ impl Store {
             repeat_offenders,
             network_restore,
             remembered_titles,
+            misjudged_titles,
             audit_count: u64::try_from(audit_count).unwrap_or(0),
         })
     }
@@ -552,12 +625,34 @@ fn write_changes(
                 transaction.execute("DELETE FROM settings WHERE key = 'network_restore'", [])?;
             }
             Change::UpsertTitle(title) => {
+                let reason = title.reason.as_ref();
                 transaction.execute(
-                    "INSERT INTO remembered_titles (id, remembered_at_ms, sealed)
-                     VALUES (?1, ?2, ?3)
+                    "INSERT INTO remembered_titles
+                         (id, remembered_at_ms, sealed, reason_code, risk_millis, threshold_millis)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                      ON CONFLICT (id) DO UPDATE SET
                          remembered_at_ms = excluded.remembered_at_ms,
-                         sealed = excluded.sealed",
+                         sealed = excluded.sealed,
+                         reason_code = excluded.reason_code,
+                         risk_millis = excluded.risk_millis,
+                         threshold_millis = excluded.threshold_millis",
+                    params![
+                        title.id,
+                        title.remembered_at_ms,
+                        seal_title(sealing_key, title)?,
+                        reason.map(|reason| reason.reason_code.as_str()),
+                        reason.map(|reason| reason.risk_millis),
+                        reason.map(|reason| reason.threshold_millis)
+                    ],
+                )?;
+            }
+            Change::DeleteTitle(id) => {
+                transaction.execute("DELETE FROM remembered_titles WHERE id = ?1", [id])?;
+            }
+            Change::InsertMisjudgedTitle(title) => {
+                transaction.execute(
+                    "INSERT INTO misjudged_titles (id, misjudged_at_ms, sealed)
+                     VALUES (?1, ?2, ?3)",
                     params![
                         title.id,
                         title.remembered_at_ms,
@@ -565,8 +660,8 @@ fn write_changes(
                     ],
                 )?;
             }
-            Change::DeleteTitle(id) => {
-                transaction.execute("DELETE FROM remembered_titles WHERE id = ?1", [id])?;
+            Change::DeleteMisjudgedTitle(id) => {
+                transaction.execute("DELETE FROM misjudged_titles WHERE id = ?1", [id])?;
             }
         }
     }
@@ -647,7 +742,70 @@ mod tests {
             title: text.into(),
             browser_host: Some("video.example".into()),
             remembered_at_ms: at,
+            reason: None,
         }
+    }
+
+    #[test]
+    fn title_reasons_and_misjudged_titles_round_trip() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("state.db");
+        let reasoned = RememberedTitle {
+            reason: Some(TitleReason {
+                reason_code: "image_immediate".into(),
+                risk_millis: 910,
+                threshold_millis: 820,
+            }),
+            ..title("title-1", "Hot Video", 7)
+        };
+        {
+            let (mut store, _) = Store::open(&path, &KEY).unwrap();
+            store
+                .apply(&[
+                    Change::UpsertTitle(reasoned.clone()),
+                    Change::InsertMisjudgedTitle(title("misjudged-1", "Homework", 8)),
+                    Change::InsertMisjudgedTitle(title("misjudged-2", "News", 9)),
+                    Change::DeleteMisjudgedTitle("misjudged-2".into()),
+                ])
+                .unwrap();
+        }
+        let (_, state) = Store::open(&path, &KEY).unwrap();
+        assert_eq!(state.remembered_titles, vec![reasoned]);
+        assert_eq!(
+            state.misjudged_titles,
+            vec![title("misjudged-1", "Homework", 8)]
+        );
+    }
+
+    #[test]
+    fn schema_one_databases_gain_reasons_and_stay_readable_by_older_builds() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("state.db");
+        let sealed = seal_title(&sealing_key(&KEY), &title("title-1", "Old", 3)).unwrap();
+        {
+            let connection = Connection::open(&path).unwrap();
+            connection.execute_batch(SCHEMA_V1).unwrap();
+            connection
+                .pragma_update(None, "user_version", SCHEMA_VERSION)
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO remembered_titles (id, remembered_at_ms, sealed)
+                     VALUES ('title-1', 3, ?1)",
+                    [&sealed],
+                )
+                .unwrap();
+        }
+        let (_, state) = Store::open(&path, &KEY).unwrap();
+        assert_eq!(state.remembered_titles, vec![title("title-1", "Old", 3)]);
+        // Reopening is idempotent, and the version an older build checks
+        // is unchanged, so a rolled-back update still opens this database.
+        Store::open(&path, &KEY).unwrap();
+        let version: i64 = Connection::open(&path)
+            .unwrap()
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
     }
 
     #[test]

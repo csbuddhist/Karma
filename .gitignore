@@ -5,6 +5,8 @@ tools/model-export/.venv312/
 tools/model-export/__pycache__/
 tools/ocr-export/__pycache__/
 tools/ocr-export/tests/__pycache__/
+tools/keyword-lists/__pycache__/
+tools/keyword-lists/tests/__pycache__/
 .venv-ocr-export/
 .local-models/
 .DS_Store

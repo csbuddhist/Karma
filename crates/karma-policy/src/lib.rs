@@ -19,7 +19,8 @@ pub use application_policy::{
     context_enforcement,
 };
 pub use context::{
-    ContextPolicy, ContextPolicyError, ContextVerdict, WebsiteRule, WebsiteRuleAction,
+    ContextPolicy, ContextPolicyError, ContextVerdict, KeywordMatch, MAX_TITLE_KEYWORD_ADDITIONS,
+    MAX_TITLE_KEYWORD_TERM_CHARS, WebsiteRule, WebsiteRuleAction,
 };
 pub use engine::{DecisionEngine, EvaluationInput, EvaluationResult};
 pub use network_schedule::{
@@ -27,8 +28,8 @@ pub use network_schedule::{
     NetworkScheduleError, NetworkSchedulePolicy, NetworkTarget,
 };
 pub use remembered_title::{
-    MAX_REMEMBERED_TITLES, RememberedTitle, remember_title, remember_titles_enabled,
-    rememberable_title_key, title_digest, title_key,
+    MAX_MISJUDGED_TITLES, MAX_REMEMBERED_TITLES, RememberedTitle, TitleReason, remember_title,
+    remember_titles_enabled, rememberable_title_key, title_digest, title_key,
 };
 pub use repeat_offender::{
     DEFAULT_REPEAT_OFFENDER_STRIKE_LIMIT, DEFAULT_REPEAT_OFFENDER_WINDOW_MINUTES,

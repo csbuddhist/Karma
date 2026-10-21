@@ -17,6 +17,7 @@ import {
   CalendarClock,
   Check,
   Copy,
+  ChevronDown,
   ChevronRight,
   CircleAlert,
   Download,
@@ -40,6 +41,7 @@ import {
   Save,
   Search,
   Settings,
+  RotateCcw,
   Trash2,
   Upload,
   Wifi,
@@ -59,6 +61,8 @@ import {
   enroll,
   exportSettings,
   forgetRememberedTitle,
+  markTitleMisjudged,
+  restoreMisjudgedTitle,
   allowBannedApplication,
   getAppVersion,
   importSettings,
@@ -75,12 +79,25 @@ import {
   repeatOffenderLimits,
   restoreNetwork,
   revealEvidence,
+  deleteEvidence,
   saveConsole,
   setSuperPassword,
   requestUninstall,
   unlock,
 } from "./bridge";
-import { bundledKeywordCount, bundledKeywordGroups } from "./bundledKeywords";
+import {
+  bundledAmbiguousCount,
+  bundledKeywordCount,
+  bundledKeywordGroups,
+  bundledLanguages,
+  bundledStrictCount,
+  coveredByStrictKeyword,
+  defaultMatchFor,
+  maxTitleKeywordAdditions,
+  maxTitleKeywordTermChars,
+  normalizeKeyword,
+} from "./bundledKeywords";
+import type { BundledKeyword } from "./bundledKeywords";
 import {
   createTranslator,
   getInitialLocale,
@@ -95,10 +112,14 @@ import type {
   ConsoleState,
   EvidenceItem,
   KeywordRule,
+  TitleKeywordAddition,
+  TitleKeywordCategory,
+  TitleKeywordMatch,
   NetworkStatus,
   NetworkTarget,
   PageKey,
   RememberedTitlePage,
+  TitleReason,
   ScheduleBlock,
   ScheduleRule,
   WebsiteRule,
@@ -390,12 +411,23 @@ function useShortDateTime(): Intl.DateTimeFormat {
   return useMemo(() => new Intl.DateTimeFormat(locale, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }), [locale]);
 }
 
+/** Risk scores within this many points of the threshold are flagged as possible misjudgments. */
+const nearThresholdMillis = 50;
+
+function titleReason(reason: TitleReason | null | undefined, t: Translate): string {
+  if (!reason) return t("recognition.reasonUnknown");
+  const values = { risk: Math.round(reason.riskMillis / 10), threshold: Math.round(reason.thresholdMillis / 10) };
+  const text = reason.reasonCode.startsWith("image") ? t("recognition.reasonImage", values) : t("recognition.reasonOther", { ...values, code: reason.reasonCode });
+  return reason.riskMillis - reason.thresholdMillis < nearThresholdMillis ? `${text} · ${t("recognition.reasonNearThreshold")}` : text;
+}
+
 function RememberedTitlesCard({ state, update, sessionToken }: { state: ConsoleState; update: (state: ConsoleState) => void; sessionToken: string }) {
   const { t } = useI18n();
   const dateTime = useShortDateTime();
   const [query, setQuery] = useState("");
   const [appliedQuery, setAppliedQuery] = useState("");
   const [pageIndex, setPageIndex] = useState(0);
+  const [showMisjudged, setShowMisjudged] = useState(false);
   const [titles, setTitles] = useState<RememberedTitlePage>({ items: [], total: 0 });
   const [reload, setReload] = useState(0);
   const [busyId, setBusyId] = useState<string>();
@@ -411,7 +443,7 @@ function RememberedTitlesCard({ state, update, sessionToken }: { state: ConsoleS
   // reported by the periodic console refresh changes.
   useEffect(() => {
     let current = true;
-    listRememberedTitles(sessionToken, pageIndex * rememberedTitlePageSize, appliedQuery)
+    listRememberedTitles(sessionToken, pageIndex * rememberedTitlePageSize, appliedQuery, showMisjudged)
       .then((page) => {
         if (!current) return;
         if (!page.items.length && pageIndex > 0) { setPageIndex(Math.max(0, Math.ceil(page.total / rememberedTitlePageSize) - 1)); return; }
@@ -420,12 +452,13 @@ function RememberedTitlesCard({ state, update, sessionToken }: { state: ConsoleS
       })
       .catch((reason) => { if (current) setError(localizeError(reason, t)); });
     return () => { current = false; };
-  }, [sessionToken, pageIndex, appliedQuery, state.rememberedTitleTotal, reload, t]);
-  async function forget(id: string) {
+  }, [sessionToken, pageIndex, appliedQuery, showMisjudged, state.rememberedTitleTotal, state.misjudgedTitleTotal, reload, t]);
+  function showList(misjudged: boolean) { setShowMisjudged(misjudged); setPageIndex(0); setTitles({ items: [], total: 0 }); setError(""); }
+  async function run(id: string, action: () => Promise<void>) {
     setBusyId(id);
     setError("");
     try {
-      await authorize((superPassword) => forgetRememberedTitle(sessionToken, id, superPassword));
+      await action();
       setReload((value) => value + 1);
     } catch (reason) {
       if (!isAuthorizationCancelled(reason)) setError(localizeError(reason, t));
@@ -436,8 +469,12 @@ function RememberedTitlesCard({ state, update, sessionToken }: { state: ConsoleS
   return <Card className="full-span">
     <div className="setting-row"><div className="setting-icon violet"><History /></div><div><strong>{t("recognition.rememberTitle")}</strong><p>{t("recognition.rememberDescription")}</p></div><Toggle checked={settings.rememberTitlesEnabled} onChange={(value) => update({ ...state, recognition: { ...settings, rememberTitlesEnabled: value } })} label={t("recognition.rememberToggle")} /></div>
     <div className="learned-list">
-      <div className="learned-toolbar"><span className="learned-heading">{t(appliedQuery.trim() ? "recognition.searchCount" : "recognition.rememberedCount", { count: titles.total })}</span><label className="learned-search"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} maxLength={128} placeholder={t("recognition.searchTitles")} aria-label={t("recognition.searchTitles")} /></label></div>
-      {titles.items.length ? titles.items.map((item) => <div className="app-rule" key={item.id}><div className="app-avatar">{item.browserHost ? <Globe2 /> : <AppWindow />}</div><div className="app-main"><strong>{item.title}</strong><small>{[executableFileName(item.executable), item.browserHost, t("recognition.rememberedAt", { time: dateTime.format(item.rememberedAtMs) })].filter(Boolean).join(" · ")}</small></div><button className="icon-button danger" disabled={busyId === item.id} aria-label={t("recognition.forgetTitle")} title={t("recognition.forgetTitle")} onClick={() => void forget(item.id)}><Trash2 size={17} /></button></div>) : <p className="learned-empty">{t(appliedQuery.trim() ? "recognition.searchEmpty" : "recognition.rememberedEmpty")}</p>}
+      <div className="learned-toolbar"><div className="learned-tabs" role="tablist"><button role="tab" aria-selected={!showMisjudged} className={showMisjudged ? "" : "active"} onClick={() => showList(false)}>{t("recognition.rememberedCount", { count: state.rememberedTitleTotal })}</button><button role="tab" aria-selected={showMisjudged} className={showMisjudged ? "active" : ""} onClick={() => showList(true)}>{t("recognition.misjudgedCount", { count: state.misjudgedTitleTotal })}</button></div><label className="learned-search"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} maxLength={128} placeholder={t("recognition.searchTitles")} aria-label={t("recognition.searchTitles")} /></label></div>
+      {appliedQuery.trim() && <span className="learned-heading">{t("recognition.searchCount", { count: titles.total })}</span>}
+      {showMisjudged && <p className="learned-empty">{t("recognition.misjudgedDescription")}</p>}
+      {titles.items.length ? titles.items.map((item) => <div className="app-rule" key={item.id}><div className="app-avatar">{item.browserHost ? <Globe2 /> : <AppWindow />}</div><div className="app-main"><strong>{item.title}</strong><small>{[executableFileName(item.executable), item.browserHost, t(showMisjudged ? "recognition.misjudgedAt" : "recognition.rememberedAt", { time: dateTime.format(item.rememberedAtMs) })].filter(Boolean).join(" · ")}</small>{!showMisjudged && <small className="title-reason">{t("recognition.reasonLabel")}{titleReason(item.reason, t)}</small>}</div>{showMisjudged
+        ? <button className="secondary-button compact" disabled={busyId !== undefined} title={t("recognition.restoreMisjudgedHint")} onClick={() => void run(item.id, () => restoreMisjudgedTitle(sessionToken, item.id))}><RotateCcw size={14} />{t("recognition.restoreMisjudged")}</button>
+        : <><button className="secondary-button compact" disabled={busyId !== undefined} title={t("recognition.markMisjudgedHint")} onClick={() => void run(item.id, () => authorize((superPassword) => markTitleMisjudged(sessionToken, item.id, superPassword)))}>{t("recognition.markMisjudged")}</button><button className="icon-button danger" disabled={busyId !== undefined} aria-label={t("recognition.forgetTitle")} title={t("recognition.forgetTitle")} onClick={() => void run(item.id, () => authorize((superPassword) => forgetRememberedTitle(sessionToken, item.id, superPassword)))}><Trash2 size={17} /></button></>}</div>) : <p className="learned-empty">{t(appliedQuery.trim() ? "recognition.searchEmpty" : showMisjudged ? "recognition.misjudgedEmpty" : "recognition.rememberedEmpty")}</p>}
       {pageCount > 1 && <div className="learned-pager"><button className="secondary-button" disabled={pageIndex === 0} onClick={() => setPageIndex(pageIndex - 1)}>{t("recognition.previousPage")}</button><span>{t("recognition.pageStatus", { page: pageIndex + 1, pages: pageCount })}</span><button className="secondary-button" disabled={pageIndex + 1 >= pageCount} onClick={() => setPageIndex(pageIndex + 1)}>{t("recognition.nextPage")}</button></div>}
       {error && <div className="form-error"><CircleAlert size={16} />{error}</div>}
     </div>
@@ -458,12 +495,122 @@ function Recognition({ state, update, sessionToken }: { state: ConsoleState; upd
   </div>;
 }
 
-const bundledLanguageLabels: Record<string, MessageKey> = {
-  en: "keywords.langEn",
-  zh: "keywords.langZh",
-  ja: "keywords.langJa",
-  ru: "keywords.langRu",
-};
+function useLanguageLabel(): (language: string) => string {
+  const { locale } = useI18n();
+  return useMemo(() => {
+    let names: Intl.DisplayNames | undefined;
+    try { names = new Intl.DisplayNames([locale], { type: "language" }); } catch { names = undefined; }
+    return (language: string) => names?.of(language) ?? language;
+  }, [locale]);
+}
+
+type BuiltInEntry = { term: string; category: TitleKeywordCategory; match: TitleKeywordMatch; confidence: BundledKeyword["confidence"] | "added"; addition?: TitleKeywordAddition };
+
+function BuiltInKeywordsCard({ state, update }: { state: ConsoleState; update: (state: ConsoleState) => void }) {
+  const { t } = useI18n();
+  const languageLabel = useLanguageLabel();
+  const [term, setTerm] = useState("");
+  const [language, setLanguage] = useState("zh");
+  const [category, setCategory] = useState<TitleKeywordCategory>("sexual");
+  const [match, setMatch] = useState<TitleKeywordMatch>(defaultMatchFor("zh"));
+  const [addError, setAddError] = useState("");
+  const [search, setSearch] = useState("");
+  const [languageFilter, setLanguageFilter] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState<"" | TitleKeywordCategory>("");
+  const [confidenceFilter, setConfidenceFilter] = useState<"" | BuiltInEntry["confidence"]>("");
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
+  const additions = state.titleKeywordAdditions;
+  const ambiguousEnabled = state.recognition.ambiguousTitleKeywordsEnabled;
+  const categoryLabel = (value: TitleKeywordCategory) => t(value === "organ" ? "keywords.categoryOrgan" : "keywords.categorySexual");
+  const matchLabel = (value: TitleKeywordMatch) => t(value === "word" ? "keywords.matchWord" : value === "substring" ? "keywords.matchSubstring" : "keywords.matchPrefix");
+  const confidenceLabel = (value: BuiltInEntry["confidence"]) => t(value === "strict" ? "keywords.confidenceStrict" : value === "ambiguous" ? "keywords.confidenceAmbiguous" : "keywords.confidenceAdded");
+  const languages = useMemo(() => [...bundledLanguages, ...additions.map((item) => item.language).filter((code) => !bundledLanguages.includes(code))], [additions]);
+  const groups = useMemo(() => {
+    const needle = normalizeKeyword(search);
+    const keep = (entry: BuiltInEntry) => (!needle || normalizeKeyword(entry.term).includes(needle)) && (!categoryFilter || entry.category === categoryFilter) && (!confidenceFilter || entry.confidence === confidenceFilter);
+    return languages
+      .filter((code) => !languageFilter || code === languageFilter)
+      .map((code) => {
+        const added: BuiltInEntry[] = additions.filter((item) => item.language === code).map((item) => ({ term: item.term, category: item.category, match: item.match, confidence: "added", addition: item }));
+        const bundled: BuiltInEntry[] = bundledKeywordGroups.find((group) => group.language === code)?.keywords ?? [];
+        const all = [...added, ...bundled];
+        return { language: code, total: all.length, entries: all.filter(keep) };
+      })
+      .filter((group) => group.entries.length > 0);
+  }, [languages, additions, search, languageFilter, categoryFilter, confidenceFilter]);
+  const filtering = Boolean(search.trim() || languageFilter || categoryFilter || confidenceFilter);
+  function chooseLanguage(code: string) { setLanguage(code); setMatch(defaultMatchFor(code)); setAddError(""); }
+  function add() {
+    const trimmed = term.trim();
+    if (!trimmed) return;
+    if ([...trimmed].length > maxTitleKeywordTermChars) return setAddError(t("keywords.additionTooLong", { count: maxTitleKeywordTermChars }));
+    if (additions.length >= maxTitleKeywordAdditions) return setAddError(t("keywords.additionLimit", { count: maxTitleKeywordAdditions }));
+    const normalized = normalizeKeyword(trimmed);
+    if (coveredByStrictKeyword(trimmed, match) || additions.some((item) => normalizeKeyword(item.term) === normalized && item.match === match)) return setAddError(t("keywords.additionDuplicate"));
+    update({ ...state, titleKeywordAdditions: [...additions, { id: crypto.randomUUID(), term: trimmed, language, category, match }] });
+    setTerm("");
+    setAddError("");
+    setExpanded((current) => new Set(current).add(language));
+  }
+  function remove(id: string) { update({ ...state, titleKeywordAdditions: additions.filter((item) => item.id !== id) }); }
+  function toggleGroup(code: string) { setExpanded((current) => { const next = new Set(current); if (next.has(code)) next.delete(code); else next.add(code); return next; }); }
+  return <Card>
+    <div className="card-heading">
+      <div><h2>{t("keywords.builtInTitle")}</h2><p>{t("keywords.builtInDescription", { languages: bundledLanguages.length, count: bundledKeywordCount })}</p></div>
+      <div className="card-heading-side keyword-stats">
+        <span className="value-badge">{t("keywords.strictCount", { count: bundledStrictCount })}</span>
+        <span className="value-badge muted">{t("keywords.ambiguousCount", { count: bundledAmbiguousCount })}</span>
+        {additions.length > 0 && <span className="value-badge">{t("keywords.addedCount", { count: additions.length })}</span>}
+      </div>
+    </div>
+    <div className="setting-row keyword-ambiguous-row">
+      <div><strong>{t("keywords.ambiguousTitle")}</strong><p>{t("keywords.ambiguousDescription", { count: bundledAmbiguousCount })}</p></div>
+      <Toggle checked={ambiguousEnabled} onChange={(value) => update({ ...state, recognition: { ...state.recognition, ambiguousTitleKeywordsEnabled: value } })} label={t("keywords.ambiguousTitle")} />
+    </div>
+    <div className="keyword-add">
+      <strong>{t("keywords.additionTitle")}</strong>
+      <div className="toolbar">
+        <div className="input-with-icon"><Plus size={17} /><input placeholder={t("keywords.additionPlaceholder")} value={term} maxLength={maxTitleKeywordTermChars * 2} onChange={(event) => { setTerm(event.target.value); setAddError(""); }} onKeyDown={(event) => event.key === "Enter" && add()} /></div>
+        <select aria-label={t("keywords.language")} value={language} onChange={(event) => chooseLanguage(event.target.value)}>{bundledLanguages.map((code) => <option value={code} key={code}>{languageLabel(code)}</option>)}</select>
+        <select aria-label={t("keywords.category")} value={category} onChange={(event) => setCategory(event.target.value as TitleKeywordCategory)}><option value="sexual">{categoryLabel("sexual")}</option><option value="organ">{categoryLabel("organ")}</option></select>
+        <select aria-label={t("keywords.matchMode")} value={match} onChange={(event) => { setMatch(event.target.value as TitleKeywordMatch); setAddError(""); }}><option value="word">{matchLabel("word")}</option><option value="substring">{matchLabel("substring")}</option><option value="prefix">{matchLabel("prefix")}</option></select>
+        <button className="primary-button" onClick={add}><Plus size={17} />{t("keywords.additionAdd")}</button>
+      </div>
+      {addError && <div className="form-error keyword-error"><CircleAlert size={16} />{addError}</div>}
+      <p className="keyword-add-hint">{t("keywords.additionHint")}</p>
+    </div>
+    <div className="toolbar keyword-filters">
+      <div className="input-with-icon"><Search size={16} /><input placeholder={t("keywords.searchPlaceholder")} value={search} onChange={(event) => setSearch(event.target.value)} /></div>
+      <select aria-label={t("keywords.language")} value={languageFilter} onChange={(event) => setLanguageFilter(event.target.value)}><option value="">{t("keywords.allLanguages")}</option>{languages.map((code) => <option value={code} key={code}>{languageLabel(code)}</option>)}</select>
+      <select aria-label={t("keywords.category")} value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value as "" | TitleKeywordCategory)}><option value="">{t("keywords.allCategories")}</option><option value="sexual">{categoryLabel("sexual")}</option><option value="organ">{categoryLabel("organ")}</option></select>
+      <select aria-label={t("keywords.confidence")} value={confidenceFilter} onChange={(event) => setConfidenceFilter(event.target.value as "" | BuiltInEntry["confidence"])}><option value="">{t("keywords.allConfidences")}</option><option value="strict">{confidenceLabel("strict")}</option><option value="ambiguous">{confidenceLabel("ambiguous")}</option><option value="added">{confidenceLabel("added")}</option></select>
+    </div>
+    {groups.length ? (
+      <div className="keyword-groups">
+        {groups.map((group) => {
+          const open = filtering || expanded.has(group.language);
+          return <div className="keyword-group" key={group.language}>
+            <button type="button" className="keyword-group-head" aria-expanded={open} onClick={() => toggleGroup(group.language)}>
+              {open ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+              <strong>{languageLabel(group.language)}</strong>
+              <small>{filtering ? t("keywords.filteredCount", { shown: group.entries.length, total: group.total }) : t("keywords.count", { count: group.total })}</small>
+            </button>
+            {open && <div className="keyword-chips">{group.entries.map((entry) => {
+              const inactive = entry.confidence === "ambiguous" && !ambiguousEnabled;
+              const detail = `${categoryLabel(entry.category)} · ${matchLabel(entry.match)} · ${confidenceLabel(entry.confidence)}${inactive ? ` · ${t("keywords.notEnforced")}` : ""}`;
+              return <span className={`keyword-chip ${entry.confidence}${inactive ? " inactive" : ""}`} key={entry.addition?.id ?? `${entry.match}:${entry.term}`} title={detail}>
+                {entry.term}
+                {entry.match === "prefix" && <i>…</i>}
+                {entry.addition && <button type="button" aria-label={t("keywords.delete", { name: entry.term })} onClick={() => remove(entry.addition!.id)}><X size={12} /></button>}
+              </span>;
+            })}</div>}
+          </div>;
+        })}
+      </div>
+    ) : <EmptyState icon={<Search />} title={t("keywords.searchNoMatch")} text={t("keywords.builtInEmpty")} />}
+    <p className="card-footnote">{t("keywords.builtInNote")}</p>
+  </Card>;
+}
 
 function Keywords({ state, update }: { state: ConsoleState; update: (state: ConsoleState) => void }) {
   const { t } = useI18n();
@@ -475,9 +622,7 @@ function Keywords({ state, update }: { state: ConsoleState; update: (state: Cons
   const [editPhrase, setEditPhrase] = useState("");
   const [editCategory, setEditCategory] = useState<KeywordRule["category"]>("sensitive");
   const [editError, setEditError] = useState("");
-  const [builtInFilter, setBuiltInFilter] = useState("");
   const categoryLabel = (value: KeywordRule["category"]) => t(value === "high_risk" ? "keywords.highRisk" : value === "sensitive" ? "keywords.sensitive" : "keywords.exemptionShort");
-  const languageLabel = (language: string) => { const key = bundledLanguageLabels[language]; return key ? t(key) : language; };
   const duplicateOf = (candidatePhrase: string, candidateCategory: KeywordRule["category"], ignoreId?: string) => state.keywords.some((rule) => rule.id !== ignoreId && rule.phrase === candidatePhrase && rule.category === candidateCategory);
   function add() {
     const trimmed = phrase.trim();
@@ -498,10 +643,6 @@ function Keywords({ state, update }: { state: ConsoleState; update: (state: Cons
   }
   const normalizedFilter = filter.trim().toLowerCase();
   const visibleKeywords = normalizedFilter ? state.keywords.filter((rule) => rule.phrase.toLowerCase().includes(normalizedFilter)) : state.keywords;
-  const builtInNeedle = builtInFilter.trim().toLowerCase();
-  const visibleBundledGroups = bundledKeywordGroups
-    .map((group) => ({ ...group, keywords: builtInNeedle ? group.keywords.filter((keyword) => keyword.toLowerCase().includes(builtInNeedle)) : group.keywords }))
-    .filter((group) => group.keywords.length > 0);
   return <div className="page-stack">
     <div className="privacy-banner"><Search size={18} /><span><strong>{t("keywords.bannerTitle")}</strong> {t("keywords.bannerDescription")}</span></div>
     <Card>
@@ -539,26 +680,7 @@ function Keywords({ state, update }: { state: ConsoleState; update: (state: Cons
         ) : <EmptyState icon={<Search />} title={t("keywords.searchNoMatch")} text={t("keywords.emptyDescription")} />
       ) : <EmptyState icon={<Search />} title={t("keywords.emptyTitle")} text={t("keywords.emptyDescription")} />}
     </Card>
-    <Card>
-      <div className="card-heading">
-        <div><h2>{t("keywords.builtInTitle")}</h2><p>{t("keywords.builtInDescription")}</p></div>
-        <div className="card-heading-side">
-          <div className="input-with-icon heading-search"><Search size={16} /><input placeholder={t("keywords.searchPlaceholder")} value={builtInFilter} onChange={(event) => setBuiltInFilter(event.target.value)} /></div>
-          <span className="value-badge">{t("keywords.count", { count: bundledKeywordCount })}</span>
-        </div>
-      </div>
-      {visibleBundledGroups.length ? (
-        <div className="keyword-groups">
-          {visibleBundledGroups.map((group) => (
-            <div className="keyword-group" key={group.language}>
-              <div className="keyword-group-head"><strong>{languageLabel(group.language)}</strong><small>{t("keywords.count", { count: group.keywords.length })}</small></div>
-              <div className="keyword-chips">{group.keywords.map((keyword) => <span className="keyword-chip" key={keyword}>{keyword}</span>)}</div>
-            </div>
-          ))}
-        </div>
-      ) : <EmptyState icon={<Search />} title={t("keywords.searchNoMatch")} text={t("keywords.builtInDescription")} />}
-      <p className="card-footnote">{t("keywords.builtInNote")}</p>
-    </Card>
+    <BuiltInKeywordsCard state={state} update={update} />
     {editing && (
       <Modal title={t("keywords.editTitle")} onClose={() => setEditing(null)}>
         <label className="field"><span>{t("keywords.phraseLabel")}</span><input autoFocus value={editPhrase} onChange={(event) => { setEditPhrase(event.target.value); setEditError(""); }} onKeyDown={(event) => event.key === "Enter" && saveEdit()} /></label>
@@ -877,9 +999,19 @@ function parseLocalDateTime(value: string): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-function Evidence({ state, sessionToken }: { state: ConsoleState; sessionToken: string }) {
+/** A readable explanation of why an evidence image was saved. */
+function evidenceReason(item: EvidenceItem, t: Translate): string {
+  const cause = item.reason === "image_immediate" ? t("evidence.reasonImageImmediate") : t("evidence.reasonOther", { code: item.reason });
+  return item.riskMillis === undefined ? cause : t("evidence.reasonWithScore", { reason: cause, score: Math.round(item.riskMillis / 10) });
+}
+
+function Evidence({ state, sessionToken, onDeleted }: { state: ConsoleState; sessionToken: string; onDeleted: (ids: string[]) => void }) {
   const { locale, t } = useI18n();
   const [selected, setSelected] = useState<EvidenceItem | null>(null);
+  const [checked, setChecked] = useState<ReadonlySet<string>>(new Set());
+  const [pendingDelete, setPendingDelete] = useState<string[] | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
   const [password, setPassword] = useState("");
   const [imageUrl, setImageUrl] = useState<string>();
   const [error, setError] = useState("");
@@ -901,8 +1033,58 @@ function Evidence({ state, sessionToken }: { state: ConsoleState; sessionToken: 
   const formatCapturedAt = (at: number | undefined) => at === undefined ? t("evidence.unknownTime") : dateTimeFormat.format(at);
   async function reveal() { if (!selected) return; setError(""); try { setImageUrl(await revealEvidence(sessionToken, selected.id, password)); } catch (reason) { setError(localizeError(reason, t)); } }
   const filterBar = <Card><div className="toolbar evidence-filter"><label className="field"><span>{t("evidence.filterFrom")}</span><input type="datetime-local" value={rangeFrom} max={rangeTo || undefined} onChange={(event) => setRangeFrom(event.target.value)} /></label><label className="field"><span>{t("evidence.filterTo")}</span><input type="datetime-local" value={rangeTo} min={rangeFrom || undefined} onChange={(event) => setRangeTo(event.target.value)} /></label><button className="secondary-button" disabled={!filterActive} onClick={() => { setRangeFrom(""); setRangeTo(""); }}><X size={16} />{t("evidence.filterClear")}</button><span className="evidence-filter-count">{t("evidence.filterCount", { shown: invalidRange ? 0 : items.length, total: state.evidence.length })}</span></div>{invalidRange && <div className="form-error"><CircleAlert size={16} />{t("evidence.filterInvalidRange")}</div>}</Card>;
-  const grid = invalidRange || !items.length ? <Card><EmptyState icon={<CalendarClock />} title={t("evidence.filterEmptyTitle")} text={t("evidence.filterEmptyDescription")} /></Card> : <div className="evidence-grid">{items.map(({ item, at }) => <button className="evidence-card" key={item.id} onClick={() => { setSelected(item); setImageUrl(undefined); setPassword(""); }}><div className="evidence-image">{item.thumbnailUrl ? <img src={item.thumbnailUrl} alt={t("evidence.blurredAlt")} /> : <Image />}<span><Eye size={16} />{t("evidence.viewAfterVerification")}</span></div><div><StatusPill tone={item.risk === "critical" ? "danger" : "warn"}>{t(item.risk === "critical" ? "evidence.critical" : "evidence.highRisk")}</StatusPill><strong>{item.applicationName}</strong><time className="evidence-time" dateTime={at === undefined ? undefined : new Date(at).toISOString()}><CalendarClock size={13} />{formatCapturedAt(at)}</time><small>{item.monitorName}</small></div></button>)}</div>;
-  return <div className="page-stack"><div className="privacy-banner"><Lock size={18} /><span><strong>{t("evidence.bannerTitle")}</strong> {t("evidence.bannerDescription")}</span></div>{state.evidence.length ? <>{filterBar}{grid}</> : <Card><EmptyState icon={<Lock />} title={t("evidence.emptyTitle")} text={t(state.recognition.evidenceEnabled ? "evidence.emptyEnabled" : "evidence.emptyDisabled")} /></Card>}{selected && <Modal title={t("evidence.modalTitle")} onClose={() => setSelected(null)} wide>{imageUrl ? <img className="revealed-image" src={imageUrl} alt={t("evidence.originalAlt")} /> : <div className="reveal-panel"><div className="locked-preview"><LockKeyhole /></div><strong>{selected.reason}</strong><p>{formatCapturedAt(evidenceTimestamp(selected.capturedAt))} · {selected.applicationName} · {selected.monitorName}</p><label className="field"><span>{t("evidence.passwordAgain")}</span><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} onKeyDown={(event) => event.key === "Enter" && reveal()} autoFocus /></label>{error && <div className="form-error"><CircleAlert size={16} />{error}</div>}<button className="primary-button modal-submit" onClick={reveal}><Eye size={17} />{t("evidence.decrypt")}</button></div>}</Modal>}</div>;
+  const visibleIds = invalidRange ? [] : items.map(({ item }) => item.id);
+  const checkedVisible = visibleIds.filter((id) => checked.has(id));
+  const allChecked = visibleIds.length > 0 && checkedVisible.length === visibleIds.length;
+  function toggleChecked(id: string, value: boolean) { setChecked((current) => { const next = new Set(current); if (value) next.add(id); else next.delete(id); return next; }); }
+  function toggleAll(value: boolean) { setChecked(value ? new Set(visibleIds) : new Set()); }
+  function askDelete(ids: string[]) { if (ids.length) { setDeleteError(""); setPendingDelete(ids); } }
+  async function confirmDelete() {
+    if (!pendingDelete) return;
+    setDeleting(true);
+    setDeleteError("");
+    try {
+      await deleteEvidence(sessionToken, pendingDelete);
+      onDeleted(pendingDelete);
+      setChecked((current) => new Set([...current].filter((id) => !pendingDelete.includes(id))));
+      if (selected && pendingDelete.includes(selected.id)) setSelected(null);
+      setPendingDelete(null);
+    } catch (reason) {
+      setDeleteError(localizeError(reason, t));
+    } finally {
+      setDeleting(false);
+    }
+  }
+  const selectionBar = <div className="evidence-selection">
+    <label className="evidence-check-all"><input type="checkbox" checked={allChecked} disabled={!visibleIds.length} onChange={(event) => toggleAll(event.target.checked)} />{t("evidence.selectAll")}</label>
+    <span>{t("evidence.selectedCount", { count: checkedVisible.length })}</span>
+    <button className="secondary-button danger-text" disabled={!checkedVisible.length} onClick={() => askDelete(checkedVisible)}><Trash2 size={16} />{t("evidence.deleteSelected")}</button>
+  </div>;
+  const grid = invalidRange || !items.length ? <Card><EmptyState icon={<CalendarClock />} title={t("evidence.filterEmptyTitle")} text={t("evidence.filterEmptyDescription")} /></Card> : <div className="evidence-grid">{items.map(({ item, at }) => <div className={`evidence-card${checked.has(item.id) ? " is-checked" : ""}`} key={item.id}>
+    <button type="button" className="evidence-open" onClick={() => { setSelected(item); setImageUrl(undefined); setPassword(""); setError(""); }}>
+      <div className="evidence-image">{item.thumbnailUrl ? <img src={item.thumbnailUrl} alt={t("evidence.blurredAlt")} /> : <Image />}<span><Eye size={16} />{t("evidence.viewAfterVerification")}</span></div>
+      <div className="evidence-body">
+        <p className="evidence-reason"><CircleAlert size={13} /><span><b>{t("evidence.reasonLabel")}</b>{evidenceReason(item, t)}</span></p>
+        <StatusPill tone={item.risk === "critical" ? "danger" : "warn"}>{t(item.risk === "critical" ? "evidence.critical" : "evidence.highRisk")}</StatusPill>
+        <strong>{item.applicationName}</strong>
+        <time className="evidence-time" dateTime={at === undefined ? undefined : new Date(at).toISOString()}><CalendarClock size={13} />{formatCapturedAt(at)}</time>
+        <small>{item.monitorName}</small>
+      </div>
+    </button>
+    <div className="evidence-actions">
+      <label><input type="checkbox" checked={checked.has(item.id)} onChange={(event) => toggleChecked(item.id, event.target.checked)} />{t("evidence.select")}</label>
+      <button type="button" className="icon-button danger" aria-label={t("evidence.deleteOne", { name: item.applicationName })} title={t("evidence.delete")} onClick={() => askDelete([item.id])}><Trash2 size={16} /></button>
+    </div>
+  </div>)}</div>;
+  const deleteModal = pendingDelete && <Modal title={t("evidence.deleteTitle")} onClose={() => !deleting && setPendingDelete(null)}>
+    <p className="modal-description">{t("evidence.deleteConfirm", { count: pendingDelete.length })}</p>
+    {deleteError && <div className="form-error"><CircleAlert size={16} />{deleteError}</div>}
+    <div className="modal-actions">
+      <button className="secondary-button" disabled={deleting} onClick={() => setPendingDelete(null)}>{t("evidence.deleteCancel")}</button>
+      <button className="primary-button danger-fill" disabled={deleting} onClick={() => void confirmDelete()}><Trash2 size={16} />{t(deleting ? "evidence.deleting" : "evidence.deleteConfirmButton", { count: pendingDelete.length })}</button>
+    </div>
+  </Modal>;
+  return <div className="page-stack"><div className="privacy-banner"><Lock size={18} /><span><strong>{t("evidence.bannerTitle")}</strong> {t("evidence.bannerDescription")}</span></div>{state.evidence.length ? <>{filterBar}{selectionBar}{grid}</> : <Card><EmptyState icon={<Lock />} title={t("evidence.emptyTitle")} text={t(state.recognition.evidenceEnabled ? "evidence.emptyEnabled" : "evidence.emptyDisabled")} /></Card>}{selected && <Modal title={t("evidence.modalTitle")} onClose={() => setSelected(null)} wide>{imageUrl ? <img className="revealed-image" src={imageUrl} alt={t("evidence.originalAlt")} /> : <div className="reveal-panel"><div className="locked-preview"><LockKeyhole /></div><strong>{evidenceReason(selected, t)}</strong><p>{formatCapturedAt(evidenceTimestamp(selected.capturedAt))} · {selected.applicationName} · {selected.monitorName}</p><label className="field"><span>{t("evidence.passwordAgain")}</span><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} onKeyDown={(event) => event.key === "Enter" && reveal()} autoFocus /></label>{error && <div className="form-error"><CircleAlert size={16} />{error}</div>}<button className="primary-button modal-submit" onClick={reveal}><Eye size={17} />{t("evidence.decrypt")}</button></div>}</Modal>}{deleteModal}</div>;
 }
 
 function Audit({ state }: { state: ConsoleState }) {
@@ -1229,7 +1411,7 @@ function mergeSavedRules(draft: ApplicationRule[], before: ApplicationRule[], af
 
 /** Restores the policy fields the Service last accepted, keeping runtime status current. */
 function withSavedPolicy(current: ConsoleState, saved: ConsoleState): ConsoleState {
-  return { ...current, protectionEnabled: saved.protectionEnabled, launchAtStartup: saved.launchAtStartup, updates: saved.updates, recognition: saved.recognition, repeatOffender: saved.repeatOffender, keywords: saved.keywords, websites: saved.websites, applications: saved.applications, schedules: saved.schedules };
+  return { ...current, protectionEnabled: saved.protectionEnabled, launchAtStartup: saved.launchAtStartup, updates: saved.updates, recognition: saved.recognition, repeatOffender: saved.repeatOffender, keywords: saved.keywords, titleKeywordAdditions: saved.titleKeywordAdditions, websites: saved.websites, applications: saved.applications, schedules: saved.schedules };
 }
 
 function AppContent() {
@@ -1270,7 +1452,7 @@ function AppContent() {
         if (!current) return;
         // Runtime refreshes never replace an administrator's policy draft or
         // change the revision against which that draft will be saved.
-        setState((previous) => ({ ...previous, serviceConnected: next.serviceConnected, agentConnected: next.agentConnected, monitors: next.monitors, network: next.network, evidence: next.evidence, audit: next.audit, rememberedTitleTotal: next.rememberedTitleTotal, activeBans: next.activeBans, productVersion: next.productVersion, superPasswordSet: next.superPasswordSet, uninstall: next.uninstall, update: next.update }));
+        setState((previous) => ({ ...previous, serviceConnected: next.serviceConnected, agentConnected: next.agentConnected, monitors: next.monitors, network: next.network, evidence: next.evidence, audit: next.audit, rememberedTitleTotal: next.rememberedTitleTotal, misjudgedTitleTotal: next.misjudgedTitleTotal, activeBans: next.activeBans, productVersion: next.productVersion, superPasswordSet: next.superPasswordSet, uninstall: next.uninstall, update: next.update }));
       }).catch((reason) => {
         if (!current) return;
         // A restarted service invalidates every in-memory session; return to the
@@ -1284,6 +1466,8 @@ function AppContent() {
   }, [authMode, sessionToken]);
   async function authenticated(token: string) { setSessionToken(token); setLoading(true); try { const next = await loadConsole(token); savedState.current = next; setState(next); setAuthMode("unlocked"); void configureLaunchAtStartup(next.launchAtStartup).catch((reason) => console.error("Failed to synchronize autostart", reason)); } finally { setLoading(false); } }
   function update(next: ConsoleState) { editRevision.current += 1; setState(next); setDirty(true); setSaveMessage(""); setSaveError(""); }
+  // Evidence is runtime state, so deleting it never marks the policy draft dirty.
+  function evidenceDeleted(ids: string[]) { setState((previous) => ({ ...previous, evidence: previous.evidence.filter((item) => !ids.includes(item.id)) })); }
   // The Service saved these rules directly; keep the administrator's other unsaved edits.
   function bannedAllowed(executable: string, applications: ApplicationRule[]) {
     const before = savedState.current.applications;
@@ -1344,7 +1528,7 @@ function AppContent() {
     if (page === "websites") return <Websites state={state} update={update} />;
     if (page === "applications") return <Applications state={state} update={update} sessionToken={sessionToken} onBannedAllowed={bannedAllowed} />;
     if (page === "schedule") return <Schedule state={state} update={update} sessionToken={sessionToken} onNetworkChange={updateNetwork} />;
-    if (page === "evidence") return <Evidence state={state} sessionToken={sessionToken} />;
+    if (page === "evidence") return <Evidence state={state} sessionToken={sessionToken} onDeleted={evidenceDeleted} />;
     if (page === "audit") return <Audit state={state} />;
     return <SettingsPage state={state} update={update} sessionToken={sessionToken} onRefresh={refreshAuthorization} />;
   }, [page, state, sessionToken, locale]);

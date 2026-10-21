@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::sync::LazyLock;
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -8,10 +9,19 @@ use url::{Host, Url};
 
 const MAX_WEBSITE_RULES: usize = 256;
 const MAX_KEYWORD_RULES: usize = 256;
+/// Upper bound on keywords administrators add to the built-in list.
+pub const MAX_TITLE_KEYWORD_ADDITIONS: usize = 1024;
+/// Longest term accepted in the built-in list or as an addition to it.
+pub const MAX_TITLE_KEYWORD_TERM_CHARS: usize = 64;
 const MAX_RULE_ID_CHARS: usize = 128;
 const MAX_RULE_VALUE_CHARS: usize = 2048;
 const BUNDLED_TITLE_KEYWORDS: &str =
     include_str!("../../../assets/keyword-lists/window-title-explicit.json");
+const BUNDLED_FORMAT_VERSION: u32 = 2;
+
+/// The bundled list, parsed and normalized once per process.
+static BUNDLED: LazyLock<Result<BundledTitleKeywords, ContextPolicyError>> =
+    LazyLock::new(load_bundled_keywords);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -35,11 +45,43 @@ pub enum ContextVerdict {
     TitleKeyword,
 }
 
+/// How a title keyword is compared with the normalized window title.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeywordMatch {
+    /// The keyword's words appear as consecutive whole words. Keywords with
+    /// CJK characters, which are not separated by spaces, match as substrings.
+    Word,
+    /// The keyword appears anywhere in the title.
+    Substring,
+    /// Like `Word`, but the last title word only has to start with the
+    /// keyword's last word.
+    Prefix,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TitleKeyword {
+    term: String,
+    words: Vec<String>,
+    mode: KeywordMatch,
+}
+
+#[derive(Debug)]
+struct BundledTitleKeywords {
+    /// Enforced whenever title matching is enabled.
+    strict: Vec<TitleKeyword>,
+    /// Likely to produce false positives; enforced only when enabled.
+    ambiguous: Vec<TitleKeyword>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ContextPolicy {
     title_matching_enabled: bool,
+    ambiguous_keywords_enabled: bool,
     website_rules: Vec<WebsiteRule>,
-    title_keywords: Vec<String>,
+    bundled: &'static BundledTitleKeywords,
+    /// Custom high-risk and sensitive phrases plus additions to the built-in list.
+    added_keywords: Vec<TitleKeyword>,
     exempt_keywords: Vec<String>,
 }
 
@@ -77,6 +119,34 @@ enum KeywordCategory {
     Exemption,
 }
 
+#[derive(Deserialize, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+enum TitleKeywordCategory {
+    Organ,
+    Sexual,
+}
+
+#[derive(Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum KeywordConfidence {
+    Strict,
+    Ambiguous,
+}
+
+/// A keyword an administrator added to the built-in list. It is always
+/// enforced, like the list's strict keywords.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TitleKeywordAdditionInput {
+    id: String,
+    term: String,
+    language: String,
+    #[allow(dead_code)]
+    category: TitleKeywordCategory,
+    #[serde(rename = "match")]
+    mode: KeywordMatch,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BundledKeywords {
@@ -88,7 +158,18 @@ struct BundledKeywords {
 #[serde(deny_unknown_fields)]
 struct LanguageKeywords {
     language: String,
-    keywords: Vec<String>,
+    keywords: Vec<BundledKeyword>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BundledKeyword {
+    term: String,
+    #[allow(dead_code)]
+    category: TitleKeywordCategory,
+    confidence: KeywordConfidence,
+    #[serde(rename = "match")]
+    mode: KeywordMatch,
 }
 
 impl Default for ContextPolicy {
@@ -103,6 +184,10 @@ impl ContextPolicy {
             .pointer("/recognition/titleMatchingEnabled")
             .and_then(Value::as_bool)
             .unwrap_or(true);
+        let ambiguous_keywords_enabled = policy
+            .pointer("/recognition/ambiguousTitleKeywordsEnabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let raw_rules = policy
             .get("websites")
             .cloned()
@@ -138,7 +223,7 @@ impl ContextPolicy {
         if raw_keywords.len() > MAX_KEYWORD_RULES {
             return Err(ContextPolicyError::InvalidPolicy);
         }
-        let mut custom_keywords = Vec::new();
+        let mut added_keywords = Vec::new();
         let mut exempt_keywords = Vec::new();
         for rule in raw_keywords.into_iter().filter(|rule| rule.enabled) {
             if rule.id.is_empty()
@@ -150,39 +235,41 @@ impl ContextPolicy {
             }
             match rule.category {
                 KeywordCategory::HighRisk | KeywordCategory::Sensitive => {
-                    custom_keywords.push(normalize_text(&rule.phrase))
+                    added_keywords.push(TitleKeyword::new(&rule.phrase, KeywordMatch::Word))
                 }
                 KeywordCategory::Exemption => exempt_keywords.push(normalize_text(&rule.phrase)),
             }
         }
 
-        let bundled: BundledKeywords = serde_json::from_str(BUNDLED_TITLE_KEYWORDS)
-            .map_err(|_| ContextPolicyError::InvalidBundledKeywords)?;
-        if bundled.format_version != 1
-            || bundled.languages.is_empty()
-            || bundled.languages.iter().any(|group| {
-                group.language.is_empty()
-                    || group.keywords.is_empty()
-                    || group
-                        .keywords
-                        .iter()
-                        .any(|keyword| keyword.trim().is_empty())
-            })
-        {
-            return Err(ContextPolicyError::InvalidBundledKeywords);
+        let raw_additions = policy
+            .get("titleKeywordAdditions")
+            .cloned()
+            .unwrap_or_else(|| Value::Array(Vec::new()));
+        let raw_additions: Vec<TitleKeywordAdditionInput> =
+            serde_json::from_value(raw_additions).map_err(|_| ContextPolicyError::InvalidPolicy)?;
+        if raw_additions.len() > MAX_TITLE_KEYWORD_ADDITIONS {
+            return Err(ContextPolicyError::InvalidPolicy);
         }
-        let mut title_keywords: Vec<String> = bundled
-            .languages
-            .into_iter()
-            .flat_map(|group| group.keywords)
-            .map(|keyword| normalize_text(&keyword))
-            .collect();
-        title_keywords.append(&mut custom_keywords);
+        for addition in raw_additions {
+            if addition.id.is_empty()
+                || addition.id.chars().count() > MAX_RULE_ID_CHARS
+                || addition.term.trim().is_empty()
+                || addition.term.chars().count() > MAX_TITLE_KEYWORD_TERM_CHARS
+                || !valid_language(&addition.language)
+            {
+                return Err(ContextPolicyError::InvalidPolicy);
+            }
+            added_keywords.push(TitleKeyword::new(&addition.term, addition.mode));
+        }
+
+        let bundled = BUNDLED.as_ref().map_err(Clone::clone)?;
 
         Ok(Self {
             title_matching_enabled,
+            ambiguous_keywords_enabled,
             website_rules,
-            title_keywords,
+            bundled,
+            added_keywords,
             exempt_keywords,
         })
     }
@@ -213,9 +300,8 @@ impl ContextPolicy {
             if !is_exempt
                 && !normalized_title.is_empty()
                 && self
-                    .title_keywords
-                    .iter()
-                    .any(|keyword| phrase_matches(&normalized_title, &words, keyword))
+                    .enforced_keywords()
+                    .any(|keyword| keyword.matches(&normalized_title, &words))
             {
                 return ContextVerdict::TitleKeyword;
             }
@@ -232,9 +318,26 @@ impl ContextPolicy {
             .collect()
     }
 
-    /// Normalized enforced title keywords (bundled and custom).
-    pub(crate) fn title_keyword_set(&self) -> BTreeSet<&str> {
-        self.title_keywords.iter().map(String::as_str).collect()
+    /// Bundled keywords in effect, then custom keywords and additions.
+    fn enforced_keywords(&self) -> impl Iterator<Item = &TitleKeyword> {
+        let ambiguous: &[TitleKeyword] = if self.ambiguous_keywords_enabled {
+            &self.bundled.ambiguous
+        } else {
+            &[]
+        };
+        self.bundled
+            .strict
+            .iter()
+            .chain(ambiguous)
+            .chain(&self.added_keywords)
+    }
+
+    /// Normalized enforced title keywords (bundled, custom, and additions)
+    /// with how each one matches.
+    pub(crate) fn title_keyword_set(&self) -> BTreeSet<(KeywordMatch, &str)> {
+        self.enforced_keywords()
+            .map(|keyword| (keyword.mode, keyword.term.as_str()))
+            .collect()
     }
 
     /// Normalized enabled exemption keywords.
@@ -245,6 +348,75 @@ impl ContextPolicy {
     pub fn allows_host(&self, browser_host: Option<&str>) -> bool {
         self.evaluate(browser_host, "") == ContextVerdict::Allowlisted
     }
+}
+
+impl TitleKeyword {
+    fn new(term: &str, mode: KeywordMatch) -> Self {
+        let term = normalize_text(term);
+        // Whole-word matching cannot find words in unspaced CJK text.
+        let mode = if contains_cjk(&term) {
+            KeywordMatch::Substring
+        } else {
+            mode
+        };
+        let words = title_words(&term).into_iter().map(str::to_owned).collect();
+        Self { term, words, mode }
+    }
+
+    fn matches(&self, normalized_title: &str, title_words: &[&str]) -> bool {
+        let Some((last, leading)) = self.words.split_last() else {
+            return self.mode == KeywordMatch::Substring && normalized_title.contains(&self.term);
+        };
+        match self.mode {
+            KeywordMatch::Substring => normalized_title.contains(&self.term),
+            KeywordMatch::Word => title_words.windows(self.words.len()).any(|window| {
+                window
+                    .iter()
+                    .zip(&self.words)
+                    .all(|(left, right)| left == right)
+            }),
+            KeywordMatch::Prefix => title_words.windows(self.words.len()).any(|window| {
+                window
+                    .iter()
+                    .zip(leading)
+                    .all(|(left, right)| left == right)
+                    && window[leading.len()].starts_with(last.as_str())
+            }),
+        }
+    }
+}
+
+fn load_bundled_keywords() -> Result<BundledTitleKeywords, ContextPolicyError> {
+    let document: BundledKeywords = serde_json::from_str(BUNDLED_TITLE_KEYWORDS)
+        .map_err(|_| ContextPolicyError::InvalidBundledKeywords)?;
+    if document.format_version != BUNDLED_FORMAT_VERSION || document.languages.is_empty() {
+        return Err(ContextPolicyError::InvalidBundledKeywords);
+    }
+    let mut strict = Vec::new();
+    let mut ambiguous = Vec::new();
+    for group in document.languages {
+        if !valid_language(&group.language) || group.keywords.is_empty() {
+            return Err(ContextPolicyError::InvalidBundledKeywords);
+        }
+        for keyword in group.keywords {
+            if keyword.term.trim().is_empty()
+                || keyword.term.chars().count() > MAX_TITLE_KEYWORD_TERM_CHARS
+            {
+                return Err(ContextPolicyError::InvalidBundledKeywords);
+            }
+            let compiled = TitleKeyword::new(&keyword.term, keyword.mode);
+            match keyword.confidence {
+                KeywordConfidence::Strict => strict.push(compiled),
+                KeywordConfidence::Ambiguous => ambiguous.push(compiled),
+            }
+        }
+    }
+    Ok(BundledTitleKeywords { strict, ambiguous })
+}
+
+/// A lowercase ISO 639 language code, such as `zh` or `fil`.
+fn valid_language(value: &str) -> bool {
+    (2..=3).contains(&value.len()) && value.bytes().all(|byte| byte.is_ascii_lowercase())
 }
 
 fn title_words(normalized: &str) -> Vec<&str> {
@@ -515,5 +687,112 @@ mod tests {
             })
             .collect();
         assert!(ContextPolicy::from_value(&base(oversized)).is_err());
+    }
+
+    #[test]
+    fn bundled_strict_keywords_cover_every_listed_language_and_match_mode() {
+        let policy = ContextPolicy::default();
+        for title in [
+            "Watch titten clips",
+            "大鸡巴合集",
+            "無料セックス動画",
+            "Ultimate MASTURBATION guide",
+            "rule 34 gallery",
+        ] {
+            assert_eq!(
+                policy.evaluate(None, title),
+                ContextVerdict::TitleKeyword,
+                "{title}"
+            );
+        }
+        // Prefix and word keywords still need a word boundary at the start.
+        assert_eq!(
+            policy.evaluate(None, "Remasturbate archive"),
+            ContextVerdict::None
+        );
+        assert_eq!(
+            policy.evaluate(None, "Analysis report"),
+            ContextVerdict::None
+        );
+    }
+
+    #[test]
+    fn ambiguous_bundled_keywords_apply_only_when_enabled() {
+        let default = ContextPolicy::default();
+        assert_eq!(default.evaluate(None, "奶茶店推荐"), ContextVerdict::None);
+        assert_eq!(
+            default.evaluate(None, "Lesbian history"),
+            ContextVerdict::None
+        );
+        let enabled = ContextPolicy::from_value(&json!({
+            "recognition": {"ambiguousTitleKeywordsEnabled": true}
+        }))
+        .unwrap();
+        assert_eq!(
+            enabled.evaluate(None, "奶茶店推荐"),
+            ContextVerdict::TitleKeyword
+        );
+        assert_eq!(
+            enabled.evaluate(None, "Lesbian history"),
+            ContextVerdict::TitleKeyword
+        );
+        assert!(
+            default
+                .title_keyword_set()
+                .is_subset(&enabled.title_keyword_set())
+        );
+    }
+
+    #[test]
+    fn title_keyword_additions_are_enforced_with_their_match_mode() {
+        let policy = ContextPolicy::from_value(&json!({
+            "titleKeywordAdditions": [
+                {"id":"a1","term":"Spicyclip","language":"en","category":"sexual","match":"prefix"},
+                {"id":"a2","term":"nsfwzone","language":"en","category":"sexual","match":"substring"},
+                {"id":"a3","term":"露骨直播","language":"zh","category":"sexual","match":"word"}
+            ]
+        }))
+        .unwrap();
+        assert_eq!(
+            policy.evaluate(None, "spicyclips daily"),
+            ContextVerdict::TitleKeyword
+        );
+        assert_eq!(
+            policy.evaluate(None, "the-nsfwzonehub"),
+            ContextVerdict::TitleKeyword
+        );
+        assert_eq!(
+            policy.evaluate(None, "今晚露骨直播间"),
+            ContextVerdict::TitleKeyword
+        );
+        assert_eq!(
+            policy.evaluate(None, "ordinary title"),
+            ContextVerdict::None
+        );
+    }
+
+    #[test]
+    fn invalid_title_keyword_additions_are_rejected() {
+        let addition = |value: serde_json::Value| json!({ "titleKeywordAdditions": [value] });
+        for invalid in [
+            json!({"id":"","term":"x1","language":"en","category":"sexual","match":"word"}),
+            json!({"id":"a","term":" ","language":"en","category":"sexual","match":"word"}),
+            json!({"id":"a","term":"x".repeat(65),"language":"en","category":"sexual","match":"word"}),
+            json!({"id":"a","term":"x1","language":"EN","category":"sexual","match":"word"}),
+            json!({"id":"a","term":"x1","language":"en","category":"violence","match":"word"}),
+            json!({"id":"a","term":"x1","language":"en","category":"sexual","match":"regex"}),
+            json!({"id":"a","term":"x1","language":"en","category":"sexual","match":"word","enabled":true}),
+        ] {
+            assert!(
+                ContextPolicy::from_value(&addition(invalid.clone())).is_err(),
+                "{invalid}"
+            );
+        }
+        let oversized: Vec<serde_json::Value> = (0..=MAX_TITLE_KEYWORD_ADDITIONS)
+            .map(|index| {
+                json!({"id":format!("a{index}"),"term":"词","language":"zh","category":"organ","match":"substring"})
+            })
+            .collect();
+        assert!(ContextPolicy::from_value(&json!({ "titleKeywordAdditions": oversized })).is_err());
     }
 }

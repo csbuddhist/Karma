@@ -29,7 +29,7 @@ fn synchronize_recognition_threshold(state: &mut serde_json::Value) {
 const EXPORT_SCHEMA: &str = "karma-policy-export";
 const EXPORT_VERSION: u32 = 1;
 const MAX_EXPORT_BYTES: usize = 1_048_576;
-const RUNTIME_STATE_KEYS: [&str; 12] = [
+const RUNTIME_STATE_KEYS: [&str; 13] = [
     "serviceConnected",
     "agentConnected",
     "monitors",
@@ -37,6 +37,7 @@ const RUNTIME_STATE_KEYS: [&str; 12] = [
     "audit",
     "network",
     "rememberedTitleTotal",
+    "misjudgedTitleTotal",
     "activeBans",
     "productVersion",
     "superPasswordSet",
@@ -115,6 +116,7 @@ mod tests {
             "evidence": [],
             "audit": [],
             "rememberedTitleTotal": 3,
+            "misjudgedTitleTotal": 1,
             "activeBans": [],
             "superPasswordSet": true,
             "productVersion": "0.2.6",
@@ -132,6 +134,7 @@ mod tests {
         assert!(policy.get("serviceConnected").is_none());
         assert!(policy.get("monitors").is_none());
         assert!(policy.get("rememberedTitleTotal").is_none());
+        assert!(policy.get("misjudgedTitleTotal").is_none());
         assert!(policy.get("superPasswordSet").is_none());
         assert!(policy.get("productVersion").is_none());
         assert!(policy.get("uninstall").is_none());
@@ -347,10 +350,12 @@ mod local_backend {
                 "immediateThreshold": 82,
                 "evidenceEnabled": false,
                 "evidenceRetentionDays": 7,
-                "rememberTitlesEnabled": true
+                "rememberTitlesEnabled": true,
+                "ambiguousTitleKeywordsEnabled": false
             },
             "repeatOffender": {"windowMinutes": 20, "strikeLimit": 5},
             "keywords": [],
+            "titleKeywordAdditions": [],
             "websites": [],
             "applications": [
                 {
@@ -374,6 +379,7 @@ mod local_backend {
             "evidence": [],
             "audit": [],
             "rememberedTitleTotal": 0,
+            "misjudgedTitleTotal": 0,
             "activeBans": []
         })
     }
@@ -664,6 +670,18 @@ mod local_backend {
         Err(ConsoleError::EvidenceUnavailable)
     }
 
+    /// Development builds never store evidence, so there is nothing to delete.
+    #[tauri::command]
+    fn delete_evidence(
+        runtime: State<'_, ConsoleRuntime>,
+        session_token: String,
+        evidence_ids: Vec<String>,
+    ) -> Result<(), ConsoleError> {
+        authorize(&runtime, &session_token)?;
+        let _ = evidence_ids;
+        Err(ConsoleError::EvidenceUnavailable)
+    }
+
     /// Development builds never enforce network schedules, so a verified
     /// restore only reports the unrestricted state.
     #[tauri::command]
@@ -692,10 +710,34 @@ mod local_backend {
         offset: u32,
         limit: u32,
         query: Option<String>,
+        misjudged: Option<bool>,
     ) -> Result<Value, ConsoleError> {
         authorize(&runtime, &session_token)?;
-        let _ = (offset, limit, query);
+        let _ = (offset, limit, query, misjudged);
         Ok(json!({"items": [], "total": 0}))
+    }
+
+    #[tauri::command]
+    fn mark_title_misjudged(
+        runtime: State<'_, ConsoleRuntime>,
+        session_token: String,
+        title_id: String,
+        super_password: Option<String>,
+    ) -> Result<(), ConsoleError> {
+        authorize(&runtime, &session_token)?;
+        let _ = (title_id, super_password.map(Zeroizing::new));
+        Ok(())
+    }
+
+    #[tauri::command]
+    fn restore_misjudged_title(
+        runtime: State<'_, ConsoleRuntime>,
+        session_token: String,
+        title_id: String,
+    ) -> Result<(), ConsoleError> {
+        authorize(&runtime, &session_token)?;
+        let _ = title_id;
+        Ok(())
     }
 
     #[tauri::command]
@@ -816,9 +858,12 @@ mod local_backend {
                 load_console,
                 save_console,
                 reveal_evidence,
+                delete_evidence,
                 restore_network,
                 list_remembered_titles,
                 forget_remembered_title,
+                mark_title_misjudged,
+                restore_misjudged_title,
                 allow_banned_application,
                 export_settings,
                 import_settings
@@ -964,8 +1009,8 @@ mod service_backend {
     use std::{collections::HashMap, fmt::Write as _, sync::Mutex};
 
     use karma_ipc::{
-        BootstrapStatus, ComponentState, RequestEnvelope, ServiceErrorCode, ServiceFailure,
-        ServiceRequest, ServiceResult,
+        BootstrapStatus, ComponentState, MAX_EVIDENCE_BATCH, RequestEnvelope, ServiceErrorCode,
+        ServiceFailure, ServiceRequest, ServiceResult,
     };
     use karma_windows_ipc::send_request;
     use rand::{RngCore, rngs::OsRng};
@@ -1035,10 +1080,12 @@ mod service_backend {
                 "immediateThreshold": 82,
                 "evidenceEnabled": false,
                 "evidenceRetentionDays": 7,
-                "rememberTitlesEnabled": true
+                "rememberTitlesEnabled": true,
+                "ambiguousTitleKeywordsEnabled": false
             },
             "repeatOffender": {"windowMinutes": 20, "strikeLimit": 5},
             "keywords": [],
+            "titleKeywordAdditions": [],
             "websites": [],
             "applications": [
                 {"id":"browser","name":"浏览器","executable":"受支持浏览器","category":"browser","action":"content_only","enabled":true},
@@ -1048,6 +1095,7 @@ mod service_backend {
             "evidence": [],
             "audit": [],
             "rememberedTitleTotal": 0,
+            "misjudgedTitleTotal": 0,
             "activeBans": []
         })
     }
@@ -1232,6 +1280,7 @@ mod service_backend {
             title_offset: 0,
             title_limit: 1,
             title_query: None,
+            misjudged: false,
         })? {
             ServiceResult::Enforcement(summary) => summary,
             _ => return Err(ConsoleError::InvalidResponse),
@@ -1281,6 +1330,10 @@ mod service_backend {
             Value::from(enforcement.remembered_title_total),
         );
         object.insert(
+            "misjudgedTitleTotal".into(),
+            Value::from(enforcement.misjudged_title_total),
+        );
+        object.insert(
             "activeBans".into(),
             Value::Array(
                 enforcement
@@ -1308,6 +1361,7 @@ mod service_backend {
                             "applicationName": item.application_name,
                             "reason": item.reason_code,
                             "risk": if item.risk_millis >= 950 { "critical" } else { "high" },
+                            "riskMillis": item.risk_millis,
                             "originalAvailable": item.original_available
                         })
                     })
@@ -1404,6 +1458,28 @@ mod service_backend {
         }
     }
 
+    /// Deletes evidence items in Service-sized batches. The Service skips items
+    /// that are already gone.
+    #[tauri::command]
+    fn delete_evidence(
+        session_token: String,
+        evidence_ids: Vec<String>,
+    ) -> Result<(), ConsoleError> {
+        if evidence_ids.is_empty() {
+            return Ok(());
+        }
+        for chunk in evidence_ids.chunks(MAX_EVIDENCE_BATCH) {
+            match request(ServiceRequest::DeleteEvidenceBatch {
+                session_token: session_token.clone(),
+                evidence_ids: chunk.to_vec(),
+            })? {
+                ServiceResult::Acknowledged => {}
+                _ => return Err(ConsoleError::InvalidResponse),
+            }
+        }
+        Ok(())
+    }
+
     fn network_status_json(status: &karma_ipc::NetworkStatus) -> Value {
         json!({
             "restricted": status.restricted,
@@ -1419,12 +1495,14 @@ mod service_backend {
         offset: u32,
         limit: u32,
         query: Option<String>,
+        misjudged: Option<bool>,
     ) -> Result<Value, ConsoleError> {
         let summary = match request(ServiceRequest::ListEnforcement {
             session_token,
             title_offset: offset,
             title_limit: limit,
             title_query: query.filter(|query| !query.trim().is_empty()),
+            misjudged: misjudged.unwrap_or(false),
         })? {
             ServiceResult::Enforcement(summary) => summary,
             _ => return Err(ConsoleError::InvalidResponse),
@@ -1435,7 +1513,12 @@ mod service_backend {
                 "executable": item.executable,
                 "title": item.title,
                 "browserHost": item.browser_host,
-                "rememberedAtMs": item.remembered_at_ms
+                "rememberedAtMs": item.remembered_at_ms,
+                "reason": item.reason.as_ref().map(|reason| json!({
+                    "reasonCode": reason.reason_code,
+                    "riskMillis": reason.risk_millis,
+                    "thresholdMillis": reason.threshold_millis
+                }))
             })).collect::<Vec<_>>(),
             "total": summary.remembered_title_total
         }))
@@ -1451,6 +1534,30 @@ mod service_backend {
             session_token,
             title_id,
             super_password,
+        })?)
+    }
+
+    #[tauri::command]
+    fn mark_title_misjudged(
+        session_token: String,
+        title_id: String,
+        super_password: Option<String>,
+    ) -> Result<(), ConsoleError> {
+        acknowledged(request(ServiceRequest::MarkTitleMisjudged {
+            session_token,
+            title_id,
+            super_password,
+        })?)
+    }
+
+    #[tauri::command]
+    fn restore_misjudged_title(
+        session_token: String,
+        title_id: String,
+    ) -> Result<(), ConsoleError> {
+        acknowledged(request(ServiceRequest::RestoreMisjudgedTitle {
+            session_token,
+            title_id,
         })?)
     }
 
@@ -1571,9 +1678,12 @@ mod service_backend {
                 load_console,
                 save_console,
                 reveal_evidence,
+                delete_evidence,
                 restore_network,
                 list_remembered_titles,
                 forget_remembered_title,
+                mark_title_misjudged,
+                restore_misjudged_title,
                 allow_banned_application,
                 export_settings,
                 import_settings
