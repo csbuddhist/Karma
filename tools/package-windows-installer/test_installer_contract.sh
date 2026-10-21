@@ -177,7 +177,7 @@ assert_contains "Karma\\\\update-inbox" "$update_script" \
 update_source="$repo_root/tools/package-windows-test/scripts/Update-Karma.ps1"
 assert_before "Get-Process -Name 'karma-ui'" '\$plain \| & \$control update' "$update_source" \
   'update script must close the tray-resident console before older updaters replace karma-ui.exe'
-assert_before 'while \(\(Test-KarmaServicesRunning\) -and''\$runningVersion = & \$control version' "$update_source" \
+assert_before 'while \(\(Test-KarmaServicesRunning\) -and' '\$runningVersion = & \$control version' "$update_source" \
   'update script must not run installed KarmaControl.exe while its image is being replaced'
 assert_contains 'Super password.*超级密码' "$uninstall_script" \
   'uninstaller must explain super-password or delayed administrator authorization'

@@ -22,7 +22,7 @@ pub const MAX_EXECUTABLE_CHARS: usize = 260;
 pub const MAX_EVIDENCE_BATCH: usize = 200;
 /// The product version this build reports and updates from. Kept equal to the
 /// console's `tauri.conf.json` version by the installer contract test.
-pub const PRODUCT_VERSION: &str = "0.3.0";
+pub const PRODUCT_VERSION: &str = "0.3.1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

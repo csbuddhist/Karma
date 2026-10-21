@@ -41,6 +41,25 @@ Get-ChildItem -LiteralPath $BundleDirectory -Force | Copy-Item -Destination $inb
 # copies in its SYSTEM-only staging area before touching installed files.
 # 密码不进入命令行参数；服务先在仅 SYSTEM 可访问的暂存区验签和复验哈希。
 $secure = Read-Host 'Karma administrator password / Karma 管理员密码' -AsSecureString
+
+# The console hides to the tray instead of exiting, and its running image
+# blocks replacement of karma-ui.exe. Installed 0.2.4-0.3.0 updaters only ask
+# it to close gracefully, so close it here first (it holds no data).
+# 控制台关闭时只会隐藏到托盘，其运行中的映像会阻止替换 karma-ui.exe；
+# 0.2.4-0.3.0 的服务端升级器只会请求正常关闭，因此这里先结束控制台（不持有数据）。
+$installRoot = [IO.Path]::GetFullPath($InstallDirectory).TrimEnd('\') + '\'
+foreach ($process in @(Get-Process -Name 'karma-ui' -ErrorAction SilentlyContinue)) {
+    try {
+        if ([IO.Path]::GetFullPath($process.Path).StartsWith($installRoot, [StringComparison]::OrdinalIgnoreCase)) {
+            Stop-Process -Id $process.Id -Force -ErrorAction Stop
+            $process.WaitForExit(10000) | Out-Null
+        }
+    } catch {
+    } finally {
+        $process.Dispose()
+    }
+}
+
 $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
 $previousOutputEncoding = $OutputEncoding
 try {
@@ -54,21 +73,42 @@ try {
     [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
 }
 
-$deadline = (Get-Date).AddSeconds(120)
+# Do not execute installed files while the service replaces them: a running
+# KarmaControl.exe would lock its own image and make the update roll back.
+# Watch SCM state only, then probe the version once both services are stable.
+# 替换期间不能运行已安装的程序：运行中的 KarmaControl.exe 会锁定自身文件导致升级回滚。
+# 先只观察服务状态，待两个服务稳定运行后再读取版本。
+function Test-KarmaServicesRunning {
+    foreach ($name in @('KarmaService', 'KarmaGuardian')) {
+        $service = Get-Service -Name $name -ErrorAction SilentlyContinue
+        if ($null -eq $service -or $service.Status -ne 'Running') { return $false }
+    }
+    return $true
+}
+
+$stopDeadline = (Get-Date).AddSeconds(180)
+while ((Test-KarmaServicesRunning) -and (Get-Date) -lt $stopDeadline) {
+    Start-Sleep -Seconds 1
+}
+$deadline = (Get-Date).AddSeconds(240)
 do {
-    Start-Sleep -Seconds 2
+    Start-Sleep -Seconds 3
+    if (-not (Test-KarmaServicesRunning)) { continue }
+    Start-Sleep -Seconds 5
+    if (-not (Test-KarmaServicesRunning)) { continue }
+    $runningVersion = $null
     try {
         $runningVersion = & $control version
-        $service = Get-Service -Name 'KarmaService'
-        $guardian = Get-Service -Name 'KarmaGuardian'
-        if ($LASTEXITCODE -eq 0 -and $runningVersion -eq $ExpectedVersion -and
-            $service.Status -eq 'Running' -and $guardian.Status -eq 'Running') {
-            Write-Host "Updated / 已升级：$ExpectedVersion" -ForegroundColor Green
-            exit 0
-        }
+        if ($LASTEXITCODE -ne 0) { $runningVersion = $null }
     } catch {
-        # Replacement/restart may briefly make the executable unavailable.
-        # 文件替换、重启期间可能短暂无法读取版本，继续等待。
+        # Restart may briefly make the executable unavailable. 重启期间可能短暂不可用。
+    }
+    if ($runningVersion -eq $ExpectedVersion) {
+        Write-Host "Updated / 已升级：$ExpectedVersion" -ForegroundColor Green
+        exit 0
+    }
+    if ($runningVersion -eq $installedVersion) {
+        throw 'Update was not applied or was rolled back; protection remains on the previous version. See the console update status / 升级未应用或已回滚，保护仍运行旧版本，请查看控制台升级状态。'
     }
 } while ((Get-Date) -lt $deadline)
 throw 'Update not confirmed; inspect the console update status. Protection remains registered / 升级尚未确认，请查看控制台状态，保护服务仍保持注册。'
