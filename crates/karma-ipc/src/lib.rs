@@ -18,7 +18,7 @@ pub const MAX_TITLE_PAGE: u32 = 100;
 pub const MAX_TITLE_QUERY_CHARS: usize = 128;
 /// The product version this build reports and updates from. Kept equal to the
 /// console's `tauri.conf.json` version by the installer contract test.
-pub const PRODUCT_VERSION: &str = "0.2.4";
+pub const PRODUCT_VERSION: &str = "0.2.5";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

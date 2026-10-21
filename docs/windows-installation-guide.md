@@ -84,10 +84,10 @@ Karma requires the **Microsoft Visual C++ Redistributable 2015–2022 x64**, ver
 
 ### 3.1 单文件安装器（推荐）
 
-新用户从 [v0.2.4 Windows Test Build](https://github.com/csbuddhist/Karma/releases/tag/v0.2.4) 下载：
+新用户从 [v0.2.5 Windows Test Build](https://github.com/csbuddhist/Karma/releases/tag/v0.2.5) 下载：
 
 ```text
-Karma-windows-x64-test-v0.2.4-setup.exe
+Karma-windows-x64-test-v0.2.5-setup.exe
 ```
 
 右键安装器并选择“以管理员身份运行”。安装器会：
@@ -555,13 +555,13 @@ brew install nsis osslsigncode
 # 私钥保存在仓库外，并另做离线备份；丢失后无法继续原地升级。
 bash tools/package-windows-test/package_bundle.sh
 bash tools/package-windows-installer/test_installer_contract.sh
-bash tools/package-windows-installer/build_installer.sh 0.2.4
+bash tools/package-windows-installer/build_installer.sh 0.2.5
 ```
 
 生成文件：
 
 ```text
-target/release-artifacts/Karma-windows-x64-test-v0.2.4-setup.exe
+target/release-artifacts/Karma-windows-x64-test-v0.2.5-setup.exe
 ```
 
 构建脚本会通过 `fetch_vc_redist.sh` 下载微软官方 `vc_redist.x64.exe` 到 `target/vc-redist/`（不提交到仓库），用固定指纹的微软根证书校验其 Authenticode 签名并要求版本不低于 14.44，然后嵌入安装器。The build downloads Microsoft's `vc_redist.x64.exe` into `target/vc-redist/` (never committed), verifies its Authenticode signature against pinned Microsoft root fingerprints, requires version 14.44 or later, and embeds it in the installer.
