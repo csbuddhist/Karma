@@ -175,8 +175,12 @@ assert_contains '\$plain \| & \$control update' "$update_script" \
 assert_contains "Karma\\\\update-inbox" "$update_script" \
   'update script must copy to the fixed service inbox'
 update_source="$repo_root/tools/package-windows-test/scripts/Update-Karma.ps1"
-assert_before "Get-Process -Name 'karma-ui'" '\$plain \| & \$control update' "$update_source" \
+assert_before 'Stop-Process -Id \$console\.ProcessId' '\$plain \| & \$control update' "$update_source" \
   'update script must close the tray-resident console before older updaters replace karma-ui.exe'
+assert_before 'console is still running' '\$plain \| & \$control update' "$update_source" \
+  'update script must refuse to request an update while the console still runs'
+assert_contains 'Win32_Process' "$update_source" \
+  'update script must find the console via CIM; 32-bit setup PowerShell cannot read 64-bit Process.Path'
 assert_before 'while \(\(Test-KarmaServicesRunning\) -and' '\$runningVersion = & \$control version' "$update_source" \
   'update script must not run installed KarmaControl.exe while its image is being replaced'
 assert_contains 'Super password.*超级密码' "$uninstall_script" \

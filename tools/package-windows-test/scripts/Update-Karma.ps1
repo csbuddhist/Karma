@@ -47,17 +47,29 @@ $secure = Read-Host 'Karma administrator password / Karma 管理员密码' -AsSe
 # it to close gracefully, so close it here first (it holds no data).
 # 控制台关闭时只会隐藏到托盘，其运行中的映像会阻止替换 karma-ui.exe；
 # 0.2.4-0.3.0 的服务端升级器只会请求正常关闭，因此这里先结束控制台（不持有数据）。
+# Setup runs this script in 32-bit PowerShell, where Get-Process cannot read a
+# 64-bit process path; CIM reports ExecutablePath for either bitness.
+# 安装器以 32 位 PowerShell 运行本脚本，Get-Process 读不到 64 位进程路径；CIM 可以。
 $installRoot = [IO.Path]::GetFullPath($InstallDirectory).TrimEnd('\') + '\'
-foreach ($process in @(Get-Process -Name 'karma-ui' -ErrorAction SilentlyContinue)) {
-    try {
-        if ([IO.Path]::GetFullPath($process.Path).StartsWith($installRoot, [StringComparison]::OrdinalIgnoreCase)) {
-            Stop-Process -Id $process.Id -Force -ErrorAction Stop
-            $process.WaitForExit(10000) | Out-Null
-        }
-    } catch {
-    } finally {
-        $process.Dispose()
-    }
+function Get-InstalledConsole {
+    @(Get-CimInstance -ClassName Win32_Process -Filter "Name = 'karma-ui.exe'" -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.ExecutablePath -and
+            [IO.Path]::GetFullPath($_.ExecutablePath).StartsWith($installRoot, [StringComparison]::OrdinalIgnoreCase)
+        })
+}
+foreach ($console in Get-InstalledConsole) {
+    Stop-Process -Id $console.ProcessId -Force -ErrorAction SilentlyContinue
+}
+$consoleDeadline = (Get-Date).AddSeconds(10)
+while ((Get-InstalledConsole).Count -gt 0 -and (Get-Date) -lt $consoleDeadline) {
+    Start-Sleep -Milliseconds 500
+}
+# Never request the update while the console still runs: older updaters would
+# then fail to roll back and keep the service in recovery.
+# 控制台仍在运行时绝不提交升级：旧版升级器会回滚失败并让服务反复进入恢复。
+if ((Get-InstalledConsole).Count -gt 0) {
+    throw 'The Karma console is still running; close it and retry. Nothing was changed / Karma 控制台仍在运行，请关闭后重试，未做任何更改。'
 }
 
 $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
