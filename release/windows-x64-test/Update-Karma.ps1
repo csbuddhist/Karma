@@ -47,18 +47,37 @@ $secure = Read-Host 'Karma administrator password / Karma 管理员密码' -AsSe
 # it to close gracefully, so close it here first (it holds no data).
 # 控制台关闭时只会隐藏到托盘，其运行中的映像会阻止替换 karma-ui.exe；
 # 0.2.4-0.3.0 的服务端升级器只会请求正常关闭，因此这里先结束控制台（不持有数据）。
+# Setup runs this script in 32-bit PowerShell, where Get-Process cannot read a
+# 64-bit process path; CIM reports ExecutablePath for either bitness.
+# 安装器以 32 位 PowerShell 运行本脚本，Get-Process 读不到 64 位进程路径；CIM 可以。
 $installRoot = [IO.Path]::GetFullPath($InstallDirectory).TrimEnd('\') + '\'
-foreach ($process in @(Get-Process -Name 'karma-ui' -ErrorAction SilentlyContinue)) {
-    try {
-        if ([IO.Path]::GetFullPath($process.Path).StartsWith($installRoot, [StringComparison]::OrdinalIgnoreCase)) {
-            Stop-Process -Id $process.Id -Force -ErrorAction Stop
-            $process.WaitForExit(10000) | Out-Null
-        }
-    } catch {
-    } finally {
-        $process.Dispose()
-    }
+function Get-InstalledConsole {
+    @(Get-CimInstance -ClassName Win32_Process -Filter "Name = 'karma-ui.exe'" -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.ExecutablePath -and
+            [IO.Path]::GetFullPath($_.ExecutablePath).StartsWith($installRoot, [StringComparison]::OrdinalIgnoreCase)
+        })
 }
+foreach ($console in Get-InstalledConsole) {
+    Stop-Process -Id $console.ProcessId -Force -ErrorAction SilentlyContinue
+}
+$consoleDeadline = (Get-Date).AddSeconds(10)
+while ((Get-InstalledConsole).Count -gt 0 -and (Get-Date) -lt $consoleDeadline) {
+    Start-Sleep -Milliseconds 500
+}
+# Never request the update while the console still runs: older updaters would
+# then fail to roll back and keep the service in recovery.
+# 控制台仍在运行时绝不提交升级：旧版升级器会回滚失败并让服务反复进入恢复。
+if ((Get-InstalledConsole).Count -gt 0) {
+    throw 'The Karma console is still running; close it and retry. Nothing was changed / Karma 控制台仍在运行，请关闭后重试，未做任何更改。'
+}
+
+function Get-KarmaServiceProcessId {
+    $service = Get-CimInstance -ClassName Win32_Service -Filter "Name = 'KarmaService'" -ErrorAction SilentlyContinue
+    if ($null -eq $service) { return 0 }
+    return [int] $service.ProcessId
+}
+$originalServiceProcessId = Get-KarmaServiceProcessId
 
 $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
 $previousOutputEncoding = $OutputEncoding
@@ -86,8 +105,13 @@ function Test-KarmaServicesRunning {
     return $true
 }
 
+# The service restarts within seconds, so a stop between polls is easy to
+# miss; a new KarmaService process id also proves the handoff happened.
+# 服务几秒内即重启，轮询容易错过停止状态；服务进程号变化同样说明已开始升级。
 $stopDeadline = (Get-Date).AddSeconds(180)
-while ((Test-KarmaServicesRunning) -and (Get-Date) -lt $stopDeadline) {
+while ((Test-KarmaServicesRunning) -and
+    (Get-KarmaServiceProcessId) -eq $originalServiceProcessId -and
+    (Get-Date) -lt $stopDeadline) {
     Start-Sleep -Seconds 1
 }
 $deadline = (Get-Date).AddSeconds(240)
