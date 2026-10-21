@@ -72,6 +72,13 @@ if ((Get-InstalledConsole).Count -gt 0) {
     throw 'The Karma console is still running; close it and retry. Nothing was changed / Karma 控制台仍在运行，请关闭后重试，未做任何更改。'
 }
 
+function Get-KarmaServiceProcessId {
+    $service = Get-CimInstance -ClassName Win32_Service -Filter "Name = 'KarmaService'" -ErrorAction SilentlyContinue
+    if ($null -eq $service) { return 0 }
+    return [int] $service.ProcessId
+}
+$originalServiceProcessId = Get-KarmaServiceProcessId
+
 $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
 $previousOutputEncoding = $OutputEncoding
 try {
@@ -98,8 +105,13 @@ function Test-KarmaServicesRunning {
     return $true
 }
 
+# The service restarts within seconds, so a stop between polls is easy to
+# miss; a new KarmaService process id also proves the handoff happened.
+# 服务几秒内即重启，轮询容易错过停止状态；服务进程号变化同样说明已开始升级。
 $stopDeadline = (Get-Date).AddSeconds(180)
-while ((Test-KarmaServicesRunning) -and (Get-Date) -lt $stopDeadline) {
+while ((Test-KarmaServicesRunning) -and
+    (Get-KarmaServiceProcessId) -eq $originalServiceProcessId -and
+    (Get-Date) -lt $stopDeadline) {
     Start-Sleep -Seconds 1
 }
 $deadline = (Get-Date).AddSeconds(240)
