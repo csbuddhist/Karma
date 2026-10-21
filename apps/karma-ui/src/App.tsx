@@ -1201,6 +1201,11 @@ function SuperAuthorizationProvider({ children }: { children: ReactNode }) {
   return <SuperAuthorizationContext.Provider value={authorize}>{children}{pending && <Modal title={t("super.authorizeTitle")} onClose={cancel}><p className="modal-description">{t("super.authorizeDescription")}</p><form onSubmit={submit}><label className="field"><span>{t("super.password")}</span><input type="password" autoFocus autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} /></label>{error && <div className="form-error backup-feedback"><CircleAlert size={16} />{error}</div>}<button className="primary-button modal-submit" type="submit" disabled={busy || !password}>{t(busy ? "auth.verifying" : "super.authorize")}</button><button className="secondary-button modal-submit" type="button" disabled={busy} onClick={cancel}>{t("common.cancel")}</button></form></Modal>}</SuperAuthorizationContext.Provider>;
 }
 
+/** Restores the policy fields the Service last accepted, keeping runtime status current. */
+function withSavedPolicy(current: ConsoleState, saved: ConsoleState): ConsoleState {
+  return { ...current, protectionEnabled: saved.protectionEnabled, launchAtStartup: saved.launchAtStartup, updates: saved.updates, recognition: saved.recognition, repeatOffender: saved.repeatOffender, keywords: saved.keywords, websites: saved.websites, applications: saved.applications, schedules: saved.schedules };
+}
+
 function AppContent() {
   const { locale, t } = useI18n();
   const [authMode, setAuthMode] = useState<AuthMode>("locked");
@@ -1215,6 +1220,8 @@ function AppContent() {
   const [startupError, setStartupError] = useState("");
   const [appVersion, setAppVersion] = useState("");
   const editRevision = useRef(0);
+  // The policy the Service last accepted; a refused super authorization reverts the draft to it.
+  const savedState = useRef<ConsoleState>(defaultConsoleState);
   const authorize = useSuperAuthorization();
 
   async function refreshAuthStatus() { setLoading(true); setStartupError(""); try { setAuthMode(await authStatus()); } catch (reason) { setStartupError(reason instanceof Error ? reason.message : String(reason)); } finally { setLoading(false); } }
@@ -1249,7 +1256,7 @@ function AppContent() {
     const interval = window.setInterval(refresh, 5000);
     return () => { current = false; window.clearInterval(interval); };
   }, [authMode, sessionToken]);
-  async function authenticated(token: string) { setSessionToken(token); setLoading(true); try { const next = await loadConsole(token); setState(next); setAuthMode("unlocked"); void configureLaunchAtStartup(next.launchAtStartup).catch((reason) => console.error("Failed to synchronize autostart", reason)); } finally { setLoading(false); } }
+  async function authenticated(token: string) { setSessionToken(token); setLoading(true); try { const next = await loadConsole(token); savedState.current = next; setState(next); setAuthMode("unlocked"); void configureLaunchAtStartup(next.launchAtStartup).catch((reason) => console.error("Failed to synchronize autostart", reason)); } finally { setLoading(false); } }
   function update(next: ConsoleState) { editRevision.current += 1; setState(next); setDirty(true); setSaveMessage(""); setSaveError(""); }
   // Network status is runtime state reported by the Service, not an unsaved policy edit.
   function updateNetwork(network: NetworkStatus) { setState((current) => ({ ...current, network })); }
@@ -1264,13 +1271,21 @@ function AppContent() {
     try {
       const next = { ...state, recognition: { ...state.recognition, immediateThreshold: state.recognition.sensitivity } };
       await authorize((superPassword) => saveConsole(sessionToken, next, superPassword));
+      savedState.current = next;
       await configureLaunchAtStartup(next.launchAtStartup);
       if (editRevision.current === revision) setDirty(false);
       setSaveMessage(t("common.settingsSaved"));
       window.setTimeout(() => setSaveMessage(""), 2200);
     } catch (reason) {
       if (isSessionExpiredError(reason)) { await signOut(); return; }
-      if (!isAuthorizationCancelled(reason)) setSaveError(localizeError(reason, t));
+      if (isAuthorizationCancelled(reason)) {
+        // The Service refused this draft without the super password, so leaving it
+        // on screen would show protection as changed when it was not.
+        editRevision.current += 1;
+        setState((current) => withSavedPolicy(current, savedState.current));
+        setDirty(false);
+        setSaveError(t("super.reverted"));
+      } else setSaveError(localizeError(reason, t));
     } finally {
       setSaving(false);
     }
@@ -1281,6 +1296,7 @@ function AppContent() {
     setSessionToken("");
     editRevision.current += 1;
     setDirty(false);
+    savedState.current = defaultConsoleState;
     setState(defaultConsoleState);
     setAuthMode("locked");
     setPage("overview");
