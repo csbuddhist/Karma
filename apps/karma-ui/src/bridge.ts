@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { disable, enable } from "@tauri-apps/plugin-autostart";
-import type { AuthorizationStatus, ConsoleState, NetworkStatus, NetworkTarget, RememberedTitle, RememberedTitlePage, ScheduleBlock, ScheduleRule } from "./types";
+import type { ApplicationRule, AuthorizationStatus, ConsoleState, NetworkStatus, NetworkTarget, RememberedTitle, RememberedTitlePage, ScheduleBlock, ScheduleRule } from "./types";
 
 const browserFallbackKey = "karma-ui-browser-state";
 const browserPasswordKey = "karma-ui-browser-password";
@@ -275,6 +275,12 @@ export async function listRememberedTitles(sessionToken: string, offset: number,
 export async function forgetRememberedTitle(sessionToken: string, titleId: string, superPassword?: string): Promise<void> {
   if (isTauri()) return invoke("forget_remembered_title", { sessionToken, titleId, superPassword });
   localStorage.setItem(browserTitlesKey, JSON.stringify(browserTitles().filter((item) => item.id !== titleId)));
+}
+
+/** Always allows a banned executable and lifts its ban; returns the saved application rules. */
+export async function allowBannedApplication(sessionToken: string, executable: string, superPassword?: string): Promise<ApplicationRule[]> {
+  if (isTauri()) return invoke("allow_banned_application", { sessionToken, executable, superPassword });
+  throw new Error("KarmaService 尚未运行或命名管道不可用");
 }
 
 export async function revealEvidence(sessionToken: string, evidenceId: string, password: string): Promise<string> {

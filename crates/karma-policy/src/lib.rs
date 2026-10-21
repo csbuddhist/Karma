@@ -15,7 +15,8 @@ pub use application::{
     ApplicationFacts, ApplicationMatcher, ApplicationRule, RuleEffect, resolve_application,
 };
 pub use application_policy::{
-    ApplicationEffect, ApplicationPolicy, ApplicationPolicyError, context_enforcement,
+    ApplicationEffect, ApplicationPolicy, ApplicationPolicyError, allow_application,
+    context_enforcement,
 };
 pub use context::{
     ContextPolicy, ContextPolicyError, ContextVerdict, WebsiteRule, WebsiteRuleAction,

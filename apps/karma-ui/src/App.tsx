@@ -59,6 +59,7 @@ import {
   enroll,
   exportSettings,
   forgetRememberedTitle,
+  allowBannedApplication,
   getAppVersion,
   importSettings,
   isTauriConsole,
@@ -615,10 +616,24 @@ function NumberField({ label, value, min, max, onCommit }: { label: string; valu
   return <label className="field"><span>{label}</span><input type="number" inputMode="numeric" min={min} max={max} step={1} value={text} onChange={(event) => { const next = event.target.value; setText(next); if (accepts(next)) onCommit(Number(next)); }} onBlur={() => setText(String(value))} />{!accepts(text) && <small className="field-error">{t("applications.repeatRange", { min, max })}</small>}</label>;
 }
 
-function RepeatOffenderCard({ state, update }: { state: ConsoleState; update: (state: ConsoleState) => void }) {
+function RepeatOffenderCard({ state, update, sessionToken, onBannedAllowed }: { state: ConsoleState; update: (state: ConsoleState) => void; sessionToken: string; onBannedAllowed: BannedAllowedHandler }) {
   const { t } = useI18n();
   const dateTime = useShortDateTime();
+  const authorize = useSuperAuthorization();
+  const [busyExecutable, setBusyExecutable] = useState<string>();
+  const [error, setError] = useState("");
   const settings = state.repeatOffender;
+  async function allow(executable: string) {
+    setBusyExecutable(executable);
+    setError("");
+    try {
+      await authorize(async (superPassword) => onBannedAllowed(executable, await allowBannedApplication(sessionToken, executable, superPassword)));
+    } catch (reason) {
+      if (!isAuthorizationCancelled(reason)) setError(localizeError(reason, t));
+    } finally {
+      setBusyExecutable(undefined);
+    }
+  }
   const patch = (next: Partial<ConsoleState["repeatOffender"]>) => update({ ...state, repeatOffender: { ...settings, ...next } });
   return <Card>
     <div className="setting-row"><div className="setting-icon amber"><Ban /></div><div><strong>{t("applications.repeatTitle")}</strong><p>{t("applications.repeatDescription", { minutes: settings.windowMinutes, count: settings.strikeLimit })}</p></div></div>
@@ -628,17 +643,20 @@ function RepeatOffenderCard({ state, update }: { state: ConsoleState; update: (s
     </div>
     <div className="learned-list">
       <span className="learned-heading">{t("applications.activeBans")}</span>
-      {state.activeBans.length ? state.activeBans.map((ban) => <div className="app-rule" key={ban.executable}><div className="app-avatar"><AppWindow /></div><div className="app-main"><strong>{executableFileName(ban.executable)}</strong><small>{ban.executable}</small></div><StatusPill tone="danger">{t("applications.bannedUntil", { time: dateTime.format(ban.bannedUntilMs) })}</StatusPill></div>) : <p className="learned-empty">{t("applications.noActiveBans")}</p>}
+      {state.activeBans.length ? state.activeBans.map((ban) => <div className="app-rule" key={ban.executable}><div className="app-avatar"><AppWindow /></div><div className="app-main"><strong>{executableFileName(ban.executable)}</strong><small>{ban.executable}</small></div><StatusPill tone="danger">{t("applications.bannedUntil", { time: dateTime.format(ban.bannedUntilMs) })}</StatusPill><button className="secondary-button" disabled={busyExecutable !== undefined || !state.serviceConnected} title={t("applications.allowBannedHint")} onClick={() => void allow(ban.executable)}><Check size={16} />{t(busyExecutable === ban.executable ? "common.saving" : "applications.allowBanned")}</button></div>) : <p className="learned-empty">{t("applications.noActiveBans")}</p>}
+      {error && <div className="form-error"><CircleAlert size={16} />{error}</div>}
     </div>
   </Card>;
 }
 
-function Applications({ state, update }: { state: ConsoleState; update: (state: ConsoleState) => void }) {
+type BannedAllowedHandler = (executable: string, applications: ApplicationRule[]) => void;
+
+function Applications({ state, update, sessionToken, onBannedAllowed }: { state: ConsoleState; update: (state: ConsoleState) => void; sessionToken: string; onBannedAllowed: BannedAllowedHandler }) {
   const { t } = useI18n();
   const [showAdd, setShowAdd] = useState(false);
   const [draft, setDraft] = useState({ name: "", executable: "", category: "custom" as ApplicationRule["category"] });
   function add() { if (!draft.name.trim() || !draft.executable.trim()) return; update({ ...state, applications: [...state.applications, { id: crypto.randomUUID(), ...draft, action: "content_only", enabled: true }] }); setShowAdd(false); setDraft({ name: "", executable: "", category: "custom" }); }
-  return <div className="page-stack"><div className="privacy-banner"><AppWindow size={18} /><span><strong>{t("applications.bannerTitle")}</strong> {t("applications.bannerDescription")}</span></div><RepeatOffenderCard state={state} update={update} /><div className="page-actions"><button className="primary-button" onClick={() => setShowAdd(true)}><Plus size={17} />{t("applications.add")}</button></div><Card>{state.applications.map((rule) => { const name = localizedApplicationName(rule, t); return <div className="app-rule" key={rule.id}><div className="app-avatar"><AppWindow /></div><div className="app-main"><strong>{name}</strong><small>{localizedExecutable(rule, t)}</small></div><select value={rule.action} onChange={(event) => update({ ...state, applications: state.applications.map((item) => item.id === rule.id ? { ...item, action: event.target.value as ApplicationRule["action"] } : item) })}><option value="content_only">{t("applications.contentOnly")}</option><option value="block">{t("applications.block")}</option><option value="allow">{t("applications.allow")}</option></select><Toggle checked={rule.enabled} onChange={(enabled) => update({ ...state, applications: state.applications.map((item) => item.id === rule.id ? { ...item, enabled } : item) })} label={t("applications.enable", { name })} /></div>; })}</Card>{showAdd && <Modal title={t("applications.modalTitle")} onClose={() => setShowAdd(false)}><label className="field"><span>{t("applications.displayName")}</span><input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder={t("applications.namePlaceholder")} /></label><label className="field"><span>{t("applications.executable")}</span><input value={draft.executable} onChange={(event) => setDraft({ ...draft, executable: event.target.value })} placeholder={t("applications.executablePlaceholder")} /></label><label className="field"><span>{t("applications.category")}</span><select value={draft.category} onChange={(event) => setDraft({ ...draft, category: event.target.value as ApplicationRule["category"] })}><option value="browser">{t("applications.browser")}</option><option value="player">{t("applications.player")}</option><option value="game">{t("applications.game")}</option><option value="custom">{t("applications.custom")}</option></select></label><button className="primary-button modal-submit" onClick={add}>{t("applications.save")}</button></Modal>}</div>;
+  return <div className="page-stack"><div className="privacy-banner"><AppWindow size={18} /><span><strong>{t("applications.bannerTitle")}</strong> {t("applications.bannerDescription")}</span></div><RepeatOffenderCard state={state} update={update} sessionToken={sessionToken} onBannedAllowed={onBannedAllowed} /><div className="page-actions"><button className="primary-button" onClick={() => setShowAdd(true)}><Plus size={17} />{t("applications.add")}</button></div><Card>{state.applications.map((rule) => { const name = localizedApplicationName(rule, t); return <div className="app-rule" key={rule.id}><div className="app-avatar"><AppWindow /></div><div className="app-main"><strong>{name}</strong><small>{localizedExecutable(rule, t)}</small></div><select value={rule.action} onChange={(event) => update({ ...state, applications: state.applications.map((item) => item.id === rule.id ? { ...item, action: event.target.value as ApplicationRule["action"] } : item) })}><option value="content_only">{t("applications.contentOnly")}</option><option value="block">{t("applications.block")}</option><option value="allow">{t("applications.allow")}</option></select><Toggle checked={rule.enabled} onChange={(enabled) => update({ ...state, applications: state.applications.map((item) => item.id === rule.id ? { ...item, enabled } : item) })} label={t("applications.enable", { name })} /></div>; })}</Card>{showAdd && <Modal title={t("applications.modalTitle")} onClose={() => setShowAdd(false)}><label className="field"><span>{t("applications.displayName")}</span><input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder={t("applications.namePlaceholder")} /></label><label className="field"><span>{t("applications.executable")}</span><input value={draft.executable} onChange={(event) => setDraft({ ...draft, executable: event.target.value })} placeholder={t("applications.executablePlaceholder")} /></label><label className="field"><span>{t("applications.category")}</span><select value={draft.category} onChange={(event) => setDraft({ ...draft, category: event.target.value as ApplicationRule["category"] })}><option value="browser">{t("applications.browser")}</option><option value="player">{t("applications.player")}</option><option value="game">{t("applications.game")}</option><option value="custom">{t("applications.custom")}</option></select></label><button className="primary-button modal-submit" onClick={add}>{t("applications.save")}</button></Modal>}</div>;
 }
 
 const dayKeys: MessageKey[] = ["schedule.dayMon", "schedule.dayTue", "schedule.dayWed", "schedule.dayThu", "schedule.dayFri", "schedule.daySat", "schedule.daySun"];
@@ -1201,6 +1219,14 @@ function SuperAuthorizationProvider({ children }: { children: ReactNode }) {
   return <SuperAuthorizationContext.Provider value={authorize}>{children}{pending && <Modal title={t("super.authorizeTitle")} onClose={cancel}><p className="modal-description">{t("super.authorizeDescription")}</p><form onSubmit={submit}><label className="field"><span>{t("super.password")}</span><input type="password" autoFocus autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} /></label>{error && <div className="form-error backup-feedback"><CircleAlert size={16} />{error}</div>}<button className="primary-button modal-submit" type="submit" disabled={busy || !password}>{t(busy ? "auth.verifying" : "super.authorize")}</button><button className="secondary-button modal-submit" type="button" disabled={busy} onClick={cancel}>{t("common.cancel")}</button></form></Modal>}</SuperAuthorizationContext.Provider>;
 }
 
+/** Applies the rules the Service changed between `before` and `after` to an unsaved draft. */
+function mergeSavedRules(draft: ApplicationRule[], before: ApplicationRule[], after: ApplicationRule[]): ApplicationRule[] {
+  const previous = new Map(before.map((rule) => [rule.id, JSON.stringify(rule)]));
+  const changed = after.filter((rule) => previous.get(rule.id) !== JSON.stringify(rule));
+  const draftIds = new Set(draft.map((rule) => rule.id));
+  return [...draft.map((rule) => changed.find((item) => item.id === rule.id) ?? rule), ...changed.filter((rule) => !draftIds.has(rule.id))];
+}
+
 /** Restores the policy fields the Service last accepted, keeping runtime status current. */
 function withSavedPolicy(current: ConsoleState, saved: ConsoleState): ConsoleState {
   return { ...current, protectionEnabled: saved.protectionEnabled, launchAtStartup: saved.launchAtStartup, updates: saved.updates, recognition: saved.recognition, repeatOffender: saved.repeatOffender, keywords: saved.keywords, websites: saved.websites, applications: saved.applications, schedules: saved.schedules };
@@ -1258,6 +1284,12 @@ function AppContent() {
   }, [authMode, sessionToken]);
   async function authenticated(token: string) { setSessionToken(token); setLoading(true); try { const next = await loadConsole(token); savedState.current = next; setState(next); setAuthMode("unlocked"); void configureLaunchAtStartup(next.launchAtStartup).catch((reason) => console.error("Failed to synchronize autostart", reason)); } finally { setLoading(false); } }
   function update(next: ConsoleState) { editRevision.current += 1; setState(next); setDirty(true); setSaveMessage(""); setSaveError(""); }
+  // The Service saved these rules directly; keep the administrator's other unsaved edits.
+  function bannedAllowed(executable: string, applications: ApplicationRule[]) {
+    const before = savedState.current.applications;
+    savedState.current = { ...savedState.current, applications };
+    setState((current) => ({ ...current, applications: mergeSavedRules(current.applications, before, applications), activeBans: current.activeBans.filter((ban) => ban.executable !== executable) }));
+  }
   // Network status is runtime state reported by the Service, not an unsaved policy edit.
   function updateNetwork(network: NetworkStatus) { setState((current) => ({ ...current, network })); }
   async function refreshAuthorization() {
@@ -1310,7 +1342,7 @@ function AppContent() {
     if (page === "recognition") return <Recognition state={state} update={update} sessionToken={sessionToken} />;
     if (page === "keywords") return <Keywords state={state} update={update} />;
     if (page === "websites") return <Websites state={state} update={update} />;
-    if (page === "applications") return <Applications state={state} update={update} />;
+    if (page === "applications") return <Applications state={state} update={update} sessionToken={sessionToken} onBannedAllowed={bannedAllowed} />;
     if (page === "schedule") return <Schedule state={state} update={update} sessionToken={sessionToken} onNetworkChange={updateNetwork} />;
     if (page === "evidence") return <Evidence state={state} sessionToken={sessionToken} />;
     if (page === "audit") return <Audit state={state} />;

@@ -16,6 +16,8 @@ pub const MAX_BROWSER_HOST_CHARS: usize = 253;
 /// Largest page of remembered titles one console request may read.
 pub const MAX_TITLE_PAGE: u32 = 100;
 pub const MAX_TITLE_QUERY_CHARS: usize = 128;
+/// Longest executable path an agent may report, and so the longest ban key.
+pub const MAX_EXECUTABLE_CHARS: usize = 260;
 /// The product version this build reports and updates from. Kept equal to the
 /// console's `tauri.conf.json` version by the installer contract test.
 pub const PRODUCT_VERSION: &str = "0.2.5";
@@ -128,6 +130,16 @@ pub enum ServiceRequest {
         #[serde(default)]
         super_password: Option<String>,
     },
+    /// Always allow one currently banned executable and lift its ban, in one
+    /// step against `expected_revision`. Requires the super password once one
+    /// is configured.
+    AllowBannedApplication {
+        session_token: String,
+        expected_revision: u64,
+        executable: String,
+        #[serde(default)]
+        super_password: Option<String>,
+    },
     /// Lift the active network schedule until its current block ends. The
     /// password is verified again even with a valid session: the super
     /// password once one is configured, otherwise the administrator password.
@@ -211,6 +223,7 @@ impl ServiceRequest {
             | Self::DeleteEvidence { .. }
             | Self::ListEnforcement { .. }
             | Self::ForgetRememberedTitle { .. }
+            | Self::AllowBannedApplication { .. }
             | Self::RestoreNetwork { .. }
             | Self::SetSuperPassword { .. }
             | Self::ChangeSuperPassword { .. }
@@ -264,6 +277,10 @@ impl ServiceRequest {
             | Self::ForgetRememberedTitle {
                 super_password: Some(password),
                 ..
+            }
+            | Self::AllowBannedApplication {
+                super_password: Some(password),
+                ..
             } => validate_password(password)?,
             _ => {}
         }
@@ -277,6 +294,7 @@ impl ServiceRequest {
             | Self::DeleteEvidence { session_token, .. }
             | Self::ListEnforcement { session_token, .. }
             | Self::ForgetRememberedTitle { session_token, .. }
+            | Self::AllowBannedApplication { session_token, .. }
             | Self::RestoreNetwork { session_token, .. }
             | Self::SetSuperPassword { session_token, .. }
             | Self::ChangeSuperPassword { session_token, .. }
@@ -301,6 +319,14 @@ impl ServiceRequest {
                 validate_identifier(evidence_id)?
             }
             Self::ForgetRememberedTitle { title_id, .. } => validate_identifier(title_id)?,
+            Self::AllowBannedApplication { executable, .. } => {
+                if executable.trim().is_empty()
+                    || executable.chars().count() > MAX_EXECUTABLE_CHARS
+                    || executable.chars().any(char::is_control)
+                {
+                    return Err(ProtocolError::InvalidField);
+                }
+            }
             Self::ListEnforcement {
                 title_limit,
                 title_query,
@@ -499,7 +525,7 @@ impl ProcessIdentity {
     fn validate(&self) -> Result<(), ProtocolError> {
         if self.process_id == 0
             || self.executable_name.is_empty()
-            || self.executable_name.chars().count() > 260
+            || self.executable_name.chars().count() > MAX_EXECUTABLE_CHARS
         {
             return Err(ProtocolError::InvalidField);
         }
@@ -1072,6 +1098,40 @@ mod tests {
             request_for(None).validate(),
             Err(ProtocolError::InvalidField)
         );
+    }
+
+    #[test]
+    fn allow_banned_application_is_ui_only_and_bounds_the_executable() {
+        let allow = |client, executable: String| {
+            request(
+                ServiceRequest::AllowBannedApplication {
+                    session_token: "session-1".into(),
+                    expected_revision: 3,
+                    executable,
+                    super_password: None,
+                },
+                client,
+            )
+        };
+        assert!(
+            allow(ClientKind::Ui, r"c:\games\game.exe".into())
+                .validate()
+                .is_ok()
+        );
+        assert_eq!(
+            allow(ClientKind::Agent, "game.exe".into()).validate(),
+            Err(ProtocolError::ClientRoleDenied)
+        );
+        for invalid in [
+            " ".to_owned(),
+            "game\n.exe".to_owned(),
+            "a".repeat(MAX_EXECUTABLE_CHARS + 1),
+        ] {
+            assert_eq!(
+                allow(ClientKind::Ui, invalid).validate(),
+                Err(ProtocolError::InvalidField)
+            );
+        }
     }
 
     #[test]

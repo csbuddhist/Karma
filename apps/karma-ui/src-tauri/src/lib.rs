@@ -710,6 +710,19 @@ mod local_backend {
         Ok(())
     }
 
+    /// Repeat-offender bans exist only in the Windows Service.
+    #[tauri::command]
+    fn allow_banned_application(
+        runtime: State<'_, ConsoleRuntime>,
+        session_token: String,
+        executable: String,
+        super_password: Option<String>,
+    ) -> Result<Value, ConsoleError> {
+        authorize(&runtime, &session_token)?;
+        let _ = (executable, super_password.map(Zeroizing::new));
+        Err(ConsoleError::ServiceUnavailable)
+    }
+
     /// Authorization and update state belongs to the Windows Service.
     #[tauri::command]
     fn authorization_status(
@@ -806,6 +819,7 @@ mod local_backend {
                 restore_network,
                 list_remembered_titles,
                 forget_remembered_title,
+                allow_banned_application,
                 export_settings,
                 import_settings
             ])
@@ -1440,6 +1454,42 @@ mod service_backend {
         })?)
     }
 
+    /// Returns the application rules the Service saved, so the console can
+    /// merge them into its draft.
+    #[tauri::command]
+    fn allow_banned_application(
+        runtime: State<'_, ServiceUiRuntime>,
+        session_token: String,
+        executable: String,
+        super_password: Option<String>,
+    ) -> Result<Value, ConsoleError> {
+        let expected_revision = *runtime
+            .0
+            .lock()
+            .map_err(|_| ConsoleError::InvalidResponse)?
+            .get(&session_token)
+            .ok_or(ConsoleError::SessionExpired)?;
+        match request(ServiceRequest::AllowBannedApplication {
+            session_token: session_token.clone(),
+            expected_revision,
+            executable,
+            super_password,
+        })? {
+            ServiceResult::Policy { revision, policy } => {
+                runtime
+                    .0
+                    .lock()
+                    .map_err(|_| ConsoleError::InvalidResponse)?
+                    .insert(session_token, revision);
+                Ok(policy
+                    .get("applications")
+                    .cloned()
+                    .unwrap_or_else(|| Value::Array(Vec::new())))
+            }
+            _ => Err(ConsoleError::InvalidResponse),
+        }
+    }
+
     #[tauri::command]
     fn restore_network(session_token: String, password: String) -> Result<Value, ConsoleError> {
         match request(ServiceRequest::RestoreNetwork {
@@ -1524,6 +1574,7 @@ mod service_backend {
                 restore_network,
                 list_remembered_titles,
                 forget_remembered_title,
+                allow_banned_application,
                 export_settings,
                 import_settings
             ])

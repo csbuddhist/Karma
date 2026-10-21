@@ -125,6 +125,64 @@ impl ApplicationPolicy {
     }
 }
 
+/// Returns `policy` with `executable_path` always allowed. A matching enabled
+/// "Always block" rule would outrank any allow rule, so it becomes "Allow";
+/// a rule for exactly this executable is enabled as "Allow"; otherwise a new
+/// custom "Allow" rule with `new_rule_id` is appended.
+pub fn allow_application(
+    policy: &Value,
+    executable_path: &str,
+    new_rule_id: &str,
+) -> Result<Value, ApplicationPolicyError> {
+    let target = path_components(executable_path);
+    if target.is_empty() {
+        return Err(ApplicationPolicyError::InvalidPolicy);
+    }
+    ApplicationPolicy::from_value(policy)?;
+    let mut next = policy.clone();
+    let rules = next
+        .as_object_mut()
+        .ok_or(ApplicationPolicyError::InvalidPolicy)?
+        .entry("applications")
+        .or_insert_with(|| Value::Array(Vec::new()))
+        .as_array_mut()
+        .ok_or(ApplicationPolicyError::InvalidPolicy)?;
+    let mut exact = false;
+    for rule in rules.iter_mut() {
+        let components = path_components(rule["executable"].as_str().unwrap_or_default());
+        if components == target {
+            rule["action"] = Value::from("allow");
+            rule["enabled"] = Value::Bool(true);
+            exact = true;
+        } else if rule["enabled"] == Value::Bool(true)
+            && rule["action"] == "block"
+            && trailing_components_match(&target, &components)
+        {
+            rule["action"] = Value::from("allow");
+        }
+    }
+    if !exact {
+        let name = executable_path
+            .rsplit(['\\', '/'])
+            .find(|component| !component.is_empty())
+            .unwrap_or(executable_path);
+        rules.push(serde_json::json!({
+            "id": new_rule_id,
+            "name": name,
+            "executable": executable_path,
+            "category": "custom",
+            "action": "allow",
+            "enabled": true
+        }));
+    }
+    // Revalidates the rule cap and confirms no remaining rule blocks it.
+    if ApplicationPolicy::from_value(&next)?.effect_for(executable_path) != ApplicationEffect::Allow
+    {
+        return Err(ApplicationPolicyError::InvalidPolicy);
+    }
+    Ok(next)
+}
+
 pub(crate) fn path_components(value: &str) -> Vec<String> {
     value
         .split(['\\', '/'])
@@ -207,6 +265,53 @@ mod tests {
             applications.effect_for(r"C:\player.exe"),
             ApplicationEffect::ContentOnly
         );
+    }
+
+    #[test]
+    fn allowing_an_application_appends_a_rule_and_overrides_blocks() {
+        let banned = r"c:\games\game.exe";
+        let next = allow_application(
+            &json!({"protectionEnabled": true, "applications": [
+                {"id":"block-name","name":"Game","executable":"game.exe","category":"game","action":"block","enabled":true},
+                {"id":"other","name":"Other","executable":"other.exe","category":"custom","action":"block","enabled":true}
+            ]}),
+            banned,
+            "app-new",
+        )
+        .unwrap();
+
+        assert_eq!(next["protectionEnabled"], true);
+        let rules = next["applications"].as_array().unwrap();
+        assert_eq!(rules[0]["action"], "allow");
+        assert_eq!(rules[1]["action"], "block");
+        assert_eq!(
+            rules[2],
+            json!({"id":"app-new","name":"game.exe","executable":banned,"category":"custom","action":"allow","enabled":true})
+        );
+        assert_eq!(
+            ApplicationPolicy::from_value(&next)
+                .unwrap()
+                .effect_for(banned),
+            ApplicationEffect::Allow
+        );
+    }
+
+    #[test]
+    fn allowing_an_application_reuses_its_exact_rule() {
+        let next = allow_application(
+            &json!({"applications": [
+                {"id":"player","name":"Player","executable":"C:\\Apps\\Player.exe","category":"player","action":"content_only","enabled":false}
+            ]}),
+            r"c:\apps\player.exe",
+            "app-new",
+        )
+        .unwrap();
+
+        assert_eq!(
+            next["applications"],
+            json!([{"id":"player","name":"Player","executable":"C:\\Apps\\Player.exe","category":"player","action":"allow","enabled":true}])
+        );
+        assert!(allow_application(&json!({}), "", "app-new").is_err());
     }
 
     #[test]

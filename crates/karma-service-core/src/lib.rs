@@ -24,8 +24,8 @@ use karma_ipc::{
 use karma_policy::{
     ApplicationEffect, ApplicationPolicy, ContextPolicy, MINUTES_PER_DAY, MINUTES_PER_WEEK,
     NetworkRestriction, NetworkSchedulePolicy, RememberedTitle, RepeatOffenderRule, active_bans,
-    is_banned, normalize_executable, policy_weakenings, record_closure, remember_title,
-    remember_titles_enabled, rememberable_title_key, title_digest, title_key,
+    allow_application, is_banned, normalize_executable, policy_weakenings, record_closure,
+    remember_title, remember_titles_enabled, rememberable_title_key, title_digest, title_key,
 };
 use rand::{RngCore, rngs::OsRng};
 use serde_json::Value;
@@ -932,6 +932,43 @@ impl ServiceCore {
                 persist(runtime)?;
                 Ok(ServiceResult::Acknowledged)
             }
+            ServiceRequest::AllowBannedApplication {
+                session_token,
+                expected_revision,
+                executable,
+                super_password,
+            } => {
+                authorize(runtime, &session_token, now_ms)?;
+                // Only an active ban can be lifted here; any other allow rule
+                // goes through the policy comparison in PutPolicy.
+                let executable = normalize_executable(&executable);
+                if !is_banned(&runtime.stored.repeat_offenders, &executable, now_ms) {
+                    return Err(ServiceErrorCode::InvalidRequest);
+                }
+                if expected_revision != runtime.stored.policy_revision {
+                    return Err(ServiceErrorCode::RevisionConflict);
+                }
+                if runtime.stored.super_password_hash.is_some() {
+                    if let Err(error) = self.authenticate_super(runtime, super_password, now_ms) {
+                        audit(runtime, now_ms, "banned_application_allowed", "denied");
+                        return Err(error);
+                    }
+                }
+                let policy = allow_application(
+                    &runtime.stored.policy,
+                    &executable,
+                    &format!("app-{}", random_token()),
+                )
+                .map_err(|_| ServiceErrorCode::InvalidRequest)?;
+                runtime.set_policy(policy);
+                runtime.lift_ban(&executable);
+                audit(runtime, now_ms, "banned_application_allowed", "success");
+                persist(runtime)?;
+                Ok(ServiceResult::Policy {
+                    revision: runtime.stored.policy_revision,
+                    policy: runtime.stored.policy.clone(),
+                })
+            }
             ServiceRequest::RestoreNetwork {
                 session_token,
                 password,
@@ -1356,6 +1393,17 @@ impl RuntimeState {
         }
         self.rebuild_title_digests();
         added
+    }
+
+    /// Clears the executable's ban and closure history, so closures before
+    /// the ban cannot re-establish it.
+    fn lift_ban(&mut self, executable: &str) {
+        self.stored
+            .repeat_offenders
+            .retain(|record| record.executable != executable);
+        self.pending.push(Change::RepeatOffenders(
+            self.stored.repeat_offenders.clone(),
+        ));
     }
 
     fn forget_title(&mut self, index: usize) {
@@ -1820,6 +1868,152 @@ mod tests {
             submit_context_at(&core, "after-ban-nonce", after_ban, now),
             ServiceResult::Acknowledged
         ));
+    }
+
+    fn allow_banned(
+        core: &ServiceCore,
+        session: &str,
+        nonce: &str,
+        expected_revision: u64,
+        executable: &str,
+        super_password: Option<&str>,
+        now_ms: i64,
+    ) -> Result<ServiceResult, ServiceErrorCode> {
+        core.handle(
+            request(
+                nonce,
+                nonce,
+                ServiceRequest::AllowBannedApplication {
+                    session_token: session.into(),
+                    expected_revision,
+                    executable: executable.into(),
+                    super_password: super_password.map(str::to_owned),
+                },
+            ),
+            now_ms,
+        )
+        .result
+        .map_err(|failure| failure.code)
+    }
+
+    #[test]
+    fn allowing_a_banned_application_requires_super_password_and_lifts_the_ban() {
+        let directory = tempfile::tempdir().unwrap();
+        let core = open_core(directory.path(), 0);
+        configure_policy(&core, repeat_offender_policy());
+        establish_repeat_offender_ban(&core, 10_000);
+        let session = authenticate_ui(&core, "auth-allow-banned", 20_000);
+        set_super(&core, &session, 20_001);
+        let banned = r"C:\Browser\chrome.exe";
+
+        assert_eq!(
+            allow_banned(&core, &session, "no-super", 1, banned, None, 20_002).err(),
+            Some(ServiceErrorCode::SuperPasswordRequired)
+        );
+        assert_eq!(
+            allow_banned(
+                &core,
+                &session,
+                "not-banned",
+                1,
+                r"C:\Other\other.exe",
+                Some("distinct-super-password"),
+                20_003
+            )
+            .err(),
+            Some(ServiceErrorCode::InvalidRequest)
+        );
+        assert_eq!(
+            allow_banned(
+                &core,
+                &session,
+                "stale",
+                0,
+                banned,
+                Some("distinct-super-password"),
+                20_004
+            )
+            .err(),
+            Some(ServiceErrorCode::RevisionConflict)
+        );
+        assert_eq!(
+            list_enforcement(&core, &session, "still-banned", 20_005)
+                .active_bans
+                .len(),
+            1
+        );
+
+        let Ok(ServiceResult::Policy { revision, policy }) = allow_banned(
+            &core,
+            &session,
+            "allowed",
+            1,
+            banned,
+            Some("distinct-super-password"),
+            20_006,
+        ) else {
+            panic!("expected the updated policy");
+        };
+        assert_eq!(revision, 2);
+        let rule = policy["applications"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|rule| rule["executable"] == r"c:\browser\chrome.exe")
+            .unwrap();
+        assert_eq!(
+            (&rule["action"], &rule["enabled"]),
+            (&json!("allow"), &json!(true))
+        );
+        assert!(
+            list_enforcement(&core, &session, "lifted", 20_007)
+                .active_bans
+                .is_empty()
+        );
+        assert!(
+            agent_enforcement_at(&core, "agent-lifted", 20_008)
+                .banned_executables
+                .is_empty()
+        );
+        let relaunch = context_observation_at("relaunch", 20_008, "项目进度评审会议", None, 300);
+        assert!(matches!(
+            submit_context_at(&core, "relaunch-nonce", relaunch, 20_009),
+            ServiceResult::Acknowledged
+        ));
+        let outcomes: Vec<_> = disk_state(directory.path())
+            .audit
+            .iter()
+            .filter(|event| event.kind == "banned_application_allowed")
+            .map(|event| event.outcome.clone())
+            .collect();
+        assert_eq!(outcomes, ["denied", "success"]);
+    }
+
+    #[test]
+    fn allowing_a_banned_application_uses_the_session_without_super_password() {
+        let directory = tempfile::tempdir().unwrap();
+        let core = open_core(directory.path(), 0);
+        configure_policy(&core, repeat_offender_policy());
+        establish_repeat_offender_ban(&core, 10_000);
+        let session = authenticate_ui(&core, "auth-allow-session", 20_000);
+
+        assert!(matches!(
+            allow_banned(
+                &core,
+                &session,
+                "session-only",
+                1,
+                r"C:\Browser\chrome.exe",
+                None,
+                20_001
+            ),
+            Ok(ServiceResult::Policy { revision: 2, .. })
+        ));
+        assert!(
+            list_enforcement(&core, &session, "session-lifted", 20_002)
+                .active_bans
+                .is_empty()
+        );
     }
 
     #[test]
