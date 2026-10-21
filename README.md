@@ -8,6 +8,12 @@ The project follows a “single product, shared core, two native executors” ar
 
 > On Windows, Karma hardens its two services (KarmaService and a companion watchdog) so that routine GUI tampering is denied without the Karma password: the Stop action in Services.msc / Task Manager and the "Startup type = Disabled" change are refused even to administrators (service ACL), editing the service registry keys in regedit — e.g. setting `Start = 4` to disable, or rewriting the stored service permissions — is likewise refused (registry-key ACL grants SYSTEM full control and administrators read-only), the two services restart each other every few seconds, and an End-task kill is recovered automatically by the Service Control Manager. This defeats a non-technical administrator who only uses graphical tools. It still cannot promise absolute resistance to someone who applies terminal commands (`sc.exe`), takes ownership of the service or registry key, uses the recovery environment, edits the registry hive offline, or has physical control of the device; genuine resistance to a technical administrator would require a signed kernel-level layer (PPL/ELAM), which this unsigned test build does not include. Running the monitored person as a standard user (with the administrator password on a separate account) remains the strongest option and makes even the technical vectors inaccessible.
 
+## Screenshot
+
+The Windows management console's Protection Overview (v0.3.3):
+
+![Karma management console: Protection Overview](docs/images/console-overview-en.png)
+
 ## Windows Test Installer
 
 New users can download the single-file `Karma-windows-x64-test-v0.3.3-setup.exe` from the [v0.3.3 Windows Test Build](https://github.com/csbuddhist/Karma/releases/tag/v0.3.3). On Windows 10 22H2 or Windows 11 x64, run it as an administrator to install the files, verify their hashes, register the Service, and create shortcuts. The installer includes the official Microsoft Visual C++ 2015–2022 x64 Redistributable: it verifies the Microsoft signature and installs it silently only when the runtime is missing or older than 14.44, before registering the Service.

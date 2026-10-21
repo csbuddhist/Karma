@@ -6,6 +6,12 @@ Karma 是一套面向 macOS 和 Windows 的本地色情内容防护与数字健�
 
 > 在 Windows 上，Karma 会收紧它的两个服务（KarmaService 及配套守护服务）的权限，使得在没有 Karma 密码时常见的 GUI 篡改都被拒绝：services.msc / 任务管理器里的“停止”、以及属性中的“启动类型=禁用”对管理员也返回“拒绝访问”（服务 ACL）；在 regedit 中修改服务注册表键——例如把 `Start` 改成 4 以禁用、或改写已存储的服务权限——同样被拒绝（注册表键 ACL 仅授予 SYSTEM 完全控制、管理员只读）；两个服务每几秒互相守护；通过“结束任务”强杀会被服务控制管理器自动拉起。这足以挡住只会使用图形工具的非专业管理员。但它仍不能对以下情况承诺绝对不可卸载：使用终端命令（`sc.exe`）、夺取服务或注册表键的所有权、进入恢复环境、离线修改注册表配置单元、或拥有设备物理控制权；要真正抵御懂技术的管理员，需要带签名的内核级保护（PPL/ELAM），而当前未签名测试版不包含该能力。把被监控的人设为标准用户（管理员密码放在另一个账户上）仍是最强选项，可令上述技术性路径也无法触及。
 
+## 界面截图
+
+Windows 管理控制台的“保护总览”页（v0.3.3）：
+
+![Karma 管理控制台：保护总览](docs/images/console-overview-zh-CN.png)
+
 ## Windows 测试安装包
 
 新用户可从 [v0.3.3 Windows Test Build](https://github.com/csbuddhist/Karma/releases/tag/v0.3.3) 下载单文件 `Karma-windows-x64-test-v0.3.3-setup.exe`，在 Windows 10 22H2 或 Windows 11 x64 上以管理员身份运行即可完成文件安装、哈希校验、Service 注册和快捷方式创建。安装器已内置微软官方 Microsoft Visual C++ 2015–2022 x64 运行库：注册 Service 前会校验其微软签名，仅在本机运行库缺失或低于 14.44 时静默安装。
