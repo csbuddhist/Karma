@@ -100,7 +100,7 @@ Karma-windows-x64-test-v0.3.0-setup.exe
 - 创建桌面和开始菜单管理控制台快捷方式；
 - 在 Windows“已安装的应用”中注册卸载入口。卸载需超级密码，或等待期满后的管理员密码（未设置超级密码时使用管理员密码）。
 
-安装器检测到 v0.2.4 及以上版本时，使用 `KarmaControl version` 确认升级接口，走原地升级分支：把签名包复制到 `C:\ProgramData\Karma\update-inbox`，提示输入普通管理员密码，再由服务复制至仅 SYSTEM 可访问的暂存区，验签并复验哈希，只接受严格更高版本，执行文件替换、回滚和重启。升级失败不退回卸载；取消安装器不删除保护服务。v0.2.3 及更早版本才使用旧的密码授权卸载后重装流程，并保留本地数据。
+安装器检测到 v0.2.4 及以上版本时，使用 `KarmaControl version` 确认升级接口，走原地升级分支：把签名包复制到 `C:\ProgramData\Karma\update-inbox`，提示输入普通管理员密码，再由服务复制至仅 SYSTEM 可访问的暂存区，验签并复验哈希，只接受严格更高版本，执行文件替换、回滚和重启。替换前会强制关闭管理控制台、Agent 和 KarmaControl（控制台收到关闭请求只会隐藏到托盘；它们不保存数据），未被替换的文件回滚时不会被覆盖，因此运行中的程序不会让回滚失败并使服务反复进入恢复。Before replacement the console, agent and KarmaControl are force-closed (the console only hides to the tray on close and none of them hold data); rollback never overwrites files that were not replaced, so a running client can no longer trap the service in a recovery loop. 升级失败不退回卸载；取消安装器不删除保护服务。v0.2.3 及更早版本才使用旧的密码授权卸载后重装流程，并保留本地数据。
 
 For v0.2.4 and later, setup detects the updater using `KarmaControl version`, copies the signed bundle to the fixed inbox, and prompts for the ordinary administrator password. The service privately stages and revalidates it, accepts only a strictly newer version, replaces files with rollback, and restarts the services. An update failure never falls back to uninstalling. Only v0.2.3 and earlier use the legacy password-authorized uninstall/reinstall flow, preserving local data.
 

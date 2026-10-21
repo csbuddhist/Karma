@@ -24,7 +24,10 @@ use karma_update::{
 use serde::{Deserialize, Serialize};
 use windows::{
     Win32::{
-        Foundation::{ERROR_FILE_NOT_FOUND, HANDLE, HLOCAL, LocalFree},
+        Foundation::{
+            ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_SHARING_VIOLATION, HANDLE, HLOCAL,
+            LocalFree,
+        },
         Security::{
             Authorization::{
                 ConvertStringSecurityDescriptorToSecurityDescriptorW, ConvertStringSidToSidW,
@@ -43,7 +46,9 @@ use windows::{
                 HKEY, HKEY_LOCAL_MACHINE, KEY_SET_VALUE, KEY_WOW64_64KEY, REG_SZ, RegCloseKey,
                 RegOpenKeyExW, RegSetValueExW,
             },
-            RestartManager::{RmEndSession, RmRegisterResources, RmShutdown, RmStartSession},
+            RestartManager::{
+                RmEndSession, RmForceShutdown, RmRegisterResources, RmShutdown, RmStartSession,
+            },
         },
     },
     core::{BOOL, PCWSTR, PWSTR, w},
@@ -58,6 +63,15 @@ const JOURNAL: &str = "transaction.json";
 const WORKER: &str = "worker.exe";
 const RESULT: &str = "result.json";
 const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+const REPLACE_RETRIES: u32 = 20;
+const ROLLBACK_ATTEMPTS: u32 = 6;
+/// Installed executables that run outside SCM and lock their image files.
+/// 不受 SCM 管理、运行时会锁定自身映像文件的已安装程序。
+const CLIENT_EXECUTABLES: [&str; 3] = [
+    "karma-ui.exe",
+    "karma-agent-windows.exe",
+    "KarmaControl.exe",
+];
 const PRIVATE_ACL: PCWSTR = w!("D:P(A;OICI;FA;;;SY)");
 const INSTALL_ACL: PCWSTR = w!("D:P(A;OICI;FA;;;SY)(A;OICI;GRGX;;;BA)(A;OICI;GRGX;;;BU)");
 const UNINSTALL_ACL: PCWSTR = w!("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;GRGX;;;BU)");
@@ -181,14 +195,32 @@ fn replace(source: &Path, target: &Path, backup: Option<&Path>) -> io::Result<()
     if backup.is_some_and(|path| !path.is_file()) {
         return Err(io::Error::other("update predecessor is missing"));
     }
-    unsafe {
-        MoveFileExW(
-            PCWSTR(from.as_ptr()),
-            PCWSTR(to.as_ptr()),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
+    // A short-lived reader (antivirus, a `KarmaControl version` probe) can hold
+    // the target briefly; retry access/sharing violations before failing.
+    // 杀毒软件或版本探测可能短暂占用目标文件，拒绝访问/共享冲突时重试。
+    let mut attempt = 0;
+    loop {
+        let moved = unsafe {
+            MoveFileExW(
+                PCWSTR(from.as_ptr()),
+                PCWSTR(to.as_ptr()),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        };
+        match moved {
+            Ok(()) => break,
+            Err(error)
+                if attempt < REPLACE_RETRIES
+                    && [ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION]
+                        .iter()
+                        .any(|code| error.code() == code.to_hresult()) =>
+            {
+                attempt += 1;
+                thread::sleep(Duration::from_millis(250));
+            }
+            Err(error) => return Err(winerror(error)),
+        }
     }
-    .map_err(winerror)?;
     OpenOptions::new().write(true).open(target)?.sync_all()
 }
 
@@ -662,10 +694,14 @@ impl Drop for RestartServices {
     }
 }
 
-/// Ask Windows to close the installed console before replacement. Resources
-/// are a fixed installed filename, never caller-supplied PIDs or names. An app
-/// that refuses a graceful close causes safe rollback, not a forced kill.
-fn close_console(install: &Path) -> Result<(), UpdateError> {
+/// Close every installed client executable before replacement or rollback.
+/// Resources are fixed installed filenames, never caller-supplied PIDs or
+/// names. The console hides to the tray on WM_CLOSE, so a graceful-only close
+/// never succeeds; it holds no state (the service owns all data), so Restart
+/// Manager force-closes it once a signed update is being applied.
+/// 控制台收到关闭消息只会隐藏到托盘，仅请求正常关闭永远失败；控制台不持有
+/// 数据，因此在应用已验签的升级时由 Restart Manager 强制关闭。
+fn close_clients(install: &Path) -> Result<(), UpdateError> {
     struct Session(u32);
     impl Drop for Session {
         fn drop(&mut self) {
@@ -674,22 +710,51 @@ fn close_console(install: &Path) -> Result<(), UpdateError> {
             }
         }
     }
-    let path = install.join("karma-ui.exe");
-    reject_links(&path)?;
+    let mut paths = Vec::new();
+    for name in CLIENT_EXECUTABLES {
+        let path = install.join(name);
+        reject_links(&path)?;
+        if path.is_file() {
+            paths.push(wide(&path));
+        }
+    }
+    if paths.is_empty() {
+        return Ok(());
+    }
     let mut handle = 0;
     let mut key = [0_u16; 33];
     unsafe { RmStartSession(&mut handle, None, PWSTR(key.as_mut_ptr())) }
         .ok()
         .map_err(|error| UpdateError::Io(winerror(error)))?;
     let session = Session(handle);
-    let path = wide(&path);
-    let resources = [PCWSTR(path.as_ptr())];
+    let resources: Vec<_> = paths.iter().map(|path| PCWSTR(path.as_ptr())).collect();
     unsafe { RmRegisterResources(session.0, Some(&resources), None, None) }
         .ok()
         .map_err(|error| UpdateError::Io(winerror(error)))?;
-    unsafe { RmShutdown(session.0, 0, None) }
+    unsafe { RmShutdown(session.0, RmForceShutdown.0 as u32, None) }
         .ok()
         .map_err(|error| UpdateError::Io(winerror(error)))
+}
+
+/// Restore the predecessor image. A client relaunched by the user can lock a
+/// file again, so close clients and retry with a delay instead of letting a
+/// failed rollback restart the service into an immediate recovery loop.
+/// 用户可能重新打开控制台而再次占用文件：关闭客户端并延时重试，避免回滚失败后
+/// 服务立刻重启、反复进入恢复的死循环。
+fn rollback_installed(plan: &transaction::Plan) -> Result<(), UpdateError> {
+    let mut attempt = 1;
+    loop {
+        let _ = close_clients(&plan.install);
+        match transaction::rollback(plan, replace) {
+            Ok(()) => return Ok(()),
+            Err(error) if attempt >= ROLLBACK_ATTEMPTS => return Err(error),
+            Err(error) => {
+                eprintln!("Karma update rollback attempt {attempt}: {error}");
+                attempt += 1;
+                thread::sleep(Duration::from_secs(5));
+            }
+        }
+    }
 }
 
 /// Handles helper flags only as LocalSystem, using only the protected fixed
@@ -716,7 +781,7 @@ pub fn run_helper(recover: bool) -> Result<(), UpdateError> {
     crate::scm_update::stop_and_wait("KarmaGuardian", Duration::from_secs(30))?;
     let result = (|| {
         crate::scm_update::stop_and_wait("KarmaService", Duration::from_secs(30))?;
-        close_console(&plan.install)?;
+        close_clients(&plan.install)?;
         if recover
             || plan.phase == Phase::Applying
                 && !plan
@@ -725,7 +790,7 @@ pub fn run_helper(recover: bool) -> Result<(), UpdateError> {
                     .join(MANIFEST_FILE)
                     .exists()
         {
-            transaction::rollback(&plan, replace)?;
+            rollback_installed(&plan)?;
             transaction::cleanup(&plan)?;
             fs::remove_file(&journal)?;
             update_display_version(&plan.installed_version)?;
@@ -754,7 +819,7 @@ pub fn run_helper(recover: bool) -> Result<(), UpdateError> {
         // launches the same protected recovery worker and retries.
         plan.phase = Phase::Applying;
         transaction::write_plan(&journal, &plan, replace)?;
-        transaction::rollback(&plan, replace)?;
+        rollback_installed(&plan)?;
         transaction::cleanup(&plan)?;
         fs::remove_file(&journal)?;
         let _ = update_display_version(&plan.installed_version);

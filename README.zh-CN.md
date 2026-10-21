@@ -10,7 +10,7 @@ Karma 是一套面向 macOS 和 Windows 的本地色情内容防护与数字健�
 
 新用户可从 [v0.3.0 Windows Test Build](https://github.com/csbuddhist/Karma/releases/tag/v0.3.0) 下载单文件 `Karma-windows-x64-test-v0.3.0-setup.exe`，在 Windows 10 22H2 或 Windows 11 x64 上以管理员身份运行即可完成文件安装、哈希校验、Service 注册和快捷方式创建。安装器已内置微软官方 Microsoft Visual C++ 2015–2022 x64 运行库：注册 Service 前会校验其微软签名，仅在本机运行库缺失或低于 14.44 时静默安装。
 
-`main` 同时保留可审查的 **cloneable Windows test bundle**：[`release/windows-x64-test/`](release/windows-x64-test/)。从 v0.2.4 起，安装器对已有 v0.2.4 及以上版本执行原地升级：输入管理员密码后，把签名包提交给运行中的服务；服务只接受严格更高的版本，在私有暂存区验签并复验文件哈希，带回滚地替换文件，再重启服务，保护服务全程保持注册。仅 v0.2.3 及更早版本沿用密码授权卸载后重装的旧流程。管理控制台默认在登录后后台启动，可在“系统设置”中关闭。EXE 和安装器仍未使用 Authenticode 签名；Ed25519 发布签名验证升级内容，不代表 Windows 发布者身份。详见[安装指南](docs/windows-installation-guide.md)和[待完成的 Windows 升级验收清单](docs/windows-update-acceptance.md)。
+`main` 同时保留可审查的 **cloneable Windows test bundle**：[`release/windows-x64-test/`](release/windows-x64-test/)。从 v0.2.4 起，安装器对已有 v0.2.4 及以上版本执行原地升级：输入管理员密码后，把签名包提交给运行中的服务；服务只接受严格更高的版本，在私有暂存区验签并复验文件哈希，带回滚地替换文件，再重启服务，保护服务全程保持注册。升级期间会关闭管理控制台（控制台不保存数据），完成后重新打开即可。仅 v0.2.3 及更早版本沿用密码授权卸载后重装的旧流程。管理控制台默认在登录后后台启动，可在“系统设置”中关闭。EXE 和安装器仍未使用 Authenticode 签名；Ed25519 发布签名验证升级内容，不代表 Windows 发布者身份。详见[安装指南](docs/windows-installation-guide.md)和[待完成的 Windows 升级验收清单](docs/windows-update-acceptance.md)。
 
 可选的**超级密码**应由监督人设置和保管，与普通管理员密码分开。服务逐项比较策略变更，关闭保护或识别、降低灵敏度、放宽网站/应用/关键词/断网时段/重复关闭限制、删除已记住标题和提前恢复网络时，都要求超级密码；加强保护只需管理员会话。首次设置需复验管理员密码，超级密码至少 10 个字符且不能与管理员密码相同；修改时需当前超级密码。未设置时保持原有行为。
 

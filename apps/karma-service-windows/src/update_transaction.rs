@@ -211,7 +211,12 @@ pub fn rollback(plan: &Plan, replace: Replace) -> Result<(), UpdateError> {
         let backup = plan.install.join(BACKUP).join(&path);
         reject_links(&target)?;
         reject_links(&backup)?;
-        if backup.is_file() {
+        if backup.is_file() && target.is_file() && same_contents(&backup, &target)? {
+            // Never replaced (or already restored): an unchanged installed file
+            // may still be mapped by a running executable, so do not overwrite it.
+            // 未被替换的文件可能仍被运行中的程序占用，不能覆盖，只丢弃其备份。
+            fs::remove_file(backup)?;
+        } else if backup.is_file() {
             replace(&backup, &target, None)?;
         } else if !entry.had_original && target.exists() {
             // No predecessor existed: this name belongs only to this update.
@@ -219,6 +224,25 @@ pub fn rollback(plan: &Plan, replace: Replace) -> Result<(), UpdateError> {
         }
     }
     Ok(())
+}
+
+fn same_contents(left: &Path, right: &Path) -> io::Result<bool> {
+    use std::io::Read as _;
+    if fs::metadata(left)?.len() != fs::metadata(right)?.len() {
+        return Ok(false);
+    }
+    let (mut left, mut right) = (File::open(left)?, File::open(right)?);
+    let (mut a, mut b) = (vec![0_u8; 64 * 1024], vec![0_u8; 64 * 1024]);
+    loop {
+        let read = left.read(&mut a)?;
+        if read == 0 {
+            return Ok(true);
+        }
+        right.read_exact(&mut b[..read])?;
+        if a[..read] != b[..read] {
+            return Ok(false);
+        }
+    }
 }
 
 pub fn cleanup(plan: &Plan) -> Result<(), UpdateError> {
@@ -343,6 +367,22 @@ mod tests {
             b"old-service"
         );
         assert!(!plan.install.join("added.dll").exists());
+    }
+
+    #[test]
+    fn rollback_never_overwrites_files_that_were_not_replaced() {
+        fn locked(_: &Path, target: &Path, _: Option<&Path>) -> io::Result<()> {
+            Err(io::Error::other(format!("{} is in use", target.display())))
+        }
+        let (_root, plan) = fixture();
+        // Nothing applied: the running image is unchanged and may be locked.
+        rollback(&plan, locked).unwrap();
+        assert_eq!(
+            fs::read(plan.install.join("KarmaService.exe")).unwrap(),
+            b"old-service"
+        );
+        assert!(!plan.install.join(BACKUP).join("KarmaService.exe").exists());
+        rollback(&plan, locked).unwrap();
     }
 
     #[test]

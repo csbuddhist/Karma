@@ -174,6 +174,11 @@ assert_contains '\$plain \| & \$control update' "$update_script" \
   'update password must be passed via stdin, never on the command line'
 assert_contains "Karma\\\\update-inbox" "$update_script" \
   'update script must copy to the fixed service inbox'
+update_source="$repo_root/tools/package-windows-test/scripts/Update-Karma.ps1"
+assert_before "Get-Process -Name 'karma-ui'" '\$plain \| & \$control update' "$update_source" \
+  'update script must close the tray-resident console before older updaters replace karma-ui.exe'
+assert_before 'while \(\(Test-KarmaServicesRunning\) -and''\$runningVersion = & \$control version' "$update_source" \
+  'update script must not run installed KarmaControl.exe while its image is being replaced'
 assert_contains 'Super password.*超级密码' "$uninstall_script" \
   'uninstaller must explain super-password or delayed administrator authorization'
 if rg -q '跳过 shutdown 授权|skip.*authorization' "$uninstall_script"; then
