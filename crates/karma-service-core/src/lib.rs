@@ -1017,6 +1017,54 @@ impl ServiceCore {
                     policy: runtime.stored.policy.clone(),
                 })
             }
+            ServiceRequest::AllowEvidenceApplication {
+                session_token,
+                expected_revision,
+                evidence_id,
+                super_password,
+            } => {
+                authorize(runtime, &session_token, now_ms)?;
+                // The executable comes from the Service's own evidence record;
+                // evidence without a reliably attributed program is refused.
+                let executable = runtime
+                    .stored
+                    .evidence
+                    .iter()
+                    .find(|item| item.id == evidence_id)
+                    .ok_or(ServiceErrorCode::EvidenceUnavailable)
+                    .map(|item| attributed_executable(&item.application_name))?
+                    .ok_or(ServiceErrorCode::InvalidRequest)?;
+                if expected_revision != runtime.stored.policy_revision {
+                    return Err(ServiceErrorCode::RevisionConflict);
+                }
+                if runtime.stored.super_password_hash.is_some() {
+                    if let Err(error) = self.authenticate_super(runtime, super_password, now_ms) {
+                        audit(runtime, now_ms, "evidence_application_allowed", "denied");
+                        return Err(error);
+                    }
+                }
+                let policy = allow_application(
+                    &runtime.stored.policy,
+                    &executable,
+                    &format!("app-{}", random_token()),
+                )
+                .map_err(|_| ServiceErrorCode::InvalidRequest)?;
+                runtime.set_policy(policy);
+                if runtime
+                    .stored
+                    .repeat_offenders
+                    .iter()
+                    .any(|record| record.executable == executable)
+                {
+                    runtime.lift_ban(&executable);
+                }
+                audit(runtime, now_ms, "evidence_application_allowed", "success");
+                persist(runtime)?;
+                Ok(ServiceResult::Policy {
+                    revision: runtime.stored.policy_revision,
+                    policy: runtime.stored.policy.clone(),
+                })
+            }
             ServiceRequest::RestoreNetwork {
                 session_token,
                 password,
@@ -1376,6 +1424,21 @@ fn new_session(runtime: &mut RuntimeState, now_ms: i64) -> ServiceResult {
         session_token: token,
         expires_in_seconds: (SESSION_LIFETIME_MS / 1000) as u32,
     }
+}
+
+/// The normalized executable an evidence item names, when it is an absolute
+/// Windows path to an `.exe`. Evidence the agent could not attribute records a
+/// placeholder instead, which can never become an application rule.
+fn attributed_executable(application_name: &str) -> Option<String> {
+    let executable = normalize_executable(application_name);
+    let bytes = executable.as_bytes();
+    let absolute = executable.starts_with(r"\\")
+        || (bytes.len() > 3 && bytes[0].is_ascii_alphabetic() && &bytes[1..3] == br":\");
+    (absolute
+        && executable.ends_with(".exe")
+        && executable.chars().count() <= karma_ipc::MAX_EXECUTABLE_CHARS
+        && !executable.chars().any(char::is_control))
+    .then_some(executable)
 }
 
 fn random_token() -> String {
@@ -2014,6 +2077,190 @@ mod tests {
             submit_context_at(&core, "after-ban-nonce", after_ban, now),
             ServiceResult::Acknowledged
         ));
+    }
+
+    fn submit_test_evidence(core: &ServiceCore, evidence_id: &str, application_name: &str) {
+        let image = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3];
+        assert!(matches!(
+            success(core.handle(
+                RequestEnvelope::new(
+                    format!("submit-{evidence_id}"),
+                    format!("submit-nonce-{evidence_id}"),
+                    ClientKind::Agent,
+                    ServiceRequest::SubmitEvidence {
+                        agent_token: "agent-secret".into(),
+                        evidence: EvidenceSubmission {
+                            evidence_id: evidence_id.into(),
+                            captured_at_ms: 3,
+                            monitor_name: "显示器 1".into(),
+                            application_name: application_name.into(),
+                            reason_code: "image_immediate".into(),
+                            risk_millis: 980,
+                            media_type: "image/png".into(),
+                            bytes_base64: BASE64.encode(image),
+                        },
+                    },
+                ),
+                3,
+            )),
+            ServiceResult::Acknowledged
+        ));
+    }
+
+    fn allow_evidence(
+        core: &ServiceCore,
+        session: &str,
+        nonce: &str,
+        expected_revision: u64,
+        evidence_id: &str,
+        super_password: Option<&str>,
+        now_ms: i64,
+    ) -> Result<ServiceResult, ServiceErrorCode> {
+        core.handle(
+            request(
+                nonce,
+                nonce,
+                ServiceRequest::AllowEvidenceApplication {
+                    session_token: session.into(),
+                    expected_revision,
+                    evidence_id: evidence_id.into(),
+                    super_password: super_password.map(str::to_owned),
+                },
+            ),
+            now_ms,
+        )
+        .result
+        .map_err(|failure| failure.code)
+    }
+
+    #[test]
+    fn evidence_application_is_allowed_with_super_password() {
+        let directory = tempfile::tempdir().unwrap();
+        let core = open_core(directory.path(), 0);
+        configure_policy(
+            &core,
+            json!({
+                "protectionEnabled": true,
+                "recognition": {"evidenceEnabled": true, "immediateThreshold": 95},
+                "applications": [
+                    {"id":"games","name":"Game","executable":"game.exe","category":"game","action":"block","enabled":true}
+                ]
+            }),
+        );
+        submit_test_evidence(&core, "evidence-game", r"C:\Games\Game.exe");
+        submit_test_evidence(&core, "evidence-unknown", "来源应用无法可靠归属");
+        let session = authenticate_ui(&core, "auth-allow-evidence", 20_000);
+        set_super(&core, &session, 20_001);
+
+        assert_eq!(
+            allow_evidence(
+                &core,
+                &session,
+                "no-super",
+                1,
+                "evidence-game",
+                None,
+                20_002
+            )
+            .err(),
+            Some(ServiceErrorCode::SuperPasswordRequired)
+        );
+        let super_password = Some("distinct-super-password");
+        assert_eq!(
+            allow_evidence(
+                &core,
+                &session,
+                "missing",
+                1,
+                "evidence-gone",
+                super_password,
+                20_003
+            )
+            .err(),
+            Some(ServiceErrorCode::EvidenceUnavailable)
+        );
+        assert_eq!(
+            allow_evidence(
+                &core,
+                &session,
+                "unknown",
+                1,
+                "evidence-unknown",
+                super_password,
+                20_004
+            )
+            .err(),
+            Some(ServiceErrorCode::InvalidRequest)
+        );
+        assert_eq!(
+            allow_evidence(
+                &core,
+                &session,
+                "stale",
+                0,
+                "evidence-game",
+                super_password,
+                20_005
+            )
+            .err(),
+            Some(ServiceErrorCode::RevisionConflict)
+        );
+
+        let Ok(ServiceResult::Policy { revision, policy }) = allow_evidence(
+            &core,
+            &session,
+            "allowed",
+            1,
+            "evidence-game",
+            super_password,
+            20_006,
+        ) else {
+            panic!("expected the updated policy");
+        };
+        assert_eq!(revision, 2);
+        let rules = policy["applications"].as_array().unwrap();
+        assert_eq!(rules[0]["action"], "allow");
+        assert_eq!(
+            (
+                &rules[1]["executable"],
+                &rules[1]["action"],
+                &rules[1]["enabled"]
+            ),
+            (&json!(r"c:\games\game.exe"), &json!("allow"), &json!(true))
+        );
+        assert_eq!(
+            ApplicationPolicy::from_value(&policy)
+                .unwrap()
+                .effect_for(r"c:\games\game.exe"),
+            ApplicationEffect::Allow
+        );
+        let outcomes: Vec<_> = disk_state(directory.path())
+            .audit
+            .iter()
+            .filter(|event| event.kind == "evidence_application_allowed")
+            .map(|event| event.outcome.clone())
+            .collect();
+        assert_eq!(outcomes, ["denied", "success"]);
+    }
+
+    #[test]
+    fn attributed_executable_requires_an_absolute_exe_path() {
+        assert_eq!(
+            attributed_executable(r" C:/Apps/Player.EXE "),
+            Some(r"c:\apps\player.exe".into())
+        );
+        assert_eq!(
+            attributed_executable(r"\\server\share\tool.exe"),
+            Some(r"\\server\share\tool.exe".into())
+        );
+        for invalid in [
+            "player.exe",
+            r"C:\Apps\notes.txt",
+            "来源应用无法可靠归属",
+            r"C:player.exe",
+        ] {
+            assert_eq!(attributed_executable(invalid), None, "{invalid}");
+        }
     }
 
     fn allow_banned(

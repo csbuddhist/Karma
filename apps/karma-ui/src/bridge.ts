@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { disable, enable } from "@tauri-apps/plugin-autostart";
-import type { ApplicationRule, AuthorizationStatus, ConsoleState, NetworkStatus, NetworkTarget, RememberedTitle, RememberedTitlePage, ScheduleBlock, ScheduleRule } from "./types";
+import type { ApplicationRule, AuthorizationStatus, InstalledApplication, ConsoleState, NetworkStatus, NetworkTarget, RememberedTitle, RememberedTitlePage, ScheduleBlock, ScheduleRule } from "./types";
 
 const browserFallbackKey = "karma-ui-browser-state";
 const browserPasswordKey = "karma-ui-browser-password";
@@ -287,6 +287,18 @@ export async function forgetRememberedTitle(sessionToken: string, titleId: strin
 export async function allowBannedApplication(sessionToken: string, executable: string, superPassword?: string): Promise<ApplicationRule[]> {
   if (isTauri()) return invoke("allow_banned_application", { sessionToken, executable, superPassword });
   throw new Error("KarmaService 尚未运行或命名管道不可用");
+}
+
+/** Always allows the executable the Service attributed an evidence item to; returns the saved application rules. */
+export async function allowEvidenceApplication(sessionToken: string, evidenceId: string, superPassword?: string): Promise<ApplicationRule[]> {
+  if (isTauri()) return invoke("allow_evidence_application", { sessionToken, evidenceId, superPassword });
+  throw new Error("KarmaService 尚未运行或命名管道不可用");
+}
+
+/** Programs registered as installed on this computer; none outside the desktop console. */
+export async function listInstalledApplications(sessionToken: string): Promise<InstalledApplication[]> {
+  if (isTauri()) return invoke("list_installed_applications", { sessionToken });
+  return [];
 }
 
 /** Forgets a remembered title and keeps it from being remembered again. */

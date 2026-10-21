@@ -5,6 +5,8 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
 
+mod installed_apps;
+
 #[cfg(desktop)]
 const MAIN_WINDOW_LABEL: &str = "main";
 #[cfg(desktop)]
@@ -765,6 +767,30 @@ mod local_backend {
         Err(ConsoleError::ServiceUnavailable)
     }
 
+    /// Evidence and its attributed executable exist only in the Windows Service.
+    #[tauri::command]
+    fn allow_evidence_application(
+        runtime: State<'_, ConsoleRuntime>,
+        session_token: String,
+        evidence_id: String,
+        super_password: Option<String>,
+    ) -> Result<Value, ConsoleError> {
+        authorize(&runtime, &session_token)?;
+        let _ = (evidence_id, super_password.map(Zeroizing::new));
+        Err(ConsoleError::ServiceUnavailable)
+    }
+
+    #[tauri::command]
+    async fn list_installed_applications(
+        runtime: State<'_, ConsoleRuntime>,
+        session_token: String,
+    ) -> Result<Vec<crate::installed_apps::InstalledApplication>, ConsoleError> {
+        authorize(&runtime, &session_token)?;
+        tauri::async_runtime::spawn_blocking(crate::installed_apps::list)
+            .await
+            .map_err(|_| ConsoleError::StorageUnavailable)
+    }
+
     /// Authorization and update state belongs to the Windows Service.
     #[tauri::command]
     fn authorization_status(
@@ -865,6 +891,8 @@ mod local_backend {
                 mark_title_misjudged,
                 restore_misjudged_title,
                 allow_banned_application,
+                allow_evidence_application,
+                list_installed_applications,
                 export_settings,
                 import_settings
             ])
@@ -1597,6 +1625,62 @@ mod service_backend {
         }
     }
 
+    /// Always allows the executable the Service attributed an evidence item
+    /// to; returns the saved application rules for the console to merge.
+    #[tauri::command]
+    fn allow_evidence_application(
+        runtime: State<'_, ServiceUiRuntime>,
+        session_token: String,
+        evidence_id: String,
+        super_password: Option<String>,
+    ) -> Result<Value, ConsoleError> {
+        let expected_revision = *runtime
+            .0
+            .lock()
+            .map_err(|_| ConsoleError::InvalidResponse)?
+            .get(&session_token)
+            .ok_or(ConsoleError::SessionExpired)?;
+        match request(ServiceRequest::AllowEvidenceApplication {
+            session_token: session_token.clone(),
+            expected_revision,
+            evidence_id,
+            super_password,
+        })? {
+            ServiceResult::Policy { revision, policy } => {
+                runtime
+                    .0
+                    .lock()
+                    .map_err(|_| ConsoleError::InvalidResponse)?
+                    .insert(session_token, revision);
+                Ok(policy
+                    .get("applications")
+                    .cloned()
+                    .unwrap_or_else(|| Value::Array(Vec::new())))
+            }
+            _ => Err(ConsoleError::InvalidResponse),
+        }
+    }
+
+    /// Reads installed programs as the signed-in user; only a session this
+    /// console unlocked may ask.
+    #[tauri::command]
+    async fn list_installed_applications(
+        runtime: State<'_, ServiceUiRuntime>,
+        session_token: String,
+    ) -> Result<Vec<crate::installed_apps::InstalledApplication>, ConsoleError> {
+        if !runtime
+            .0
+            .lock()
+            .map_err(|_| ConsoleError::InvalidResponse)?
+            .contains_key(&session_token)
+        {
+            return Err(ConsoleError::SessionExpired);
+        }
+        tauri::async_runtime::spawn_blocking(crate::installed_apps::list)
+            .await
+            .map_err(|_| ConsoleError::InvalidResponse)
+    }
+
     #[tauri::command]
     fn restore_network(session_token: String, password: String) -> Result<Value, ConsoleError> {
         match request(ServiceRequest::RestoreNetwork {
@@ -1685,6 +1769,8 @@ mod service_backend {
                 mark_title_misjudged,
                 restore_misjudged_title,
                 allow_banned_application,
+                allow_evidence_application,
+                list_installed_applications,
                 export_settings,
                 import_settings
             ])

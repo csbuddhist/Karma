@@ -27,5 +27,8 @@ tauri-plugin-dialog = "2"
 thiserror.workspace = true
 zeroize = "1"
 
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"
+
 [dev-dependencies]
 tempfile = "3"

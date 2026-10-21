@@ -41,6 +41,7 @@ import {
   Save,
   Search,
   Settings,
+  ShieldCheck,
   RotateCcw,
   Trash2,
   Upload,
@@ -64,6 +65,8 @@ import {
   markTitleMisjudged,
   restoreMisjudgedTitle,
   allowBannedApplication,
+  allowEvidenceApplication,
+  listInstalledApplications,
   getAppVersion,
   importSettings,
   isTauriConsole,
@@ -111,6 +114,7 @@ import type {
   AuthMode,
   ConsoleState,
   EvidenceItem,
+  InstalledApplication,
   KeywordRule,
   TitleKeywordAddition,
   TitleKeywordCategory,
@@ -404,6 +408,17 @@ function Monitors({ state }: { state: ConsoleState }) {
 
 function executableFileName(path: string): string {
   return path.split(/[\\/]/).pop() || path;
+}
+
+/** The Service's comparison form of an executable path. */
+function normalizeExecutable(path: string): string {
+  return path.trim().replace(/\//g, "\\").toLowerCase();
+}
+
+/** Whether evidence names an absolute `.exe` path, as the Service requires to allowlist it. */
+function isAttributedExecutable(path: string): boolean {
+  const normalized = normalizeExecutable(path);
+  return (/^[a-z]:\\./.test(normalized) || normalized.startsWith("\\\\")) && normalized.endsWith(".exe");
 }
 
 function useShortDateTime(): Intl.DateTimeFormat {
@@ -738,7 +753,7 @@ function NumberField({ label, value, min, max, onCommit }: { label: string; valu
   return <label className="field"><span>{label}</span><input type="number" inputMode="numeric" min={min} max={max} step={1} value={text} onChange={(event) => { const next = event.target.value; setText(next); if (accepts(next)) onCommit(Number(next)); }} onBlur={() => setText(String(value))} />{!accepts(text) && <small className="field-error">{t("applications.repeatRange", { min, max })}</small>}</label>;
 }
 
-function RepeatOffenderCard({ state, update, sessionToken, onBannedAllowed }: { state: ConsoleState; update: (state: ConsoleState) => void; sessionToken: string; onBannedAllowed: BannedAllowedHandler }) {
+function RepeatOffenderCard({ state, update, sessionToken, onBannedAllowed }: { state: ConsoleState; update: (state: ConsoleState) => void; sessionToken: string; onBannedAllowed: ApplicationAllowedHandler }) {
   const { t } = useI18n();
   const dateTime = useShortDateTime();
   const authorize = useSuperAuthorization();
@@ -771,14 +786,55 @@ function RepeatOffenderCard({ state, update, sessionToken, onBannedAllowed }: { 
   </Card>;
 }
 
-type BannedAllowedHandler = (executable: string, applications: ApplicationRule[]) => void;
+/** Applies application rules the Service saved directly; `executable` is the program now allowed. */
+type ApplicationAllowedHandler = (executable: string, applications: ApplicationRule[]) => void;
 
-function Applications({ state, update, sessionToken, onBannedAllowed }: { state: ConsoleState; update: (state: ConsoleState) => void; sessionToken: string; onBannedAllowed: BannedAllowedHandler }) {
+/** Most installed applications listed at once; a search narrows the rest. */
+const installedListLimit = 200;
+
+function InstalledApplicationPicker({ applications, error, onPick }: { applications?: InstalledApplication[]; error: string; onPick: (application: InstalledApplication) => void }) {
+  const { t } = useI18n();
+  const [query, setQuery] = useState("");
+  const needle = query.trim().toLowerCase();
+  const matches = (applications ?? []).filter((item) => !needle || [item.name, item.executable, item.publisher ?? ""].some((value) => value.toLowerCase().includes(needle)));
+  const shown = matches.slice(0, installedListLimit);
+  let body: ReactNode;
+  if (error) body = <div className="form-error"><CircleAlert size={16} />{error}</div>;
+  else if (!applications) body = <p className="learned-empty">{t("applications.installedLoading")}</p>;
+  else if (!shown.length) body = <p className="learned-empty">{t(applications.length ? "applications.installedNoMatch" : "applications.installedEmpty")}</p>;
+  else body = <>
+    <div className="installed-list">{shown.map((item) => <button type="button" className="installed-item" key={item.executable} title={item.executable} onClick={() => onPick(item)}><AppWindow size={16} /><span><strong>{item.name}</strong><small>{item.publisher ? `${item.publisher} · ${item.executable}` : item.executable}</small></span></button>)}</div>
+    {matches.length > shown.length && <small className="field-hint">{t("applications.installedShown", { shown: shown.length, total: matches.length })}</small>}
+  </>;
+  return <div className="installed-picker"><label className="field"><span>{t("applications.installedSearch")}</span><input value={query} autoFocus disabled={!applications?.length} onChange={(event) => setQuery(event.target.value)} placeholder={t("applications.installedSearchPlaceholder")} /></label>{body}</div>;
+}
+
+function Applications({ state, update, sessionToken, onBannedAllowed }: { state: ConsoleState; update: (state: ConsoleState) => void; sessionToken: string; onBannedAllowed: ApplicationAllowedHandler }) {
   const { t } = useI18n();
   const [showAdd, setShowAdd] = useState(false);
+  const [source, setSource] = useState<"manual" | "installed">("manual");
+  const [installed, setInstalled] = useState<InstalledApplication[]>();
+  const [installedError, setInstalledError] = useState("");
+  const loadingInstalled = useRef(false);
   const [draft, setDraft] = useState({ name: "", executable: "", category: "custom" as ApplicationRule["category"] });
-  function add() { if (!draft.name.trim() || !draft.executable.trim()) return; update({ ...state, applications: [...state.applications, { id: crypto.randomUUID(), ...draft, action: "content_only", enabled: true }] }); setShowAdd(false); setDraft({ name: "", executable: "", category: "custom" }); }
-  return <div className="page-stack"><div className="privacy-banner"><AppWindow size={18} /><span><strong>{t("applications.bannerTitle")}</strong> {t("applications.bannerDescription")}</span></div><RepeatOffenderCard state={state} update={update} sessionToken={sessionToken} onBannedAllowed={onBannedAllowed} /><div className="page-actions"><button className="primary-button" onClick={() => setShowAdd(true)}><Plus size={17} />{t("applications.add")}</button></div><Card>{state.applications.map((rule) => { const name = localizedApplicationName(rule, t); return <div className="app-rule" key={rule.id}><div className="app-avatar"><AppWindow /></div><div className="app-main"><strong>{name}</strong><small>{localizedExecutable(rule, t)}</small></div><select value={rule.action} onChange={(event) => update({ ...state, applications: state.applications.map((item) => item.id === rule.id ? { ...item, action: event.target.value as ApplicationRule["action"] } : item) })}><option value="content_only">{t("applications.contentOnly")}</option><option value="block">{t("applications.block")}</option><option value="allow">{t("applications.allow")}</option></select><Toggle checked={rule.enabled} onChange={(enabled) => update({ ...state, applications: state.applications.map((item) => item.id === rule.id ? { ...item, enabled } : item) })} label={t("applications.enable", { name })} /></div>; })}</Card>{showAdd && <Modal title={t("applications.modalTitle")} onClose={() => setShowAdd(false)}><label className="field"><span>{t("applications.displayName")}</span><input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder={t("applications.namePlaceholder")} /></label><label className="field"><span>{t("applications.executable")}</span><input value={draft.executable} onChange={(event) => setDraft({ ...draft, executable: event.target.value })} placeholder={t("applications.executablePlaceholder")} /></label><label className="field"><span>{t("applications.category")}</span><select value={draft.category} onChange={(event) => setDraft({ ...draft, category: event.target.value as ApplicationRule["category"] })}><option value="browser">{t("applications.browser")}</option><option value="player">{t("applications.player")}</option><option value="game">{t("applications.game")}</option><option value="custom">{t("applications.custom")}</option></select></label><button className="primary-button modal-submit" onClick={add}>{t("applications.save")}</button></Modal>}</div>;
+  function closeAdd() { setShowAdd(false); setSource("manual"); }
+  function add() { if (!draft.name.trim() || !draft.executable.trim()) return; update({ ...state, applications: [...state.applications, { id: crypto.randomUUID(), ...draft, action: "content_only", enabled: true }] }); closeAdd(); setDraft({ name: "", executable: "", category: "custom" }); }
+  function chooseInstalled() {
+    setSource("installed");
+    if (installed || loadingInstalled.current) return;
+    loadingInstalled.current = true;
+    setInstalledError("");
+    listInstalledApplications(sessionToken)
+      .then(setInstalled, (reason) => setInstalledError(localizeError(reason, t)))
+      .finally(() => { loadingInstalled.current = false; });
+  }
+  // Picking fills the form; the administrator still reviews the category and saves.
+  function pick(application: InstalledApplication) { setDraft({ ...draft, name: application.name, executable: application.executable }); setSource("manual"); }
+  const sourceToggle = <div className="learned-tabs source-toggle" role="group" aria-label={t("applications.executable")}>
+    <button type="button" className={source === "manual" ? "active" : ""} aria-pressed={source === "manual"} onClick={() => setSource("manual")}><Pencil size={14} />{t("applications.sourceManual")}</button>
+    <button type="button" className={source === "installed" ? "active" : ""} aria-pressed={source === "installed"} onClick={chooseInstalled}><Search size={14} />{t("applications.sourceInstalled")}</button>
+  </div>;
+  return <div className="page-stack"><div className="privacy-banner"><AppWindow size={18} /><span><strong>{t("applications.bannerTitle")}</strong> {t("applications.bannerDescription")}</span></div><RepeatOffenderCard state={state} update={update} sessionToken={sessionToken} onBannedAllowed={onBannedAllowed} /><div className="page-actions"><button className="primary-button" onClick={() => setShowAdd(true)}><Plus size={17} />{t("applications.add")}</button></div><Card>{state.applications.map((rule) => { const name = localizedApplicationName(rule, t); return <div className="app-rule" key={rule.id}><div className="app-avatar"><AppWindow /></div><div className="app-main"><strong>{name}</strong><small>{localizedExecutable(rule, t)}</small></div><select value={rule.action} onChange={(event) => update({ ...state, applications: state.applications.map((item) => item.id === rule.id ? { ...item, action: event.target.value as ApplicationRule["action"] } : item) })}><option value="content_only">{t("applications.contentOnly")}</option><option value="block">{t("applications.block")}</option><option value="allow">{t("applications.allow")}</option></select><Toggle checked={rule.enabled} onChange={(enabled) => update({ ...state, applications: state.applications.map((item) => item.id === rule.id ? { ...item, enabled } : item) })} label={t("applications.enable", { name })} /></div>; })}</Card>{showAdd && <Modal title={t("applications.modalTitle")} onClose={closeAdd}>{sourceToggle}{source === "installed" ? <InstalledApplicationPicker applications={installed} error={installedError} onPick={pick} /> : <><label className="field"><span>{t("applications.displayName")}</span><input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder={t("applications.namePlaceholder")} /></label><label className="field"><span>{t("applications.executable")}</span><input value={draft.executable} onChange={(event) => setDraft({ ...draft, executable: event.target.value })} placeholder={t("applications.executablePlaceholder")} /></label><label className="field"><span>{t("applications.category")}</span><select value={draft.category} onChange={(event) => setDraft({ ...draft, category: event.target.value as ApplicationRule["category"] })}><option value="browser">{t("applications.browser")}</option><option value="player">{t("applications.player")}</option><option value="game">{t("applications.game")}</option><option value="custom">{t("applications.custom")}</option></select></label><button className="primary-button modal-submit" onClick={add}>{t("applications.save")}</button></>}</Modal>}</div>;
 }
 
 const dayKeys: MessageKey[] = ["schedule.dayMon", "schedule.dayTue", "schedule.dayWed", "schedule.dayThu", "schedule.dayFri", "schedule.daySat", "schedule.daySun"];
@@ -1005,8 +1061,14 @@ function evidenceReason(item: EvidenceItem, t: Translate): string {
   return item.riskMillis === undefined ? cause : t("evidence.reasonWithScore", { reason: cause, score: Math.round(item.riskMillis / 10) });
 }
 
-function Evidence({ state, sessionToken, onDeleted }: { state: ConsoleState; sessionToken: string; onDeleted: (ids: string[]) => void }) {
+function Evidence({ state, sessionToken, onDeleted, onApplicationAllowed }: { state: ConsoleState; sessionToken: string; onDeleted: (ids: string[]) => void; onApplicationAllowed: ApplicationAllowedHandler }) {
   const { locale, t } = useI18n();
+  const authorize = useSuperAuthorization();
+  const [pendingAllow, setPendingAllow] = useState<EvidenceItem | null>(null);
+  const [allowing, setAllowing] = useState(false);
+  const [allowError, setAllowError] = useState("");
+  const [allowNotice, setAllowNotice] = useState("");
+  const allowedExecutables = useMemo(() => new Set(state.applications.filter((rule) => rule.enabled && rule.action === "allow").map((rule) => normalizeExecutable(rule.executable))), [state.applications]);
   const [selected, setSelected] = useState<EvidenceItem | null>(null);
   const [checked, setChecked] = useState<ReadonlySet<string>>(new Set());
   const [pendingDelete, setPendingDelete] = useState<string[] | null>(null);
@@ -1039,6 +1101,27 @@ function Evidence({ state, sessionToken, onDeleted }: { state: ConsoleState; ses
   function toggleChecked(id: string, value: boolean) { setChecked((current) => { const next = new Set(current); if (value) next.add(id); else next.delete(id); return next; }); }
   function toggleAll(value: boolean) { setChecked(value ? new Set(visibleIds) : new Set()); }
   function askDelete(ids: string[]) { if (ids.length) { setDeleteError(""); setPendingDelete(ids); } }
+  function askAllow(item: EvidenceItem) { setAllowError(""); setAllowNotice(""); setPendingAllow(item); }
+  async function confirmAllow() {
+    if (!pendingAllow) return;
+    const item = pendingAllow;
+    setAllowing(true);
+    setAllowError("");
+    try {
+      await authorize(async (superPassword) => onApplicationAllowed(item.applicationName, await allowEvidenceApplication(sessionToken, item.id, superPassword)));
+      setPendingAllow(null);
+      setAllowNotice(t("evidence.allowedNotice", { name: executableFileName(item.applicationName) }));
+    } catch (reason) {
+      if (!isAuthorizationCancelled(reason)) setAllowError(localizeError(reason, t));
+    } finally {
+      setAllowing(false);
+    }
+  }
+  function allowButton(item: EvidenceItem) {
+    const attributed = isAttributedExecutable(item.applicationName);
+    const allowed = attributed && allowedExecutables.has(normalizeExecutable(item.applicationName));
+    return <button type="button" className="secondary-button compact" disabled={!attributed || allowed || !state.serviceConnected} aria-label={t("evidence.allowApplicationOne", { name: item.applicationName })} title={t(attributed ? "evidence.allowApplicationHint" : "evidence.allowApplicationUnavailable")} onClick={() => askAllow(item)}><ShieldCheck size={14} />{t(allowed ? "evidence.alreadyAllowed" : "evidence.allowApplication")}</button>;
+  }
   async function confirmDelete() {
     if (!pendingDelete) return;
     setDeleting(true);
@@ -1073,7 +1156,10 @@ function Evidence({ state, sessionToken, onDeleted }: { state: ConsoleState; ses
     </button>
     <div className="evidence-actions">
       <label><input type="checkbox" checked={checked.has(item.id)} onChange={(event) => toggleChecked(item.id, event.target.checked)} />{t("evidence.select")}</label>
-      <button type="button" className="icon-button danger" aria-label={t("evidence.deleteOne", { name: item.applicationName })} title={t("evidence.delete")} onClick={() => askDelete([item.id])}><Trash2 size={16} /></button>
+      <div className="evidence-action-buttons">
+        {allowButton(item)}
+        <button type="button" className="icon-button danger" aria-label={t("evidence.deleteOne", { name: item.applicationName })} title={t("evidence.delete")} onClick={() => askDelete([item.id])}><Trash2 size={16} /></button>
+      </div>
     </div>
   </div>)}</div>;
   const deleteModal = pendingDelete && <Modal title={t("evidence.deleteTitle")} onClose={() => !deleting && setPendingDelete(null)}>
@@ -1084,7 +1170,16 @@ function Evidence({ state, sessionToken, onDeleted }: { state: ConsoleState; ses
       <button className="primary-button danger-fill" disabled={deleting} onClick={() => void confirmDelete()}><Trash2 size={16} />{t(deleting ? "evidence.deleting" : "evidence.deleteConfirmButton", { count: pendingDelete.length })}</button>
     </div>
   </Modal>;
-  return <div className="page-stack"><div className="privacy-banner"><Lock size={18} /><span><strong>{t("evidence.bannerTitle")}</strong> {t("evidence.bannerDescription")}</span></div>{state.evidence.length ? <>{filterBar}{selectionBar}{grid}</> : <Card><EmptyState icon={<Lock />} title={t("evidence.emptyTitle")} text={t(state.recognition.evidenceEnabled ? "evidence.emptyEnabled" : "evidence.emptyDisabled")} /></Card>}{selected && <Modal title={t("evidence.modalTitle")} onClose={() => setSelected(null)} wide>{imageUrl ? <img className="revealed-image" src={imageUrl} alt={t("evidence.originalAlt")} /> : <div className="reveal-panel"><div className="locked-preview"><LockKeyhole /></div><strong>{evidenceReason(selected, t)}</strong><p>{formatCapturedAt(evidenceTimestamp(selected.capturedAt))} · {selected.applicationName} · {selected.monitorName}</p><label className="field"><span>{t("evidence.passwordAgain")}</span><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} onKeyDown={(event) => event.key === "Enter" && reveal()} autoFocus /></label>{error && <div className="form-error"><CircleAlert size={16} />{error}</div>}<button className="primary-button modal-submit" onClick={reveal}><Eye size={17} />{t("evidence.decrypt")}</button></div>}</Modal>}{deleteModal}</div>;
+  const allowModal = pendingAllow && <Modal title={t("evidence.allowTitle")} onClose={() => !allowing && setPendingAllow(null)}>
+    <p className="modal-description">{t("evidence.allowConfirm", { name: executableFileName(pendingAllow.applicationName) })}</p>
+    <p className="modal-description allow-path">{pendingAllow.applicationName}</p>
+    {allowError && <div className="form-error"><CircleAlert size={16} />{allowError}</div>}
+    <div className="modal-actions">
+      <button className="secondary-button" disabled={allowing} onClick={() => setPendingAllow(null)}>{t("evidence.deleteCancel")}</button>
+      <button className="primary-button" disabled={allowing} onClick={() => void confirmAllow()}><ShieldCheck size={16} />{t(allowing ? "evidence.allowing" : "evidence.allowConfirmButton")}</button>
+    </div>
+  </Modal>;
+  return <div className="page-stack"><div className="privacy-banner"><Lock size={18} /><span><strong>{t("evidence.bannerTitle")}</strong> {t("evidence.bannerDescription")}</span></div>{allowNotice && <div className="form-success"><Check size={16} />{allowNotice}</div>}{state.evidence.length ? <>{filterBar}{selectionBar}{grid}</> : <Card><EmptyState icon={<Lock />} title={t("evidence.emptyTitle")} text={t(state.recognition.evidenceEnabled ? "evidence.emptyEnabled" : "evidence.emptyDisabled")} /></Card>}{selected && <Modal title={t("evidence.modalTitle")} onClose={() => setSelected(null)} wide>{imageUrl ? <img className="revealed-image" src={imageUrl} alt={t("evidence.originalAlt")} /> : <div className="reveal-panel"><div className="locked-preview"><LockKeyhole /></div><strong>{evidenceReason(selected, t)}</strong><p>{formatCapturedAt(evidenceTimestamp(selected.capturedAt))} · {selected.applicationName} · {selected.monitorName}</p><label className="field"><span>{t("evidence.passwordAgain")}</span><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} onKeyDown={(event) => event.key === "Enter" && reveal()} autoFocus /></label>{error && <div className="form-error"><CircleAlert size={16} />{error}</div>}<button className="primary-button modal-submit" onClick={reveal}><Eye size={17} />{t("evidence.decrypt")}</button></div>}</Modal>}{deleteModal}{allowModal}</div>;
 }
 
 function Audit({ state }: { state: ConsoleState }) {
@@ -1469,10 +1564,11 @@ function AppContent() {
   // Evidence is runtime state, so deleting it never marks the policy draft dirty.
   function evidenceDeleted(ids: string[]) { setState((previous) => ({ ...previous, evidence: previous.evidence.filter((item) => !ids.includes(item.id)) })); }
   // The Service saved these rules directly; keep the administrator's other unsaved edits.
-  function bannedAllowed(executable: string, applications: ApplicationRule[]) {
+  function applicationAllowed(executable: string, applications: ApplicationRule[]) {
     const before = savedState.current.applications;
+    const allowed = normalizeExecutable(executable);
     savedState.current = { ...savedState.current, applications };
-    setState((current) => ({ ...current, applications: mergeSavedRules(current.applications, before, applications), activeBans: current.activeBans.filter((ban) => ban.executable !== executable) }));
+    setState((current) => ({ ...current, applications: mergeSavedRules(current.applications, before, applications), activeBans: current.activeBans.filter((ban) => normalizeExecutable(ban.executable) !== allowed) }));
   }
   // Network status is runtime state reported by the Service, not an unsaved policy edit.
   function updateNetwork(network: NetworkStatus) { setState((current) => ({ ...current, network })); }
@@ -1526,9 +1622,9 @@ function AppContent() {
     if (page === "recognition") return <Recognition state={state} update={update} sessionToken={sessionToken} />;
     if (page === "keywords") return <Keywords state={state} update={update} />;
     if (page === "websites") return <Websites state={state} update={update} />;
-    if (page === "applications") return <Applications state={state} update={update} sessionToken={sessionToken} onBannedAllowed={bannedAllowed} />;
+    if (page === "applications") return <Applications state={state} update={update} sessionToken={sessionToken} onBannedAllowed={applicationAllowed} />;
     if (page === "schedule") return <Schedule state={state} update={update} sessionToken={sessionToken} onNetworkChange={updateNetwork} />;
-    if (page === "evidence") return <Evidence state={state} sessionToken={sessionToken} onDeleted={evidenceDeleted} />;
+    if (page === "evidence") return <Evidence state={state} sessionToken={sessionToken} onDeleted={evidenceDeleted} onApplicationAllowed={applicationAllowed} />;
     if (page === "audit") return <Audit state={state} />;
     return <SettingsPage state={state} update={update} sessionToken={sessionToken} onRefresh={refreshAuthorization} />;
   }, [page, state, sessionToken, locale]);

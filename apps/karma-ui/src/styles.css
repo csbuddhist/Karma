@@ -333,6 +333,18 @@ select, .field input, .toolbar input { height: 39px; padding: 0 11px; color: var
 .evidence-reason b { margin-right: 4px; font-weight: 700; }
 .evidence-actions { display: flex; align-items: center; justify-content: space-between; padding: 4px 8px 6px 15px; border-top: 1px solid #ecece6; }
 .evidence-actions label, .evidence-check-all { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 10px; cursor: pointer; }
+.evidence-action-buttons { display: inline-flex; align-items: center; gap: 4px; }
+.allow-path { padding: 8px 10px; font-family: Consolas, "Cascadia Mono", monospace; font-size: 11px; word-break: break-all; background: #f5f5f1; border-radius: 8px; }
+.source-toggle { display: flex; margin-bottom: 4px; }
+.source-toggle button { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 8px 10px; font-size: 11px; }
+.installed-list { max-height: 280px; margin-top: 10px; overflow-y: auto; border: 1px solid var(--line); border-radius: 10px; }
+.installed-item { width: 100%; display: flex; align-items: center; gap: 10px; padding: 9px 12px; color: inherit; text-align: left; background: transparent; border: 0; border-top: 1px solid #ecece6; cursor: pointer; }
+.installed-item:first-child { border-top: 0; }
+.installed-item:hover, .installed-item:focus-visible { background: var(--accent-soft); }
+.installed-item svg { flex: 0 0 auto; color: #666b64; }
+.installed-item span { min-width: 0; display: flex; flex-direction: column; }
+.installed-item strong { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.installed-item small { margin-top: 2px; color: var(--muted); font-size: 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .evidence-selection { display: flex; align-items: center; gap: 14px; margin: -4px 0 0; padding: 0 4px; }
 .evidence-selection > span { color: var(--muted); font-size: 10px; }
 .evidence-selection .secondary-button { margin-left: auto; height: 34px; }

@@ -84,6 +84,13 @@ export interface ApplicationRule {
   enabled: boolean;
 }
 
+/** A program the console found in the Windows installed-program registrations. */
+export interface InstalledApplication {
+  name: string;
+  executable: string;
+  publisher?: string | null;
+}
+
 export interface WebsiteRule {
   id: string;
   pattern: string;

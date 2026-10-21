@@ -151,6 +151,18 @@ pub enum ServiceRequest {
         #[serde(default)]
         super_password: Option<String>,
     },
+    /// Always allow the executable an evidence item was attributed to, and
+    /// lift any ban on it, in one step against `expected_revision`. The
+    /// Service reads the executable from its own evidence record, so the
+    /// console never names a path. Requires the super password once one is
+    /// configured.
+    AllowEvidenceApplication {
+        session_token: String,
+        expected_revision: u64,
+        evidence_id: String,
+        #[serde(default)]
+        super_password: Option<String>,
+    },
     /// Forget one remembered title and never remember it again, because image
     /// recognition misjudged it. Requires the super password once one is
     /// configured.
@@ -250,6 +262,7 @@ impl ServiceRequest {
             | Self::ListEnforcement { .. }
             | Self::ForgetRememberedTitle { .. }
             | Self::AllowBannedApplication { .. }
+            | Self::AllowEvidenceApplication { .. }
             | Self::MarkTitleMisjudged { .. }
             | Self::RestoreMisjudgedTitle { .. }
             | Self::RestoreNetwork { .. }
@@ -310,6 +323,10 @@ impl ServiceRequest {
                 super_password: Some(password),
                 ..
             }
+            | Self::AllowEvidenceApplication {
+                super_password: Some(password),
+                ..
+            }
             | Self::MarkTitleMisjudged {
                 super_password: Some(password),
                 ..
@@ -328,6 +345,7 @@ impl ServiceRequest {
             | Self::ListEnforcement { session_token, .. }
             | Self::ForgetRememberedTitle { session_token, .. }
             | Self::AllowBannedApplication { session_token, .. }
+            | Self::AllowEvidenceApplication { session_token, .. }
             | Self::MarkTitleMisjudged { session_token, .. }
             | Self::RestoreMisjudgedTitle { session_token, .. }
             | Self::RestoreNetwork { session_token, .. }
@@ -350,7 +368,9 @@ impl ServiceRequest {
             _ => {}
         }
         match self {
-            Self::RevealEvidence { evidence_id, .. } | Self::DeleteEvidence { evidence_id, .. } => {
+            Self::RevealEvidence { evidence_id, .. }
+            | Self::DeleteEvidence { evidence_id, .. }
+            | Self::AllowEvidenceApplication { evidence_id, .. } => {
                 validate_identifier(evidence_id)?
             }
             Self::DeleteEvidenceBatch { evidence_ids, .. } => {
@@ -1235,6 +1255,30 @@ mod tests {
                 Err(ProtocolError::InvalidField)
             );
         }
+    }
+
+    #[test]
+    fn allow_evidence_application_is_ui_only_and_validates_the_evidence_id() {
+        let allow = |client, evidence_id: &str| {
+            request(
+                ServiceRequest::AllowEvidenceApplication {
+                    session_token: "session-1".into(),
+                    expected_revision: 3,
+                    evidence_id: evidence_id.into(),
+                    super_password: Some("distinct-super-password".into()),
+                },
+                client,
+            )
+        };
+        assert!(allow(ClientKind::Ui, "evidence-1").validate().is_ok());
+        assert_eq!(
+            allow(ClientKind::Agent, "evidence-1").validate(),
+            Err(ProtocolError::ClientRoleDenied)
+        );
+        assert_eq!(
+            allow(ClientKind::Ui, "../evidence").validate(),
+            Err(ProtocolError::InvalidField)
+        );
     }
 
     #[test]
