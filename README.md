@@ -18,6 +18,41 @@ The optional **super password** should be set and held by a supervisor, separate
 
 Uninstall immediately with the super password, or request uninstall in the console with the administrator password, wait **72 hours**, then uninstall with the administrator password during the following **24 hours**. Requests survive restarts, can be cancelled, and are audited; expired requests must be renewed. This is also the recovery route for a forgotten super password. Software updates need only the administrator password. `updates.autoInstall` defaults to enabled; the service checks GitHub Releases periodically, and the console can check immediately. All updates require the embedded developer key's Ed25519 signature, SHA-256 file hashes, and a strictly higher version. Same-version reinstall and downgrade are refused. A technical Windows administrator can still take ownership of files, use safe mode, or otherwise bypass user-mode protection; keeping the Windows administrator account with the supervisor and using a standard account daily remains the strongest supplement.
 
+## Administrator and Super Password Permissions (v0.2.4)
+
+**Summary:** Karma uses two password levels: an ordinary administrator password and a super password. After a super password is set, the ordinary administrator can still do daily management, tighten rules, change the ordinary password, manage evidence, upgrade the software, and request or cancel uninstall. Viewing an original evidence image, setting the super password for the first time, and requesting uninstall each ask for the ordinary password again. Weakening protection or uninstalling immediately needs the super password.
+
+The following describes the current **installed Windows Service**, with a super password already configured. Entering the ordinary administrator password unlocks the console and creates an authenticated session. Most everyday actions use that session; the actions marked below require entering the ordinary password again. The super password authorizes sensitive actions and immediate uninstall; console login still uses the ordinary password.
+
+| Area | Ordinary administrator password or session | Additional super password required |
+| --- | --- | --- |
+| Console and status | Unlock or lock the console; view Service/Agent/display health, policy, network state, current application bans, update status, and uninstall countdown; search and page through remembered titles | Forgetting a remembered title |
+| Ordinary administrator password | Change it after entering the current ordinary password again; the new password must have at least 10 characters and differ from the configured super password | No super password needed for this change |
+| Super password setup | Set it for the first time after entering the ordinary password again; it must have at least 10 characters and differ from the ordinary password. The supervisor should enter and keep it | Changing an existing super password requires the current super password; the ordinary password cannot overwrite or clear it |
+| Protection and recognition | Enable protection, image recognition, OCR, title matching, or remembered titles; increase sensitivity by lowering the enforcement threshold | Disable any of those switches, or reduce sensitivity by raising the threshold |
+| Website rules | Add or enable block rules; remove or disable allow rules | Add or enable allow rules; remove, disable, or narrow block rules |
+| Application rules | Add or enable “Always block” rules; remove or disable “Allow” rules | Add or enable “Allow” rules; remove, disable, or narrow “Always block” rules |
+| Keywords | Add or enable enforced keywords; remove or disable exemptions | Remove, disable, or replace enforced custom keywords; add or enable exemptions |
+| Network schedules | Add, enable, or extend restricted periods; expand restricted targets while preserving all existing coverage | Remove, disable, shorten, move, or retarget periods in a way that reduces existing restricted coverage; restore network access before a block ends |
+| Repeat-closure limits | Lengthen the counting window or reduce the number of closures needed to trigger a ban | Shorten the counting window or increase the number of closures needed |
+| Event evidence | View and filter the evidence list; enter the ordinary password again to view each original; enable or disable evidence saving. The authenticated service interface also permits deleting event evidence | These evidence operations do not require the super password; forgetting a remembered title is a separate protected operation |
+| Policy backups | Export policy, import a backup for review, and save it when it preserves or strengthens protection | Saving an imported policy that weakens protection; importing does not bypass service authorization |
+| Console preferences | Change the interface language or whether the console starts at sign-in. Closing the console hides its window while protection continues | These preferences do not require the super password |
+| Software updates | Enable or disable automatic installation; check and install updates now; enter the ordinary password in setup to request an in-place upgrade | No super password needed. Every upgrade still requires a valid developer signature, matching file hashes, and a strictly higher version |
+| Uninstall request | Enter the ordinary password again to request uninstall; cancel a request with the administrator session; after the 72-hour wait, enter the ordinary password to uninstall during the following 24 hours | Immediate uninstall before the waiting period has elapsed requires the super password |
+
+The table describes authorization, not a guarantee that an operation can succeed regardless of state: updates and uninstall cannot execute concurrently, and session, validation, revision, and service-availability checks still apply. Policy changes take effect only after saving. The Service compares the **entire submitted policy** with the current one: if any part weakens protection, the whole save requires the super password, even when other parts strengthen it. Renaming or reorganizing rules is allowed without it only when the Service's comparison finds no weakening. Direct service requests are subject to the same checks.
+
+An uninstall request remains valid across reboots. Its administrator-only window is **72 hours after the request up to, but not including, 96 hours after the request**. Cancelling or expiry removes that authorization; a new request starts a new 72-hour wait. Requests, readiness, cancellation, expiry, and uninstall approval are audited. A forgotten super password uses this delayed uninstall route; there is no separate super-password reset or one-time recovery-code feature. The ordinary password alone cannot immediately disable protection or reset an existing super password.
+
+Uninstall keeps local data by default, including the super-password hash; reinstalling with that data retained does not reset the super password. If recovery requires a fresh setup, use `Uninstall-Karma.ps1 -PurgeData` after uninstall is authorized, then reinstall and enroll again. Purging also permanently deletes the ordinary password, policy, audit records, bans, remembered titles, keys, and encrypted evidence.
+
+**When no super password is configured**, the ordinary administrator session can also save weakening policies and forget remembered titles; early network restore and immediate uninstall recheck the ordinary password. The 72-hour uninstall wait is not required. Signed-update and version restrictions still apply.
+
+The table includes service-interface capabilities: the current console does **not** expose event-evidence deletion or a complete persisted audit-log reader. The service status interface provides the audit-record count. Deleting an evidence image does not remove a remembered title or relax the enforcement rules.
+
+These are Karma application permissions. UAC/Windows administrator rights are still required where the installer or uninstaller requests elevation. A technical Windows administrator can bypass user-mode protection through ownership changes, safe mode, or offline edits; using a standard Windows account with a supervisor-held administrator account remains recommended.
+
 ## Design Principles
 
 - Local first: screen images are processed in memory by default and are neither uploaded nor saved in their original form.
@@ -295,7 +330,7 @@ Hardened mode:
 - The administrator session controls routine settings; weakening protection requires the configured super password. Uninstall uses super-password authorization or the delayed administrator window described above.
 - Closing the UI only hides the management interface; it does not stop the Agent or Service.
 - Consecutive failures trigger exponential backoff and an audit event.
-- A one-time recovery code is provided; it is displayed only once and stored only as a hash.
+- A forgotten super password uses the audited 72-hour delayed uninstall route described above. Separate one-time recovery codes are not implemented.
 
 ### Level 2: Service Protection and Automatic Recovery
 
