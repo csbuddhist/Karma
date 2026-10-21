@@ -14,4 +14,4 @@ for path in sorted(bundle.rglob("*")):
         with path.open("rb") as stream:
             digest = hashlib.file_digest(stream, "sha256").hexdigest()
         entries.append(f"{digest}  {path.relative_to(bundle).as_posix()}\n")
-(bundle / "SHA256SUMS").write_text("".join(entries), encoding="utf-8")
+(bundle / "SHA256SUMS").write_text("".join(entries), encoding="utf-8", newline="\n")
