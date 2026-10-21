@@ -121,6 +121,21 @@ foreach ($svc in @('KarmaService', 'KarmaGuardian')) {
     Protect-KarmaServiceRegistryKey -ServiceName $svc
 }
 
+# Protect installed binaries before starting the privileged service. The
+# service restores administrator write access only after uninstall approval.
+# 启动特权服务前保护程序目录；服务仅在卸载授权后恢复管理员写权限。
+$fileAcl = New-Object Security.AccessControl.DirectorySecurity
+$fileAcl.SetAccessRuleProtection($true, $false)
+$inherit = [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
+$prop = [Security.AccessControl.PropagationFlags]::None
+$allow = [Security.AccessControl.AccessControlType]::Allow
+foreach ($entry in @(@('S-1-5-18', 'FullControl'), @('S-1-5-32-544', 'ReadAndExecute'), @('S-1-5-32-545', 'ReadAndExecute'))) {
+    $sid = New-Object Security.Principal.SecurityIdentifier($entry[0])
+    $rights = [Security.AccessControl.FileSystemRights] $entry[1]
+    $fileAcl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($sid, $rights, $inherit, $prop, $allow)))
+}
+Set-Acl -LiteralPath $destination -AclObject $fileAcl
+
 Start-Service -Name 'KarmaService'
 (Get-Service -Name 'KarmaService').WaitForStatus('Running', [TimeSpan]::FromSeconds(15))
 Start-Service -Name 'KarmaGuardian'

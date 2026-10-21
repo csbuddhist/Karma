@@ -20,7 +20,7 @@ $control = Join-Path $destination 'KarmaControl.exe'
 if (-not (Test-Path -LiteralPath $control -PathType Leaf)) {
     throw "缺少卸载授权程序：$control"
 }
-$secure = Read-Host '请输入 Karma 管理员密码以授权卸载' -AsSecureString
+$secure = Read-Host 'Super password, or administrator password after the waiting period / 超级密码，或等待期满后的管理员密码（未设置超级密码时使用管理员密码）' -AsSecureString
 $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
 $previousOutputEncoding = $OutputEncoding
 try {
@@ -28,11 +28,7 @@ try {
     $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
     $plain | & $control shutdown
     if ($LASTEXITCODE -ne 0) {
-        if ($LASTEXITCODE -eq 4) {
-            Write-Host 'KarmaService 未在运行或无法连接，跳过 shutdown 授权并继续卸载。' -ForegroundColor Yellow
-        } else {
-            throw "KarmaControl 退出码 $LASTEXITCODE：管理员密码验证失败或无法读取密码，卸载已取消。"
-        }
+        throw "KarmaControl exit code / 退出码 $LASTEXITCODE：authorization failed or service unreachable; uninstall cancelled / 授权失败或服务无法连接，卸载已取消。"
     }
 } finally {
     $plain = $null

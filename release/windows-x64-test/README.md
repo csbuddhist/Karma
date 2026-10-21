@@ -18,13 +18,15 @@
 C:\Program Files\Karma\Uninstall-Karma.ps1
 ```
 
-脚本会安全提示输入 Karma 管理员密码，通过 `KarmaControl.exe` 请求 Service 授权关闭，然后删除服务和程序。默认保留 `C:\ProgramData\Karma`；使用 `-PurgeData` 才会删除策略、审计记录、DPAPI 密钥和加密证据。
+脚本会安全提示输入超级密码，或等待期满后的管理员密码（未设置超级密码时使用管理员密码），通过 `KarmaControl.exe` 请求 Service 授权关闭，然后删除服务和程序。默认保留 `C:\ProgramData\Karma`；使用 `-PurgeData` 才会删除策略、审计记录、DPAPI 密钥和加密证据。
 
 ## 独立诊断方式
 
 - `.\Start-KarmaConsole.ps1`：只启动 GUI；未安装 Service 时无法登录或保存服务策略。
 - `.\Start-KarmaTest.ps1`：只以前台方式运行 Agent，不会取得 Service 注入的 Agent 密钥，因此 GUI 会保持 Agent 未连接。
 - `KarmaService.exe --console`：只适合管理员诊断；正常安装必须由 SCM 启动。
+
+原地升级仅在 SCM 启动的 LocalSystem 服务中启用；管理员 `--console` 诊断模式不能执行升级。In-place updates require the SCM-started LocalSystem service; administrator `--console` diagnostics cannot apply updates.
 
 ## 已知限制
 
@@ -34,6 +36,18 @@ C:\Program Files\Karma\Uninstall-Karma.ps1
 - 浏览器域名发现依赖 UI Automation 读取地址栏；浏览器未公开地址栏时，网址规则不可用，但标题与图像规则仍会工作。连续帧风险融合仍未接入。
 - 应用时段限制和多用户同时登录会话尚未完成；watchdog 当前跟随活动控制台会话。
 - 这是用户态家长控制。管理员仍可接管文件、服务配置或脱机修改系统；没有 ELAM/PPL/内核驱动时，不能诚实承诺对 Windows 管理员绝对不可终止。
+
+## v0.2.4 / Version 0.2.4
+
+可选超级密码由监督人保管，至少 10 个字符且与管理员密码不同。服务独立复核所有策略变更：削弱保护、删除已记住标题和提前恢复网络需要超级密码；增强保护使用管理员会话。未设置时保持原有行为。忘记超级密码可用管理员密码申请卸载，等待 72 小时后在 24 小时内卸载，申请可取消且写入审计；超级密码可立即卸载。
+
+An optional supervisor-held super password (at least 10 characters, different from the administrator password) protects all service-verified weakening changes, forgotten titles, and early network restore. Tightening uses the administrator session. Without it, existing behavior remains. An administrator can request uninstall, wait 72 hours, then uninstall in the following 24 hours; requests are cancellable and audited. The super password authorizes immediate uninstall.
+
+`updates.autoInstall` 默认开启；控制台可立即检查更新。v0.2.4+ 安装器走 `Update-Karma.ps1 -ExpectedVersion <新版本>` 原地升级，仅需管理员密码。服务在仅 SYSTEM 可访问的暂存区校验 Ed25519 签名、逐文件 SHA-256 和严格更高版本，替换失败回滚；不移除保护服务。v0.2.3 及更早版本沿用旧卸载重装流程。`release-manifest.json` 包含 `SHA256SUMS`，签名文件为 `release-manifest.json.sig`。EXE 和安装器仍无 Authenticode 签名，SmartScreen 可能提示未知发布者。
+
+Automatic installation defaults on (`updates.autoInstall`), with Check now in the console. v0.2.4+ setup uses `Update-Karma.ps1 -ExpectedVersion <new-version>` for in-place upgrade with the administrator password. The service validates Ed25519 signatures, per-file SHA-256 and a strictly higher version in SYSTEM-only staging, replaces files with rollback, and keeps protection services registered. v0.2.3 and earlier retain legacy uninstall/reinstall. `release-manifest.json` includes `SHA256SUMS`; its signature is `release-manifest.json.sig`. EXEs and setup still lack Authenticode signatures and may trigger SmartScreen.
+
+**真机验收待完成 / Hardware acceptance pending**：[Windows-Update-Acceptance.md](Windows-Update-Acceptance.md)。用户态保护无法阻止懂技术的管理员夺取所有权或使用安全模式；建议监督人保管 Windows 管理员账户，日常用标准账户。User-mode protection cannot stop a technical administrator taking ownership or using safe mode; keep the Windows administrator account with the supervisor and use a standard account daily.
 
 ## v0.2.3 / Version 0.2.3
 
