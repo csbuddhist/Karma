@@ -121,7 +121,7 @@ mod tests {
             "misjudgedTitleTotal": 1,
             "activeBans": [],
             "superPasswordSet": true,
-            "productVersion": "0.3.3",
+            "productVersion": "0.3.4",
             "uninstall": {"requestedAtMs": 1, "effectiveAtMs": 2, "expiresAtMs": 3},
             "update": {"phase": "checking"},
             "updates": {"autoInstall": false}
