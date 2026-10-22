@@ -352,6 +352,7 @@ mod local_backend {
                 "immediateThreshold": 82,
                 "evidenceEnabled": false,
                 "evidenceRetentionDays": 7,
+                "evidenceSkipAllowedApplications": false,
                 "rememberTitlesEnabled": true,
                 "ambiguousTitleKeywordsEnabled": false
             },
@@ -1108,6 +1109,7 @@ mod service_backend {
                 "immediateThreshold": 82,
                 "evidenceEnabled": false,
                 "evidenceRetentionDays": 7,
+                "evidenceSkipAllowedApplications": false,
                 "rememberTitlesEnabled": true,
                 "ambiguousTitleKeywordsEnabled": false
             },

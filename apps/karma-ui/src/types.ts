@@ -28,6 +28,8 @@ export interface RecognitionSettings {
   immediateThreshold: number;
   evidenceEnabled: boolean;
   evidenceRetentionDays: number;
+  /** Discard evidence attributed to an application with an enabled "Allow" rule. */
+  evidenceSkipAllowedApplications: boolean;
   rememberTitlesEnabled: boolean;
   /** Also enforce built-in keywords that are likely to cause false positives. */
   ambiguousTitleKeywordsEnabled: boolean;

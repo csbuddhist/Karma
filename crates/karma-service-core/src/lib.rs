@@ -71,6 +71,23 @@ fn local_minute_of_week(now_ms: i64, offset_seconds: i32) -> u16 {
     minute as u16
 }
 
+/// Whether `recognition.evidenceSkipAllowedApplications` is on and an enabled
+/// "Allow" rule covers the executable the evidence was attributed to.
+fn evidence_skips_application(
+    policy: &Value,
+    application_name: &str,
+) -> Result<bool, ServiceErrorCode> {
+    let skip = policy
+        .pointer("/recognition/evidenceSkipAllowedApplications")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    Ok(skip
+        && ApplicationPolicy::from_value(policy)
+            .map_err(|_| ServiceErrorCode::Internal)?
+            .effect_for(application_name)
+            == ApplicationEffect::Allow)
+}
+
 fn recognition_threshold_millis(policy: &Value) -> u16 {
     policy
         .pointer("/recognition/sensitivity")
@@ -804,6 +821,10 @@ impl ServiceCore {
                     || evidence.risk_millis < threshold
                 {
                     return Err(ServiceErrorCode::InvalidRequest);
+                }
+                if evidence_skips_application(&runtime.stored.policy, &evidence.application_name)? {
+                    // Accepted but discarded, so the Agent does not retry it.
+                    return Ok(ServiceResult::Acknowledged);
                 }
                 if runtime
                     .stored
@@ -2131,6 +2152,54 @@ mod tests {
         )
         .result
         .map_err(|failure| failure.code)
+    }
+
+    #[test]
+    fn evidence_from_allowed_applications_is_discarded_only_when_enabled() {
+        for skip in [true, false] {
+            let directory = tempfile::tempdir().unwrap();
+            let core = open_core(directory.path(), 0);
+            configure_policy(
+                &core,
+                json!({
+                    "protectionEnabled": true,
+                    "recognition": {
+                        "evidenceEnabled": true,
+                        "evidenceSkipAllowedApplications": skip,
+                        "immediateThreshold": 95
+                    },
+                    "applications": [
+                        {"id":"reader","name":"Reader","executable":"reader.exe","category":"custom","action":"allow","enabled":true},
+                        {"id":"old","name":"Old","executable":"old.exe","category":"custom","action":"allow","enabled":false}
+                    ]
+                }),
+            );
+            submit_test_evidence(&core, "evidence-reader", r"C:\Apps\Reader.EXE");
+            submit_test_evidence(&core, "evidence-old", r"C:\Apps\old.exe");
+            submit_test_evidence(&core, "evidence-player", r"C:\Apps\player.exe");
+            submit_test_evidence(&core, "evidence-unknown", "来源应用无法可靠归属");
+            let session = authenticate_ui(&core, &format!("list-skip-{skip}"), 20_000);
+            let ServiceResult::EvidenceList { items } = success(core.handle(
+                request(
+                    "list-skip",
+                    "list-skip-nonce",
+                    ServiceRequest::ListEvidence {
+                        session_token: session,
+                    },
+                ),
+                20_001,
+            )) else {
+                panic!("expected the evidence list");
+            };
+            let mut stored: Vec<_> = items.into_iter().map(|item| item.id).collect();
+            stored.sort();
+            let mut expected = vec!["evidence-old", "evidence-player", "evidence-unknown"];
+            if !skip {
+                expected.push("evidence-reader");
+            }
+            expected.sort();
+            assert_eq!(stored, expected, "skip = {skip}");
+        }
     }
 
     #[test]

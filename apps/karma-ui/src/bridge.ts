@@ -25,6 +25,7 @@ export const defaultConsoleState: ConsoleState = {
     immediateThreshold: 82,
     evidenceEnabled: false,
     evidenceRetentionDays: 7,
+    evidenceSkipAllowedApplications: false,
     rememberTitlesEnabled: true,
     ambiguousTitleKeywordsEnabled: false,
   },
