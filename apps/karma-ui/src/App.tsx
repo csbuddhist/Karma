@@ -31,6 +31,7 @@ import {
   Image,
   KeyRound,
   LayoutDashboard,
+  ListChecks,
   Lock,
   LockKeyhole,
   LogOut,
@@ -66,6 +67,8 @@ import {
   restoreMisjudgedTitle,
   allowBannedApplication,
   allowEvidenceApplication,
+  allowApplications,
+  applicationEffect,
   listInstalledApplications,
   getAppVersion,
   importSettings,
@@ -76,6 +79,7 @@ import {
   listRememberedTitles,
   loadConsole,
   lock,
+  maxApplicationRules,
   mergeImportedPolicy,
   parseImportedBackupFile,
   rememberedTitlePageSize,
@@ -809,9 +813,61 @@ function InstalledApplicationPicker({ applications, error, onPick }: { applicati
   return <div className="installed-picker"><label className="field"><span>{t("applications.installedSearch")}</span><input value={query} autoFocus disabled={!applications?.length} onChange={(event) => setQuery(event.target.value)} placeholder={t("applications.installedSearchPlaceholder")} /></label>{body}</div>;
 }
 
+/** Scans installed applications and adds the checked ones as "Allow" rules to the draft. */
+function BatchAllowApplications({ state, update, sessionToken, onClose }: { state: ConsoleState; update: (state: ConsoleState) => void; sessionToken: string; onClose: () => void }) {
+  const { t } = useI18n();
+  const [found, setFound] = useState<InstalledApplication[]>();
+  const [error, setError] = useState("");
+  const [query, setQuery] = useState("");
+  const [checked, setChecked] = useState<Set<string>>(() => new Set());
+  useEffect(() => {
+    let current = true;
+    listInstalledApplications(sessionToken)
+      .then((applications) => { if (current) setFound(applications); })
+      .catch((reason) => { if (current) { setFound([]); setError(localizeError(reason, t)); } });
+    return () => { current = false; };
+  }, [sessionToken]);
+  const rows = useMemo(() => (found ?? []).map((application) => ({ application, effect: applicationEffect(state.applications, application.executable) })), [found, state.applications]);
+  const needle = query.trim().toLowerCase();
+  const visible = rows.filter(({ application }) => !needle || [application.name, application.executable, application.publisher ?? ""].some((value) => value.toLowerCase().includes(needle)));
+  // Browsers are never bulk-selected: allowing one exempts every page it shows.
+  const bulk = visible.filter(({ application, effect }) => effect !== "allow" && !application.browser).map(({ application }) => application.executable);
+  const allChecked = bulk.length > 0 && bulk.every((executable) => checked.has(executable));
+  const chosen = rows.filter(({ application, effect }) => effect !== "allow" && checked.has(application.executable)).map(({ application }) => application);
+  const nextRules = useMemo(() => allowApplications(state.applications, chosen), [state.applications, rows, checked]);
+  const overLimit = nextRules.length > maxApplicationRules;
+  function toggle(executable: string, value: boolean) { setChecked((current) => { const next = new Set(current); if (value) next.add(executable); else next.delete(executable); return next; }); }
+  function toggleAll(value: boolean) { setChecked((current) => { const next = new Set(current); bulk.forEach((executable) => value ? next.add(executable) : next.delete(executable)); return next; }); }
+  function confirm() { if (!chosen.length || overLimit) return; update({ ...state, applications: nextRules }); onClose(); }
+  return <Modal title={t("applications.batchTitle")} onClose={onClose} wide>
+    <p className="modal-description">{t("applications.batchDescription")}</p>
+    {found === undefined ? <p className="batch-status">{t("applications.batchScanning")}</p> : <>
+      <div className="batch-toolbar">
+        <div className="learned-search"><Search size={14} /><input value={query} placeholder={t("applications.batchSearch")} onChange={(event) => setQuery(event.target.value)} /></div>
+        <label className="evidence-check-all"><input type="checkbox" checked={allChecked} disabled={!bulk.length} onChange={(event) => toggleAll(event.target.checked)} />{t("applications.batchSelectAll")}</label>
+      </div>
+      <div className="batch-list">{visible.length ? visible.map(({ application, effect }) => {
+        const allowed = effect === "allow";
+        return <label className={`batch-app${allowed ? " is-allowed" : ""}`} key={application.executable}>
+          <input type="checkbox" checked={allowed || checked.has(application.executable)} disabled={allowed} onChange={(event) => toggle(application.executable, event.target.checked)} />
+          <div className="app-main"><strong>{application.name}</strong><small>{application.publisher ? `${application.publisher} · ${application.executable}` : application.executable}</small></div>
+          {allowed && <span className="tag allow">{t("applications.batchAlreadyAllowed")}</span>}
+          {effect === "block" && <span className="tag block">{t("applications.batchCurrentlyBlocked")}</span>}
+          {application.browser && <span className="tag sensitive" title={t("applications.batchBrowserHint")}>{t("applications.browser")}</span>}
+        </label>;
+      }) : <p className="learned-empty">{t("applications.batchEmpty")}</p>}</div>
+      {chosen.some((application) => application.browser) && <div className="form-error"><CircleAlert size={16} />{t("applications.batchBrowserHint")}</div>}
+      {overLimit && <div className="form-error"><CircleAlert size={16} />{t("applications.batchTooMany", { max: maxApplicationRules })}</div>}
+      {error && <div className="form-error"><CircleAlert size={16} />{error}</div>}
+    </>}
+    <div className="modal-actions"><button className="secondary-button" onClick={onClose}>{t("common.cancel")}</button><button className="primary-button" disabled={!chosen.length || overLimit} onClick={confirm}><Check size={16} />{t("applications.batchConfirm", { count: chosen.length })}</button></div>
+  </Modal>;
+}
+
 function Applications({ state, update, sessionToken, onBannedAllowed }: { state: ConsoleState; update: (state: ConsoleState) => void; sessionToken: string; onBannedAllowed: ApplicationAllowedHandler }) {
   const { t } = useI18n();
   const [showAdd, setShowAdd] = useState(false);
+  const [showBatch, setShowBatch] = useState(false);
   const [source, setSource] = useState<"manual" | "installed">("manual");
   const [installed, setInstalled] = useState<InstalledApplication[]>();
   const [installedError, setInstalledError] = useState("");
@@ -834,7 +890,7 @@ function Applications({ state, update, sessionToken, onBannedAllowed }: { state:
     <button type="button" className={source === "manual" ? "active" : ""} aria-pressed={source === "manual"} onClick={() => setSource("manual")}><Pencil size={14} />{t("applications.sourceManual")}</button>
     <button type="button" className={source === "installed" ? "active" : ""} aria-pressed={source === "installed"} onClick={chooseInstalled}><Search size={14} />{t("applications.sourceInstalled")}</button>
   </div>;
-  return <div className="page-stack"><div className="privacy-banner"><AppWindow size={18} /><span><strong>{t("applications.bannerTitle")}</strong> {t("applications.bannerDescription")}</span></div><RepeatOffenderCard state={state} update={update} sessionToken={sessionToken} onBannedAllowed={onBannedAllowed} /><div className="page-actions"><button className="primary-button" onClick={() => setShowAdd(true)}><Plus size={17} />{t("applications.add")}</button></div><Card>{state.applications.map((rule) => { const name = localizedApplicationName(rule, t); return <div className="app-rule" key={rule.id}><div className="app-avatar"><AppWindow /></div><div className="app-main"><strong>{name}</strong><small>{localizedExecutable(rule, t)}</small></div><select value={rule.action} onChange={(event) => update({ ...state, applications: state.applications.map((item) => item.id === rule.id ? { ...item, action: event.target.value as ApplicationRule["action"] } : item) })}><option value="content_only">{t("applications.contentOnly")}</option><option value="block">{t("applications.block")}</option><option value="allow">{t("applications.allow")}</option></select><Toggle checked={rule.enabled} onChange={(enabled) => update({ ...state, applications: state.applications.map((item) => item.id === rule.id ? { ...item, enabled } : item) })} label={t("applications.enable", { name })} /></div>; })}</Card>{showAdd && <Modal title={t("applications.modalTitle")} onClose={closeAdd}>{sourceToggle}{source === "installed" ? <InstalledApplicationPicker applications={installed} error={installedError} onPick={pick} /> : <><label className="field"><span>{t("applications.displayName")}</span><input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder={t("applications.namePlaceholder")} /></label><label className="field"><span>{t("applications.executable")}</span><input value={draft.executable} onChange={(event) => setDraft({ ...draft, executable: event.target.value })} placeholder={t("applications.executablePlaceholder")} /></label><label className="field"><span>{t("applications.category")}</span><select value={draft.category} onChange={(event) => setDraft({ ...draft, category: event.target.value as ApplicationRule["category"] })}><option value="browser">{t("applications.browser")}</option><option value="player">{t("applications.player")}</option><option value="game">{t("applications.game")}</option><option value="custom">{t("applications.custom")}</option></select></label><button className="primary-button modal-submit" onClick={add}>{t("applications.save")}</button></>}</Modal>}</div>;
+  return <div className="page-stack"><div className="privacy-banner"><AppWindow size={18} /><span><strong>{t("applications.bannerTitle")}</strong> {t("applications.bannerDescription")}</span></div><RepeatOffenderCard state={state} update={update} sessionToken={sessionToken} onBannedAllowed={onBannedAllowed} /><div className="page-actions"><button className="secondary-button" onClick={() => setShowBatch(true)}><ListChecks size={17} />{t("applications.batchAdd")}</button><button className="primary-button" onClick={() => setShowAdd(true)}><Plus size={17} />{t("applications.add")}</button></div><Card>{state.applications.map((rule) => { const name = localizedApplicationName(rule, t); return <div className="app-rule" key={rule.id}><div className="app-avatar"><AppWindow /></div><div className="app-main"><strong>{name}</strong><small>{localizedExecutable(rule, t)}</small></div><select value={rule.action} onChange={(event) => update({ ...state, applications: state.applications.map((item) => item.id === rule.id ? { ...item, action: event.target.value as ApplicationRule["action"] } : item) })}><option value="content_only">{t("applications.contentOnly")}</option><option value="block">{t("applications.block")}</option><option value="allow">{t("applications.allow")}</option></select><Toggle checked={rule.enabled} onChange={(enabled) => update({ ...state, applications: state.applications.map((item) => item.id === rule.id ? { ...item, enabled } : item) })} label={t("applications.enable", { name })} /></div>; })}</Card>{showAdd && <Modal title={t("applications.modalTitle")} onClose={closeAdd}>{sourceToggle}{source === "installed" ? <InstalledApplicationPicker applications={installed} error={installedError} onPick={pick} /> : <><label className="field"><span>{t("applications.displayName")}</span><input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder={t("applications.namePlaceholder")} /></label><label className="field"><span>{t("applications.executable")}</span><input value={draft.executable} onChange={(event) => setDraft({ ...draft, executable: event.target.value })} placeholder={t("applications.executablePlaceholder")} /></label><label className="field"><span>{t("applications.category")}</span><select value={draft.category} onChange={(event) => setDraft({ ...draft, category: event.target.value as ApplicationRule["category"] })}><option value="browser">{t("applications.browser")}</option><option value="player">{t("applications.player")}</option><option value="game">{t("applications.game")}</option><option value="custom">{t("applications.custom")}</option></select></label><button className="primary-button modal-submit" onClick={add}>{t("applications.save")}</button></>}</Modal>}{showBatch && <BatchAllowApplications state={state} update={update} sessionToken={sessionToken} onClose={() => setShowBatch(false)} />}</div>;
 }
 
 const dayKeys: MessageKey[] = ["schedule.dayMon", "schedule.dayTue", "schedule.dayWed", "schedule.dayThu", "schedule.dayFri", "schedule.daySat", "schedule.daySun"];

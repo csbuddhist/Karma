@@ -1,7 +1,8 @@
 //! Programs installed on this computer, read from the Windows uninstall and
-//! App Paths registrations, so an administrator can pick an application rule
-//! instead of typing its executable path. Only the console reads this; the
-//! Service still validates every rule it is sent.
+//! App Paths registrations and from Start menu and desktop shortcuts, so an
+//! administrator can pick application rules instead of typing executable
+//! paths. Only the console reads this; the Service still validates every
+//! rule it is sent.
 
 // Only Windows lists anything; elsewhere the helpers serve the unit tests.
 #![cfg_attr(not(windows), allow(dead_code))]
@@ -21,6 +22,8 @@ pub struct InstalledApplication {
     pub name: String,
     pub executable: String,
     pub publisher: Option<String>,
+    /// A known browser: allowing it exempts every page it shows.
+    pub browser: bool,
 }
 
 /// The executable a `DisplayIcon` value names, such as `"C:\App\app.exe",0`.
@@ -70,6 +73,13 @@ pub fn pick_install_executable(display_name: &str, executables: &[String]) -> Op
 fn file_stem(path: &str) -> &str {
     let name = path.rsplit(['\\', '/']).next().unwrap_or(path);
     name.rsplit_once('.').map_or(name, |(stem, _)| stem)
+}
+
+fn is_known_browser(executable: &str) -> bool {
+    let file_name = executable.rsplit(['\\', '/']).next().unwrap_or(executable);
+    karma_policy::KNOWN_BROWSER_EXECUTABLES
+        .iter()
+        .any(|browser| file_name.eq_ignore_ascii_case(browser))
 }
 
 fn comparable(value: &str) -> String {
@@ -125,6 +135,7 @@ pub fn collect(
         })
         .map(|entry| InstalledApplication {
             name: entry.name.trim().to_owned(),
+            browser: is_known_browser(&entry.executable),
             ..entry
         })
         .collect();
@@ -200,6 +211,7 @@ pub fn list() -> Vec<InstalledApplication> {
                     name,
                     executable,
                     publisher: key.get_value::<String, _>("Publisher").ok(),
+                    browser: false,
                 });
             }
         }
@@ -227,10 +239,133 @@ pub fn list() -> Vec<InstalledApplication> {
                 name,
                 executable,
                 publisher: None,
+                browser: false,
+            });
+        }
+    }
+    // Shortcuts come last: registrations name a program better, and shortcuts
+    // add the ones registered without a usable executable.
+    for (name, target) in shortcuts::targets() {
+        if let Some(executable) = icon_executable(&target).and_then(existing) {
+            entries.push(InstalledApplication {
+                name,
+                executable,
+                publisher: None,
+                browser: false,
             });
         }
     }
     collect(entries)
+}
+
+/// Start menu (all users and this user) and desktop shortcut targets.
+#[cfg(windows)]
+mod shortcuts {
+    use std::{
+        fs,
+        os::windows::ffi::OsStrExt,
+        path::{Path, PathBuf},
+    };
+
+    use windows::{
+        Win32::{
+            System::Com::{
+                CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx,
+                CoUninitialize, IPersistFile, STGM_READ,
+            },
+            UI::Shell::{IShellLinkW, ShellLink},
+        },
+        core::{Interface, PCWSTR},
+    };
+
+    const MAX_SHORTCUTS: usize = 4096;
+    const MAX_DEPTH: usize = 6;
+
+    /// `(shortcut name, target path)` pairs; nothing is launched or resolved
+    /// over the network.
+    pub(super) fn targets() -> Vec<(String, String)> {
+        let mut files = Vec::new();
+        for (variable, suffix, depth) in [
+            (
+                "ProgramData",
+                r"Microsoft\Windows\Start Menu\Programs",
+                MAX_DEPTH,
+            ),
+            (
+                "APPDATA",
+                r"Microsoft\Windows\Start Menu\Programs",
+                MAX_DEPTH,
+            ),
+            ("PUBLIC", "Desktop", 0),
+            ("USERPROFILE", "Desktop", 0),
+        ] {
+            if let Some(base) = std::env::var_os(variable) {
+                find(&PathBuf::from(base).join(suffix), depth, &mut files);
+            }
+        }
+        if files.is_empty() {
+            return Vec::new();
+        }
+        let mut targets = Vec::new();
+        // SAFETY: balanced with CoUninitialize below on this blocking worker thread.
+        let initialized = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
+        // SAFETY: ShellLink is the in-process shell link class implementing IShellLinkW.
+        let link: windows::core::Result<IShellLinkW> =
+            unsafe { CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER) };
+        if let Ok(link) = link {
+            if let Ok(persist) = link.cast::<IPersistFile>() {
+                for file in files {
+                    if let Some(target) = target(&link, &persist, &file) {
+                        let name = file
+                            .file_stem()
+                            .map(|stem| stem.to_string_lossy().into_owned())
+                            .unwrap_or_default();
+                        targets.push((name, target));
+                    }
+                }
+            }
+        }
+        if initialized {
+            // SAFETY: pairs the successful CoInitializeEx above.
+            unsafe { CoUninitialize() };
+        }
+        targets
+    }
+
+    fn find(directory: &Path, depth: usize, files: &mut Vec<PathBuf>) {
+        let Ok(entries) = fs::read_dir(directory) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            if files.len() >= MAX_SHORTCUTS {
+                return;
+            }
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            let path = entry.path();
+            if kind.is_dir() && depth > 0 {
+                find(&path, depth - 1, files);
+            } else if kind.is_file()
+                && path
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("lnk"))
+            {
+                files.push(path);
+            }
+        }
+    }
+
+    fn target(link: &IShellLinkW, persist: &IPersistFile, file: &Path) -> Option<String> {
+        let path: Vec<u16> = file.as_os_str().encode_wide().chain(Some(0)).collect();
+        // SAFETY: `path` is NUL-terminated and outlives the call.
+        unsafe { persist.Load(PCWSTR(path.as_ptr()), STGM_READ) }.ok()?;
+        let mut target = [0_u16; 2048];
+        // SAFETY: GetPath writes at most `target.len()` UTF-16 units; no find data is requested.
+        unsafe { link.GetPath(&mut target, std::ptr::null_mut(), 0) }.ok()?;
+        let length = target.iter().position(|unit| *unit == 0)?;
+        (length > 0).then(|| String::from_utf16_lossy(&target[..length]))
+    }
 }
 
 #[cfg(not(windows))]
@@ -247,6 +382,7 @@ mod tests {
             name: name.into(),
             executable: executable.into(),
             publisher: None,
+            browser: false,
         }
     }
 
@@ -319,6 +455,12 @@ mod tests {
             applications,
             [app("Alpha", r"C:\A\a.exe"), app("zeta", r"C:\Z\z.exe")]
         );
+        let browsers = collect([
+            app("Chrome", r"C:\Google\Chrome\Application\chrome.exe"),
+            app("Reader", r"C:\Reader\reader.exe"),
+        ]);
+        assert!(browsers[0].browser);
+        assert!(!browsers[1].browser);
         let many = collect(
             (0..MAX_INSTALLED_APPLICATIONS + 5)
                 .map(|index| app(&format!("App {index:04}"), &format!(r"C:\Apps\{index}.exe"))),

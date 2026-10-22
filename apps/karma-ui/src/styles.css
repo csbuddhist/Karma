@@ -240,7 +240,7 @@ select, .field input, .toolbar input { height: 39px; padding: 0 11px; color: var
 .icon-button { width: 34px; height: 34px; display: grid; place-items: center; padding: 0; color: #757b72; background: transparent; border: 0; border-radius: 8px; cursor: pointer; }
 .icon-button:hover { background: #f1f1ed; }
 .icon-button.danger:hover { color: var(--danger); background: var(--danger-soft); }
-.page-actions { display: flex; justify-content: flex-end; }
+.page-actions { display: flex; justify-content: flex-end; gap: 9px; }
 .app-rule { display: flex; align-items: center; gap: 14px; padding: 14px 0; border-top: 1px solid #ecece6; }
 .app-rule:first-child { border-top: 0; }
 .app-avatar { width: 39px; height: 39px; display: grid; place-items: center; color: #666b64; background: #eeefea; border-radius: 11px; }
@@ -249,6 +249,13 @@ select, .field input, .toolbar input { height: 39px; padding: 0 11px; color: var
 .app-main strong { font-size: 12px; }
 .app-main small { margin-top: 3px; color: var(--muted); font-size: 9px; }
 .app-rule select { width: 175px; }
+.batch-status { margin: 18px 0 4px; color: var(--muted); font-size: 11px; }
+.batch-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 14px 0 6px; }
+.batch-list { max-height: min(46vh, 420px); overflow: auto; margin-bottom: 8px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.batch-app { display: flex; align-items: center; gap: 10px; padding: 9px 4px; border-top: 1px solid #ecece6; cursor: pointer; }
+.batch-app:first-child { border-top: 0; }
+.batch-app.is-allowed { cursor: default; opacity: .7; }
+.batch-app .app-main small { overflow-wrap: anywhere; }
 .repeat-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .repeat-fields .field { margin-top: 15px; }
 .field-error { display: block; margin-top: 7px; color: #a33e3a; font-size: 9px; }

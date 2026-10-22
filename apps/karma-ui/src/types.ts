@@ -89,6 +89,8 @@ export interface InstalledApplication {
   name: string;
   executable: string;
   publisher?: string | null;
+  /** A known browser: allowing it exempts every page it shows. */
+  browser?: boolean;
 }
 
 export interface WebsiteRule {

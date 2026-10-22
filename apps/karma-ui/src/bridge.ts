@@ -301,6 +301,53 @@ export async function listInstalledApplications(sessionToken: string): Promise<I
   return [];
 }
 
+/** Mirrors the Service's application rule limit. */
+export const maxApplicationRules = 256;
+
+function pathComponents(value: string): string[] {
+  return value.split(/[\\/]/).filter(Boolean).map((part) => part.toLowerCase());
+}
+
+function trailingMatch(observed: string[], rule: string[]): boolean {
+  return rule.length > 0 && observed.length >= rule.length && rule.every((part, index) => observed[observed.length - rule.length + index] === part);
+}
+
+/** Resolves an executable like the Service does: an enabled block rule outranks allow. */
+export function applicationEffect(rules: ApplicationRule[], executable: string): ApplicationRule["action"] {
+  const observed = pathComponents(executable);
+  let effect: ApplicationRule["action"] = "content_only";
+  for (const rule of rules) {
+    if (!rule.enabled || !trailingMatch(observed, pathComponents(rule.executable))) continue;
+    if (rule.action === "block") return "block";
+    if (rule.action === "allow") effect = "allow";
+  }
+  return effect;
+}
+
+/**
+ * Always allows each application, as the Service's one-click allow does: a rule
+ * for exactly that executable becomes an enabled "Allow" rule, an enabled
+ * "Always block" rule that would outrank it becomes "Allow", and otherwise a
+ * new "Allow" rule is appended.
+ */
+export function allowApplications(rules: ApplicationRule[], applications: InstalledApplication[]): ApplicationRule[] {
+  let next = rules;
+  for (const application of applications) {
+    const target = pathComponents(application.executable);
+    let exact = false;
+    next = next.map((rule) => {
+      const components = pathComponents(rule.executable);
+      if (components.length === target.length && trailingMatch(target, components)) {
+        exact = true;
+        return { ...rule, action: "allow", enabled: true };
+      }
+      return rule.enabled && rule.action === "block" && trailingMatch(target, components) ? { ...rule, action: "allow" } : rule;
+    });
+    if (!exact) next = [...next, { id: crypto.randomUUID(), name: application.name, executable: application.executable, category: application.browser ? "browser" : "custom", action: "allow", enabled: true }];
+  }
+  return next;
+}
+
 /** Forgets a remembered title and keeps it from being remembered again. */
 export async function markTitleMisjudged(sessionToken: string, titleId: string, superPassword?: string): Promise<void> {
   if (isTauri()) return invoke("mark_title_misjudged", { sessionToken, titleId, superPassword });
