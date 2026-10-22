@@ -25,7 +25,7 @@ use karma_policy::{
     ApplicationEffect, ApplicationPolicy, ContextPolicy, MAX_MISJUDGED_TITLES, MINUTES_PER_DAY,
     MINUTES_PER_WEEK, NetworkRestriction, NetworkSchedulePolicy, RememberedTitle,
     RepeatOffenderRule, TitleReason, active_bans, allow_application, is_banned,
-    normalize_executable, policy_weakenings, record_closure, remember_title,
+    is_browser_executable, normalize_executable, policy_weakenings, record_closure, remember_title,
     remember_titles_enabled, rememberable_title_key, title_digest, title_key,
 };
 use rand::{RngCore, rngs::OsRng};
@@ -1055,6 +1055,10 @@ impl ServiceCore {
                     .ok_or(ServiceErrorCode::EvidenceUnavailable)
                     .map(|item| attributed_executable(&item.application_name))?
                     .ok_or(ServiceErrorCode::InvalidRequest)?;
+                // Allowing a browser would exempt every page it shows.
+                if is_browser_executable(&runtime.stored.policy, &executable) {
+                    return Err(ServiceErrorCode::InvalidRequest);
+                }
                 if expected_revision != runtime.stored.policy_revision {
                     return Err(ServiceErrorCode::RevisionConflict);
                 }
@@ -2218,6 +2222,11 @@ mod tests {
         );
         submit_test_evidence(&core, "evidence-game", r"C:\Games\Game.exe");
         submit_test_evidence(&core, "evidence-unknown", "来源应用无法可靠归属");
+        submit_test_evidence(
+            &core,
+            "evidence-browser",
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        );
         let session = authenticate_ui(&core, "auth-allow-evidence", 20_000);
         set_super(&core, &session, 20_001);
 
@@ -2255,6 +2264,19 @@ mod tests {
                 "unknown",
                 1,
                 "evidence-unknown",
+                super_password,
+                20_004
+            )
+            .err(),
+            Some(ServiceErrorCode::InvalidRequest)
+        );
+        assert_eq!(
+            allow_evidence(
+                &core,
+                &session,
+                "browser",
+                1,
+                "evidence-browser",
                 super_password,
                 20_004
             )

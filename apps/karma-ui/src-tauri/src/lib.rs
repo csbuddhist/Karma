@@ -107,6 +107,22 @@ mod tests {
     use super::{build_export_document, parse_import_document};
 
     #[test]
+    fn console_browser_list_matches_the_policy_list() {
+        let bridge = include_str!("../../src/bridge.ts");
+        let start = bridge
+            .find("export const knownBrowserExecutables")
+            .expect("bridge.ts declares knownBrowserExecutables");
+        let list = &bridge[start..];
+        let list = &list[list.find("= [").unwrap() + 3..list.find("];").unwrap()];
+        let console: Vec<&str> = list
+            .split(',')
+            .map(|item| item.trim().trim_matches('"'))
+            .filter(|item| !item.is_empty())
+            .collect();
+        assert_eq!(console, karma_policy::KNOWN_BROWSER_EXECUTABLES);
+    }
+
+    #[test]
     fn export_document_round_trips_and_omits_runtime_state() {
         let document = build_export_document(json!({
             "protectionEnabled": true,

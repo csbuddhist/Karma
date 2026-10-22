@@ -150,6 +150,15 @@ impl NetworkRestriction {
     }
 }
 
+/// Whether `executable_path` is a known browser or matches an enabled console
+/// application rule categorized as a browser.
+pub fn is_browser_executable(policy: &Value, executable_path: &str) -> bool {
+    is_browser(
+        &path_components(executable_path),
+        &browser_application_rules(policy),
+    )
+}
+
 fn is_browser(observed: &[String], browser_rules: &[Vec<String>]) -> bool {
     observed.last().is_some_and(|file_name| {
         KNOWN_BROWSER_EXECUTABLES
@@ -517,6 +526,26 @@ mod tests {
         assert!(executables.contains(&"msedge.exe".to_owned()));
         assert!(executables.contains(&r"c:\tools\mybrowser.exe".to_owned()));
         assert!(!executables.iter().any(|name| name.contains("受支持")));
+    }
+
+    #[test]
+    fn browser_executables_include_known_and_console_browsers() {
+        let policy = json!({
+            "applications": [
+                {"id":"custom","name":"Custom","executable":r"C:\Tools\mybrowser.exe","category":"browser","action":"content_only","enabled":true},
+                {"id":"off","name":"Off","executable":r"C:\Tools\oldbrowser.exe","category":"browser","action":"content_only","enabled":false},
+                {"id":"reader","name":"Reader","executable":r"C:\Tools\reader.exe","category":"custom","action":"allow","enabled":true}
+            ]
+        });
+        for browser in [
+            r"C:\Program Files\Google\Chrome\Application\CHROME.EXE",
+            r"c:\tools\mybrowser.exe",
+        ] {
+            assert!(is_browser_executable(&policy, browser), "{browser}");
+        }
+        for other in [r"C:\Tools\oldbrowser.exe", r"C:\Tools\reader.exe"] {
+            assert!(!is_browser_executable(&policy, other), "{other}");
+        }
     }
 
     #[test]

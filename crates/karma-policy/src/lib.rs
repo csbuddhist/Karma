@@ -25,7 +25,7 @@ pub use context::{
 pub use engine::{DecisionEngine, EvaluationInput, EvaluationResult};
 pub use network_schedule::{
     KNOWN_BROWSER_EXECUTABLES, MINUTES_PER_DAY, MINUTES_PER_WEEK, NetworkRestriction,
-    NetworkScheduleError, NetworkSchedulePolicy, NetworkTarget,
+    NetworkScheduleError, NetworkSchedulePolicy, NetworkTarget, is_browser_executable,
 };
 pub use remembered_title::{
     MAX_MISJUDGED_TITLES, MAX_REMEMBERED_TITLES, RememberedTitle, TitleReason, remember_title,

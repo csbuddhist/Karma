@@ -67,6 +67,7 @@ import {
   restoreMisjudgedTitle,
   allowBannedApplication,
   allowEvidenceApplication,
+  isBrowserExecutable,
   allowApplications,
   applicationEffect,
   listInstalledApplications,
@@ -1176,7 +1177,9 @@ function Evidence({ state, update, sessionToken, onDeleted, onApplicationAllowed
   function allowButton(item: EvidenceItem) {
     const attributed = isAttributedExecutable(item.applicationName);
     const allowed = attributed && allowedExecutables.has(normalizeExecutable(item.applicationName));
-    return <button type="button" className="secondary-button compact" disabled={!attributed || allowed || !state.serviceConnected} aria-label={t("evidence.allowApplicationOne", { name: item.applicationName })} title={t(attributed ? "evidence.allowApplicationHint" : "evidence.allowApplicationUnavailable")} onClick={() => askAllow(item)}><ShieldCheck size={14} />{t(allowed ? "evidence.alreadyAllowed" : "evidence.allowApplication")}</button>;
+    // Allowing a browser would exempt every page it shows; the Service refuses it too.
+    const browser = attributed && isBrowserExecutable(state.applications, item.applicationName);
+    return <button type="button" className="secondary-button compact" disabled={!attributed || allowed || browser || !state.serviceConnected} aria-label={t("evidence.allowApplicationOne", { name: item.applicationName })} title={t(!attributed ? "evidence.allowApplicationUnavailable" : browser ? "evidence.allowApplicationBrowser" : "evidence.allowApplicationHint")} onClick={() => askAllow(item)}><ShieldCheck size={14} />{t(allowed ? "evidence.alreadyAllowed" : "evidence.allowApplication")}</button>;
   }
   async function confirmDelete() {
     if (!pendingDelete) return;

@@ -313,6 +313,26 @@ function trailingMatch(observed: string[], rule: string[]): boolean {
   return rule.length > 0 && observed.length >= rule.length && rule.every((part, index) => observed[observed.length - rule.length + index] === part);
 }
 
+/** Mirrors `karma_policy::KNOWN_BROWSER_EXECUTABLES`; a console test keeps the two lists equal. */
+export const knownBrowserExecutables: readonly string[] = [
+  "chrome.exe", "chromium.exe", "msedge.exe", "iexplore.exe", "firefox.exe", "waterfox.exe",
+  "librewolf.exe", "brave.exe", "opera.exe", "opera_gx.exe", "vivaldi.exe", "arc.exe",
+  "thorium.exe", "yandex.exe", "whale.exe", "maxthon.exe", "360se.exe", "360chrome.exe",
+  "360chromex.exe", "qqbrowser.exe", "sogouexplorer.exe", "2345explorer.exe", "liebao.exe",
+  "ucbrowser.exe", "quark.exe",
+];
+
+/** Mirrors the Service: a known browser, or an enabled application rule categorized as a browser. */
+export function isBrowserExecutable(rules: ApplicationRule[], executable: string): boolean {
+  const observed = pathComponents(executable);
+  const fileName = observed[observed.length - 1];
+  if (fileName && knownBrowserExecutables.includes(fileName)) return true;
+  return rules.some((rule) => {
+    const components = pathComponents(rule.executable);
+    return rule.enabled && rule.category === "browser" && (components[components.length - 1] ?? "").endsWith(".exe") && trailingMatch(observed, components);
+  });
+}
+
 /** Resolves an executable like the Service does: an enabled block rule outranks allow. */
 export function applicationEffect(rules: ApplicationRule[], executable: string): ApplicationRule["action"] {
   const observed = pathComponents(executable);
