@@ -3,7 +3,10 @@
 //! instead of typing its executable path. Only the console reads this; the
 //! Service still validates every rule it is sent.
 
-use std::{collections::HashSet, path::Path};
+// Only Windows lists anything; elsewhere the helpers serve the unit tests.
+#![cfg_attr(not(windows), allow(dead_code))]
+
+use std::collections::HashSet;
 
 use serde::Serialize;
 
@@ -39,11 +42,7 @@ pub fn icon_executable(display_icon: &str) -> Option<String> {
 
 /// Whether the executable only removes or sets up its program.
 pub fn is_uninstaller(path: &str) -> bool {
-    let stem = Path::new(path)
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or_default()
-        .to_lowercase();
+    let stem = file_stem(path).to_lowercase();
     stem.starts_with("unins") || stem.contains("uninstall") || stem == "setup" || stem == "update"
 }
 
@@ -61,15 +60,16 @@ pub fn pick_install_executable(display_name: &str, executables: &[String]) -> Op
     candidates
         .into_iter()
         .find(|path| {
-            let stem = comparable(
-                Path::new(path.as_str())
-                    .file_stem()
-                    .and_then(|stem| stem.to_str())
-                    .unwrap_or_default(),
-            );
+            let stem = comparable(file_stem(path));
             stem.len() >= 3 && name.contains(&stem)
         })
         .cloned()
+}
+
+/// The file name without its extension, splitting Windows paths on any host.
+fn file_stem(path: &str) -> &str {
+    let name = path.rsplit(['\\', '/']).next().unwrap_or(path);
+    name.rsplit_once('.').map_or(name, |(stem, _)| stem)
 }
 
 fn comparable(value: &str) -> String {
@@ -135,6 +135,8 @@ pub fn collect(
 
 #[cfg(windows)]
 pub fn list() -> Vec<InstalledApplication> {
+    use std::path::Path;
+
     use winreg::{
         RegKey,
         enums::{
