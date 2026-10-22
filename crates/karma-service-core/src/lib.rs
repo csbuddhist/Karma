@@ -1014,6 +1014,10 @@ impl ServiceCore {
                 if !is_banned(&runtime.stored.repeat_offenders, &executable, now_ms) {
                     return Err(ServiceErrorCode::InvalidRequest);
                 }
+                // Allowing a browser would exempt every page it shows.
+                if is_browser_executable(&runtime.stored.policy, &executable) {
+                    return Err(ServiceErrorCode::InvalidRequest);
+                }
                 if expected_revision != runtime.stored.policy_revision {
                     return Err(ServiceErrorCode::RevisionConflict);
                 }
@@ -2039,11 +2043,19 @@ mod tests {
     const DEFAULT_STRIKES: u32 = 5;
 
     fn establish_repeat_offender_ban(core: &ServiceCore, base_ms: i64) {
+        establish_repeat_offender_ban_of(core, base_ms, r"C:\Browser\chrome.exe");
+    }
+
+    /// A program the Service never treats as a browser.
+    const BANNED_PLAYER: &str = r"C:\Apps\player.exe";
+
+    fn establish_repeat_offender_ban_of(core: &ServiceCore, base_ms: i64, executable: &str) {
         for index in 0..DEFAULT_STRIKES {
             let at = base_ms + i64::from(index) * 1_000;
             let event_id = format!("strike-{index}");
-            let observation =
+            let mut observation =
                 context_observation_at(&event_id, at, "", Some("www.blocked.example"), 100 + index);
+            observation.source.executable_name = executable.into();
             match submit_context_at(core, &format!("strike-nonce-{index}"), observation, at + 1) {
                 ServiceResult::DispositionRequired {
                     event_id: struck, ..
@@ -2385,10 +2397,10 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let core = open_core(directory.path(), 0);
         configure_policy(&core, repeat_offender_policy());
-        establish_repeat_offender_ban(&core, 10_000);
+        establish_repeat_offender_ban_of(&core, 10_000, BANNED_PLAYER);
         let session = authenticate_ui(&core, "auth-allow-banned", 20_000);
         set_super(&core, &session, 20_001);
-        let banned = r"C:\Browser\chrome.exe";
+        let banned = BANNED_PLAYER;
 
         assert_eq!(
             allow_banned(&core, &session, "no-super", 1, banned, None, 20_002).err(),
@@ -2443,7 +2455,7 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .find(|rule| rule["executable"] == r"c:\browser\chrome.exe")
+            .find(|rule| rule["executable"] == r"c:\apps\player.exe")
             .unwrap();
         assert_eq!(
             (&rule["action"], &rule["enabled"]),
@@ -2459,7 +2471,9 @@ mod tests {
                 .banned_executables
                 .is_empty()
         );
-        let relaunch = context_observation_at("relaunch", 20_008, "项目进度评审会议", None, 300);
+        let mut relaunch =
+            context_observation_at("relaunch", 20_008, "项目进度评审会议", None, 300);
+        relaunch.source.executable_name = BANNED_PLAYER.into();
         assert!(matches!(
             submit_context_at(&core, "relaunch-nonce", relaunch, 20_009),
             ServiceResult::Acknowledged
@@ -2474,11 +2488,40 @@ mod tests {
     }
 
     #[test]
-    fn allowing_a_banned_application_uses_the_session_without_super_password() {
+    fn a_banned_browser_cannot_be_allowed() {
         let directory = tempfile::tempdir().unwrap();
         let core = open_core(directory.path(), 0);
         configure_policy(&core, repeat_offender_policy());
         establish_repeat_offender_ban(&core, 10_000);
+        let session = authenticate_ui(&core, "auth-allow-browser", 20_000);
+
+        assert_eq!(
+            allow_banned(
+                &core,
+                &session,
+                "browser",
+                1,
+                r"C:\Browser\chrome.exe",
+                None,
+                20_001
+            )
+            .err(),
+            Some(ServiceErrorCode::InvalidRequest)
+        );
+        assert_eq!(
+            list_enforcement(&core, &session, "browser-still-banned", 20_002)
+                .active_bans
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn allowing_a_banned_application_uses_the_session_without_super_password() {
+        let directory = tempfile::tempdir().unwrap();
+        let core = open_core(directory.path(), 0);
+        configure_policy(&core, repeat_offender_policy());
+        establish_repeat_offender_ban_of(&core, 10_000, BANNED_PLAYER);
         let session = authenticate_ui(&core, "auth-allow-session", 20_000);
 
         assert!(matches!(
@@ -2487,7 +2530,7 @@ mod tests {
                 &session,
                 "session-only",
                 1,
-                r"C:\Browser\chrome.exe",
+                BANNED_PLAYER,
                 None,
                 20_001
             ),

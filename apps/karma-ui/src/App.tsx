@@ -785,7 +785,7 @@ function RepeatOffenderCard({ state, update, sessionToken, onBannedAllowed }: { 
     </div>
     <div className="learned-list">
       <span className="learned-heading">{t("applications.activeBans")}</span>
-      {state.activeBans.length ? state.activeBans.map((ban) => <div className="app-rule" key={ban.executable}><div className="app-avatar"><AppWindow /></div><div className="app-main"><strong>{executableFileName(ban.executable)}</strong><small>{ban.executable}</small></div><StatusPill tone="danger">{t("applications.bannedUntil", { time: dateTime.format(ban.bannedUntilMs) })}</StatusPill><button className="secondary-button" disabled={busyExecutable !== undefined || !state.serviceConnected} title={t("applications.allowBannedHint")} onClick={() => void allow(ban.executable)}><Check size={16} />{t(busyExecutable === ban.executable ? "common.saving" : "applications.allowBanned")}</button></div>) : <p className="learned-empty">{t("applications.noActiveBans")}</p>}
+      {state.activeBans.length ? state.activeBans.map((ban) => <div className="app-rule" key={ban.executable}><div className="app-avatar"><AppWindow /></div><div className="app-main"><strong>{executableFileName(ban.executable)}</strong><small>{ban.executable}</small></div><StatusPill tone="danger">{t("applications.bannedUntil", { time: dateTime.format(ban.bannedUntilMs) })}</StatusPill><button className="secondary-button" disabled={busyExecutable !== undefined || !state.serviceConnected || isBrowserExecutable(state.applications, ban.executable)} title={t(isBrowserExecutable(state.applications, ban.executable) ? "applications.allowBannedBrowser" : "applications.allowBannedHint")} onClick={() => void allow(ban.executable)}><Check size={16} />{t(busyExecutable === ban.executable ? "common.saving" : "applications.allowBanned")}</button></div>) : <p className="learned-empty">{t("applications.noActiveBans")}</p>}
       {error && <div className="form-error"><CircleAlert size={16} />{error}</div>}
     </div>
   </Card>;
@@ -828,13 +828,13 @@ function BatchAllowApplications({ state, update, sessionToken, onClose }: { stat
       .catch((reason) => { if (current) { setFound([]); setError(localizeError(reason, t)); } });
     return () => { current = false; };
   }, [sessionToken]);
-  const rows = useMemo(() => (found ?? []).map((application) => ({ application, effect: applicationEffect(state.applications, application.executable) })), [found, state.applications]);
+  // Browsers can never be allowed here: allowing one exempts every page it shows.
+  const rows = useMemo(() => (found ?? []).map((application) => ({ application, effect: applicationEffect(state.applications, application.executable), browser: Boolean(application.browser) || isBrowserExecutable(state.applications, application.executable) })), [found, state.applications]);
   const needle = query.trim().toLowerCase();
   const visible = rows.filter(({ application }) => !needle || [application.name, application.executable, application.publisher ?? ""].some((value) => value.toLowerCase().includes(needle)));
-  // Browsers are never bulk-selected: allowing one exempts every page it shows.
-  const bulk = visible.filter(({ application, effect }) => effect !== "allow" && !application.browser).map(({ application }) => application.executable);
+  const bulk = visible.filter(({ effect, browser }) => effect !== "allow" && !browser).map(({ application }) => application.executable);
   const allChecked = bulk.length > 0 && bulk.every((executable) => checked.has(executable));
-  const chosen = rows.filter(({ application, effect }) => effect !== "allow" && checked.has(application.executable)).map(({ application }) => application);
+  const chosen = rows.filter(({ application, effect, browser }) => effect !== "allow" && !browser && checked.has(application.executable)).map(({ application }) => application);
   const nextRules = useMemo(() => allowApplications(state.applications, chosen), [state.applications, rows, checked]);
   const overLimit = nextRules.length > maxApplicationRules;
   function toggle(executable: string, value: boolean) { setChecked((current) => { const next = new Set(current); if (value) next.add(executable); else next.delete(executable); return next; }); }
@@ -847,17 +847,16 @@ function BatchAllowApplications({ state, update, sessionToken, onClose }: { stat
         <div className="learned-search"><Search size={14} /><input value={query} placeholder={t("applications.batchSearch")} onChange={(event) => setQuery(event.target.value)} /></div>
         <label className="evidence-check-all"><input type="checkbox" checked={allChecked} disabled={!bulk.length} onChange={(event) => toggleAll(event.target.checked)} />{t("applications.batchSelectAll")}</label>
       </div>
-      <div className="batch-list">{visible.length ? visible.map(({ application, effect }) => {
+      <div className="batch-list">{visible.length ? visible.map(({ application, effect, browser }) => {
         const allowed = effect === "allow";
-        return <label className={`batch-app${allowed ? " is-allowed" : ""}`} key={application.executable}>
-          <input type="checkbox" checked={allowed || checked.has(application.executable)} disabled={allowed} onChange={(event) => toggle(application.executable, event.target.checked)} />
+        return <label className={`batch-app${allowed || browser ? " is-disabled" : ""}`} key={application.executable} title={browser ? t("applications.batchBrowserHint") : undefined}>
+          <input type="checkbox" checked={allowed || (!browser && checked.has(application.executable))} disabled={allowed || browser} onChange={(event) => toggle(application.executable, event.target.checked)} />
           <div className="app-main"><strong>{application.name}</strong><small>{application.publisher ? `${application.publisher} · ${application.executable}` : application.executable}</small></div>
           {allowed && <span className="tag allow">{t("applications.batchAlreadyAllowed")}</span>}
           {effect === "block" && <span className="tag block">{t("applications.batchCurrentlyBlocked")}</span>}
-          {application.browser && <span className="tag sensitive" title={t("applications.batchBrowserHint")}>{t("applications.browser")}</span>}
+          {browser && <span className="tag sensitive">{t("applications.browser")}</span>}
         </label>;
       }) : <p className="learned-empty">{t("applications.batchEmpty")}</p>}</div>
-      {chosen.some((application) => application.browser) && <div className="form-error"><CircleAlert size={16} />{t("applications.batchBrowserHint")}</div>}
       {overLimit && <div className="form-error"><CircleAlert size={16} />{t("applications.batchTooMany", { max: maxApplicationRules })}</div>}
       {error && <div className="form-error"><CircleAlert size={16} />{error}</div>}
     </>}
