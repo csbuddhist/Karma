@@ -27,7 +27,7 @@ use service_client::{
     RecognitionPolicyHandle,
 };
 #[cfg(windows)]
-use startup::{CaptureTargetFactory, MonitorInventory, StartupProbe};
+use startup::{CaptureTargetFactory, MonitorInventory, StartupProbe, monitor_topology_changed};
 
 #[cfg(any(windows, test))]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -498,7 +498,8 @@ fn run_windows(
     let mut image_health = Vec::<InferenceHealthHandle>::new();
     let mut ocr_health = Vec::<InferenceHealthHandle>::new();
     let mut active_monitors = Vec::<MonitorSnapshot>::new();
-    for (monitor_index, monitor) in enumerate_active_monitors()?.into_iter().enumerate() {
+    let started_topology = enumerate_active_monitors()?;
+    for (monitor_index, monitor) in started_topology.iter().cloned().enumerate() {
         let result: Result<_, Box<dyn std::error::Error>> = (|| {
             // Each monitor owns a separate immediate context because D3D11
             // immediate contexts must not be used concurrently by workers.
@@ -571,6 +572,18 @@ fn run_windows(
             return Err(std::io::Error::other("all monitor frame workers stopped").into());
         }
         std::thread::sleep(std::time::Duration::from_secs(1));
+        // Displays often reconnect a few seconds after resume or logon. Exit so
+        // the Service watchdog relaunches the Agent against the new topology.
+        if let Ok(current_topology) = enumerate_active_monitors() {
+            if monitor_topology_changed(&started_topology, &current_topology) {
+                println!(
+                    "status=restarting component=monitor_topology monitors={} previous={}",
+                    current_topology.len(),
+                    started_topology.len()
+                );
+                return Err(std::io::Error::other("monitor topology changed").into());
+            }
+        }
         health_tick = health_tick.saturating_add(1);
         if health_tick == 10 {
             if let Some(client) = &service_client {
