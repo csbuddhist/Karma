@@ -1456,15 +1456,21 @@ fn new_session(runtime: &mut RuntimeState, now_ms: i64) -> ServiceResult {
 }
 
 /// The normalized executable an evidence item names, when it is an absolute
-/// Windows path to an `.exe`. Evidence the agent could not attribute records a
-/// placeholder instead, which can never become an application rule.
+/// Windows path to an `.exe` or, from the macOS agent, an absolute POSIX path.
+/// Evidence the agent could not attribute records a placeholder instead, which
+/// can never become an application rule.
 fn attributed_executable(application_name: &str) -> Option<String> {
     let executable = normalize_executable(application_name);
     let bytes = executable.as_bytes();
-    let absolute = executable.starts_with(r"\\")
-        || (bytes.len() > 3 && bytes[0].is_ascii_alphabetic() && &bytes[1..3] == br":\");
-    (absolute
-        && executable.ends_with(".exe")
+    let windows = (executable.starts_with(r"\\")
+        || (bytes.len() > 3 && bytes[0].is_ascii_alphabetic() && &bytes[1..3] == br":\"))
+        && executable.ends_with(".exe");
+    // Normalization turns `/` into `\`, so a POSIX path keeps a single leading
+    // separator; Windows agents never report one.
+    let posix = application_name.trim().starts_with('/')
+        && !executable.starts_with(r"\\")
+        && bytes.len() > 1;
+    ((windows || posix)
         && executable.chars().count() <= karma_ipc::MAX_EXECUTABLE_CHARS
         && !executable.chars().any(char::is_control))
     .then_some(executable)
@@ -2347,7 +2353,7 @@ mod tests {
     }
 
     #[test]
-    fn attributed_executable_requires_an_absolute_exe_path() {
+    fn attributed_executable_requires_an_absolute_program_path() {
         assert_eq!(
             attributed_executable(r" C:/Apps/Player.EXE "),
             Some(r"c:\apps\player.exe".into())
@@ -2356,11 +2362,17 @@ mod tests {
             attributed_executable(r"\\server\share\tool.exe"),
             Some(r"\\server\share\tool.exe".into())
         );
+        assert_eq!(
+            attributed_executable("/Applications/Player.app/Contents/MacOS/Player"),
+            Some(r"\applications\player.app\contents\macos\player".into())
+        );
         for invalid in [
             "player.exe",
             r"C:\Apps\notes.txt",
             "来源应用无法可靠归属",
             r"C:player.exe",
+            "/",
+            "//server/share/tool",
         ] {
             assert_eq!(attributed_executable(invalid), None, "{invalid}");
         }

@@ -420,10 +420,12 @@ function normalizeExecutable(path: string): string {
   return path.trim().replace(/\//g, "\\").toLowerCase();
 }
 
-/** Whether evidence names an absolute `.exe` path, as the Service requires to allowlist it. */
+/** Whether evidence names a program the Service can allowlist: an absolute Windows `.exe` path or an absolute macOS path. */
 function isAttributedExecutable(path: string): boolean {
   const normalized = normalizeExecutable(path);
-  return (/^[a-z]:\\./.test(normalized) || normalized.startsWith("\\\\")) && normalized.endsWith(".exe");
+  const windows = (/^[a-z]:\\./.test(normalized) || normalized.startsWith("\\\\")) && normalized.endsWith(".exe");
+  const posix = path.trim().startsWith("/") && !normalized.startsWith("\\\\") && normalized.length > 1;
+  return windows || posix;
 }
 
 function useShortDateTime(): Intl.DateTimeFormat {
@@ -988,7 +990,7 @@ function Schedule({ state, update, sessionToken, onNetworkChange }: { state: Con
   const [editingId, setEditingId] = useState<string>();
   const [application, setApplication] = useState("");
   const [error, setError] = useState("");
-  const knownExecutables = useMemo(() => Array.from(new Set(state.applications.map((rule) => rule.executable).filter((value) => /\.exe$/i.test(value)))), [state.applications]);
+  const knownExecutables = useMemo(() => Array.from(new Set(state.applications.map((rule) => rule.executable).filter((value) => /\.exe$/i.test(value) || value.trim().startsWith("/")))), [state.applications]);
   const targetHint = networkTargets.find((target) => target.value === draft.target)?.hint ?? "schedule.targetBrowsersHint";
   function patch(next: Partial<ScheduleDraft>) { setDraft({ ...draft, ...next }); setError(""); }
   function patchBlock(index: number, next: Partial<ScheduleBlock>) { patch({ blocks: draft.blocks.map((block, position) => position === index ? { ...block, ...next } : block) }); }
