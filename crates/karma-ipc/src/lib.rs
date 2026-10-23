@@ -104,6 +104,12 @@ pub enum ServiceRequest {
     ListEvidence {
         session_token: String,
     },
+    /// The newest audit entries, newest first, at most `MAX_AUDIT_PAGE`.
+    ListAudit {
+        session_token: String,
+        #[serde(default = "default_audit_page")]
+        limit: u32,
+    },
     RevealEvidence {
         session_token: String,
         password: String,
@@ -256,6 +262,7 @@ impl ServiceRequest {
             | Self::GetPolicy { .. }
             | Self::PutPolicy { .. }
             | Self::ListEvidence { .. }
+            | Self::ListAudit { .. }
             | Self::RevealEvidence { .. }
             | Self::DeleteEvidence { .. }
             | Self::DeleteEvidenceBatch { .. }
@@ -339,6 +346,7 @@ impl ServiceRequest {
             | Self::GetPolicy { session_token }
             | Self::PutPolicy { session_token, .. }
             | Self::ListEvidence { session_token }
+            | Self::ListAudit { session_token, .. }
             | Self::RevealEvidence { session_token, .. }
             | Self::DeleteEvidence { session_token, .. }
             | Self::DeleteEvidenceBatch { session_token, .. }
@@ -407,6 +415,11 @@ impl ServiceRequest {
                             || query.chars().any(char::is_control)
                     })
                 {
+                    return Err(ProtocolError::InvalidField);
+                }
+            }
+            Self::ListAudit { limit, .. } => {
+                if !(1..=MAX_AUDIT_PAGE).contains(limit) {
                     return Err(ProtocolError::InvalidField);
                 }
             }
@@ -681,6 +694,9 @@ pub enum ServiceResult {
     EvidenceList {
         items: Vec<EvidenceMetadata>,
     },
+    AuditList {
+        items: Vec<AuditEntry>,
+    },
     EvidenceImage {
         media_type: String,
         bytes_base64: String,
@@ -706,6 +722,26 @@ pub enum ServiceResult {
 
 fn default_title_page() -> u32 {
     50
+}
+
+/// Most audit entries one `ListAudit` request returns.
+pub const MAX_AUDIT_PAGE: u32 = 500;
+
+fn default_audit_page() -> u32 {
+    MAX_AUDIT_PAGE
+}
+
+/// One audit log row. `detail` is a JSON object without window titles, such
+/// as the executable an enforcement closed and the reason it was closed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuditEntry {
+    pub id: i64,
+    pub occurred_at_ms: i64,
+    pub kind: String,
+    pub outcome: String,
+    #[serde(default)]
+    pub detail: Option<String>,
 }
 
 /// Service-derived enforcement state the agent applies to foreground
@@ -1315,6 +1351,28 @@ mod tests {
             )
         };
         assert!(list(ClientKind::Ui, 50, Some("视频")).validate().is_ok());
+        let audit = |client, limit| {
+            request(
+                ServiceRequest::ListAudit {
+                    session_token: "session-1".into(),
+                    limit,
+                },
+                client,
+            )
+        };
+        assert!(audit(ClientKind::Ui, MAX_AUDIT_PAGE).validate().is_ok());
+        assert_eq!(
+            audit(ClientKind::Agent, 10).validate(),
+            Err(ProtocolError::ClientRoleDenied)
+        );
+        assert_eq!(
+            audit(ClientKind::Ui, 0).validate(),
+            Err(ProtocolError::InvalidField)
+        );
+        assert_eq!(
+            audit(ClientKind::Ui, MAX_AUDIT_PAGE + 1).validate(),
+            Err(ProtocolError::InvalidField)
+        );
         let mark = |client, title_id: &str| {
             request(
                 ServiceRequest::MarkTitleMisjudged {

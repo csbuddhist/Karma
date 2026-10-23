@@ -449,3 +449,4 @@ select, .field input, .toolbar input { height: 39px; padding: 0 11px; color: var
 .update-status small { display: block; margin-top: 6px; color: var(--muted); font-size: 10px; }
 
 .update-preference > div { min-width: 0; flex: 1; }
+.audit-filter { display: flex; gap: 8px; margin-bottom: 6px; }

@@ -109,13 +109,17 @@ import type { BundledKeyword } from "./bundledKeywords";
 import {
   createTranslator,
   getInitialLocale,
+  isMessageKey,
   isSessionExpiredError,
   localizeError,
   persistLocale,
 } from "./i18n";
 import type { Locale, MessageKey, Translate } from "./i18n";
 import type {
+  ActiveBan,
   ApplicationRule,
+  AuditDetail,
+  AuditItem,
   AuthMode,
   ConsoleState,
   EvidenceItem,
@@ -363,6 +367,7 @@ function ServiceConnectionError({ detail, onRetry }: { detail: string; onRetry: 
 
 function Overview({ state, update, sessionToken, onNetworkChange }: { state: ConsoleState; update: (next: ConsoleState) => void; sessionToken: string; onNetworkChange: (network: NetworkStatus) => void }) {
   const { t } = useI18n();
+  const auditDateTime = useAuditDateTime();
   const healthyMonitors = state.monitors.filter((monitor) => monitor.state === "healthy").length;
   const criticalEvents = state.evidence.filter((item) => item.risk === "critical").length;
   return (
@@ -395,7 +400,7 @@ function Overview({ state, update, sessionToken, onNetworkChange }: { state: Con
         </Card>
         <Card>
           <div className="card-heading"><div><span className="eyebrow">RECENT</span><h2>{t("overview.recentActivity")}</h2></div></div>
-          {state.audit.length ? <div className="compact-list">{state.audit.slice(0, 5).map((item) => <div key={item.id}><span className={`event-mark ${item.outcome}`} /><div><strong>{item.detail}</strong><small>{item.occurredAt}</small></div></div>)}</div> : <EmptyState icon={<FileClock />} title={t("overview.noAuditEvents")} text={t("overview.noAuditEventsDescription")} />}
+          {state.audit.length ? <div className="compact-list">{state.audit.slice(0, 5).map((item) => <div key={item.id}><span className={`event-mark ${auditLevel(item)}`} /><div><strong>{auditText(item, t).title}</strong><small>{auditDateTime.format(item.occurredAtMs)}</small></div></div>)}</div> : <EmptyState icon={<FileClock />} title={t("overview.noAuditEvents")} text={t("overview.noAuditEventsDescription")} />}
         </Card>
       </div>
     </div>
@@ -785,7 +790,7 @@ function RepeatOffenderCard({ state, update, sessionToken, onBannedAllowed }: { 
     </div>
     <div className="learned-list">
       <span className="learned-heading">{t("applications.activeBans")}</span>
-      {state.activeBans.length ? state.activeBans.map((ban) => <div className="app-rule" key={ban.executable}><div className="app-avatar"><AppWindow /></div><div className="app-main"><strong>{executableFileName(ban.executable)}</strong><small>{ban.executable}</small></div><StatusPill tone="danger">{t("applications.bannedUntil", { time: dateTime.format(ban.bannedUntilMs) })}</StatusPill><button className="secondary-button" disabled={busyExecutable !== undefined || !state.serviceConnected || isBrowserExecutable(state.applications, ban.executable)} title={t(isBrowserExecutable(state.applications, ban.executable) ? "applications.allowBannedBrowser" : "applications.allowBannedHint")} onClick={() => void allow(ban.executable)}><Check size={16} />{t(busyExecutable === ban.executable ? "common.saving" : "applications.allowBanned")}</button></div>) : <p className="learned-empty">{t("applications.noActiveBans")}</p>}
+      {state.activeBans.length ? state.activeBans.map((ban) => <div className="app-rule" key={ban.executable}><div className="app-avatar"><AppWindow /></div><div className="app-main"><strong>{executableFileName(ban.executable)}</strong><small>{ban.executable}</small><small>{banStrikeSummary(state.audit, ban, settings.windowMinutes, t)}</small></div><StatusPill tone="danger">{t("applications.bannedUntil", { time: dateTime.format(ban.bannedUntilMs) })}</StatusPill><button className="secondary-button" disabled={busyExecutable !== undefined || !state.serviceConnected || isBrowserExecutable(state.applications, ban.executable)} title={t(isBrowserExecutable(state.applications, ban.executable) ? "applications.allowBannedBrowser" : "applications.allowBannedHint")} onClick={() => void allow(ban.executable)}><Check size={16} />{t(busyExecutable === ban.executable ? "common.saving" : "applications.allowBanned")}</button></div>) : <p className="learned-empty">{t("applications.noActiveBans")}</p>}
       {error && <div className="form-error"><CircleAlert size={16} />{error}</div>}
     </div>
   </Card>;
@@ -1240,9 +1245,94 @@ function Evidence({ state, update, sessionToken, onDeleted, onApplicationAllowed
   return <div className="page-stack"><div className="privacy-banner"><Lock size={18} /><span><strong>{t("evidence.bannerTitle")}</strong> {t("evidence.bannerDescription")}</span></div><Card><div className="setting-row"><div className="setting-icon violet"><AppWindow /></div><div><strong>{t("evidence.skipAllowedTitle")}</strong><p>{t("evidence.skipAllowedDescription")}</p></div><Toggle checked={state.recognition.evidenceSkipAllowedApplications} onChange={(value) => update({ ...state, recognition: { ...state.recognition, evidenceSkipAllowedApplications: value } })} label={t("evidence.skipAllowedTitle")} /></div></Card>{allowNotice && <div className="form-success"><Check size={16} />{allowNotice}</div>}{state.evidence.length ? <>{filterBar}{selectionBar}{grid}</> : <Card><EmptyState icon={<Lock />} title={t("evidence.emptyTitle")} text={t(state.recognition.evidenceEnabled ? "evidence.emptyEnabled" : "evidence.emptyDisabled")} /></Card>}{selected && <Modal title={t("evidence.modalTitle")} onClose={() => setSelected(null)} wide>{imageUrl ? <img className="revealed-image" src={imageUrl} alt={t("evidence.originalAlt")} /> : <div className="reveal-panel"><div className="locked-preview"><LockKeyhole /></div><strong>{evidenceReason(selected, t)}</strong><p>{formatCapturedAt(evidenceTimestamp(selected.capturedAt))} · {selected.applicationName} · {selected.monitorName}</p><label className="field"><span>{t("evidence.passwordAgain")}</span><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} onKeyDown={(event) => event.key === "Enter" && reveal()} autoFocus /></label>{error && <div className="form-error"><CircleAlert size={16} />{error}</div>}<button className="primary-button modal-submit" onClick={reveal}><Eye size={17} />{t("evidence.decrypt")}</button></div>}</Modal>}{deleteModal}{allowModal}</div>;
 }
 
+type AuditLevel = "success" | "warning" | "denied";
+
+const deniedAuditOutcomes = new Set(["denied", "rate_limited", "failure", "failed", "access_denied"]);
+const warningAuditOutcomes = new Set(["busy", "authorized", "identity_changed", "source_uncertain", "update_in_progress"]);
+/** Closure outcomes that actually closed the window and count toward a restriction. */
+const completedClosureOutcomes = new Set(["closed_gracefully", "terminated"]);
+
+function auditLevel(item: AuditItem): AuditLevel {
+  if (deniedAuditOutcomes.has(item.outcome)) return "denied";
+  if (warningAuditOutcomes.has(item.outcome)) return "warning";
+  return "success";
+}
+
+function isClosure(item: AuditItem): boolean {
+  return item.kind === "application_disposition";
+}
+
+/** The executable an audit row names. Bans from v0.3.9 and earlier kept it as the outcome. */
+function auditExecutable(item: AuditItem): string | undefined {
+  if (item.detail?.executable) return item.detail.executable;
+  if (item.kind === "repeat_offender_banned" && item.outcome !== "success") return item.outcome;
+  return undefined;
+}
+
+function closureReasonText(detail: AuditDetail | null, t: Translate, withScore = true): string {
+  const reason = detail?.reason;
+  if (!reason) return t("audit.reason.unrecorded");
+  if (reason === "image") {
+    if (!withScore || detail.riskMillis === undefined || detail.thresholdMillis === undefined) return t("audit.reason.imageUnknown");
+    return t("audit.reason.image", { risk: Math.round(detail.riskMillis / 10), threshold: Math.round(detail.thresholdMillis / 10) });
+  }
+  const key = `audit.reason.${reason}`;
+  return isMessageKey(key) ? t(key) : reason;
+}
+
+function auditText(item: AuditItem, t: Translate): { title: string; detail: string } {
+  const executable = auditExecutable(item);
+  const app = executable ? executableFileName(executable) : t("audit.unknownApp");
+  if (isClosure(item)) {
+    const outcomeKey = `audit.outcome.${item.outcome}`;
+    return {
+      title: t("audit.closure", { app }),
+      detail: t("audit.closureDetail", { reason: closureReasonText(item.detail, t), outcome: isMessageKey(outcomeKey) ? t(outcomeKey) : item.outcome }),
+    };
+  }
+  if (item.kind === "repeat_offender_banned") return { title: t("audit.banned", { app }), detail: executable ?? "" };
+  const kindKey = `auditKind.${item.kind}`;
+  return { title: isMessageKey(kindKey) ? t(kindKey) : item.kind, detail: item.kind };
+}
+
+/** Counts the reasons of the completed closures that established `ban`. */
+function banStrikeSummary(audit: AuditItem[], ban: ActiveBan, windowMinutes: number, t: Translate): string {
+  const executable = normalizeExecutable(ban.executable);
+  const bannedAt = audit.find((item) => item.kind === "repeat_offender_banned" && item.occurredAtMs <= ban.bannedUntilMs && normalizeExecutable(auditExecutable(item) ?? "") === executable)?.occurredAtMs;
+  if (bannedAt === undefined) return t("applications.banStrikesUnknown");
+  const from = bannedAt - windowMinutes * 60_000;
+  const counts = new Map<string, number>();
+  for (const item of audit) {
+    if (!isClosure(item) || item.occurredAtMs < from || item.occurredAtMs > bannedAt) continue;
+    if (!completedClosureOutcomes.has(item.outcome) || item.detail?.reason === "repeat_offender_ban") continue;
+    if (normalizeExecutable(item.detail?.executable ?? "") !== executable) continue;
+    const label = closureReasonText(item.detail, t, false);
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  if (!counts.size) return t("applications.banStrikesUnknown");
+  return t("applications.banStrikes", { reasons: [...counts].map(([label, count]) => `${label} ×${count}`).join(" · ") });
+}
+
+function useAuditDateTime(): Intl.DateTimeFormat {
+  const { locale } = useI18n();
+  return useMemo(() => new Intl.DateTimeFormat(locale, { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }), [locale]);
+}
+
 function Audit({ state }: { state: ConsoleState }) {
   const { t } = useI18n();
-  return <Card>{state.audit.length ? <div className="audit-list">{state.audit.map((item) => <div key={item.id}><span className={`audit-icon ${item.outcome}`}>{item.outcome === "success" ? <Check /> : <CircleAlert />}</span><div><strong>{item.detail}</strong><small>{item.kind} · {item.occurredAt}</small></div><StatusPill tone={item.outcome === "success" ? "good" : item.outcome === "warning" ? "warn" : "danger"}>{t(item.outcome === "success" ? "audit.success" : item.outcome === "warning" ? "audit.warning" : "audit.denied")}</StatusPill></div>)}</div> : <EmptyState icon={<FileClock />} title={t("audit.emptyTitle")} text={t("audit.emptyDescription")} />}</Card>;
+  const dateTime = useAuditDateTime();
+  const [closuresOnly, setClosuresOnly] = useState(false);
+  const items = closuresOnly ? state.audit.filter(isClosure) : state.audit;
+  const filter = <div className="toolbar audit-filter">
+    <button className={closuresOnly ? "secondary-button" : "primary-button"} onClick={() => setClosuresOnly(false)}>{t("audit.filterAll")}</button>
+    <button className={closuresOnly ? "primary-button" : "secondary-button"} onClick={() => setClosuresOnly(true)}><Ban size={16} />{t("audit.filterClosures")}</button>
+  </div>;
+  if (!state.audit.length) return <Card><EmptyState icon={<FileClock />} title={t("audit.emptyTitle")} text={t("audit.emptyDescription")} /></Card>;
+  return <Card>{filter}{items.length ? <div className="audit-list">{items.map((item) => {
+    const level = auditLevel(item);
+    const text = auditText(item, t);
+    return <div key={item.id}><span className={`audit-icon ${level}`}>{isClosure(item) ? <Ban /> : level === "success" ? <Check /> : <CircleAlert />}</span><div><strong>{text.title}</strong><small>{text.detail} · {dateTime.format(item.occurredAtMs)}</small></div><StatusPill tone={level === "success" ? "good" : level === "warning" ? "warn" : "danger"}>{t(level === "success" ? "audit.success" : level === "warning" ? "audit.warning" : "audit.denied")}</StatusPill></div>;
+  })}</div> : <p className="learned-empty">{t("audit.closuresEmpty")}</p>}</Card>;
 }
 
 function PasswordChangeCard({ sessionToken }: { sessionToken: string }) {

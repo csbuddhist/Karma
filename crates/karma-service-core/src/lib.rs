@@ -22,14 +22,14 @@ use karma_ipc::{
     UninstallStatus, UpdatePhase, UpdateStatus,
 };
 use karma_policy::{
-    ApplicationEffect, ApplicationPolicy, ContextPolicy, MAX_MISJUDGED_TITLES, MINUTES_PER_DAY,
-    MINUTES_PER_WEEK, NetworkRestriction, NetworkSchedulePolicy, RememberedTitle,
+    ApplicationEffect, ApplicationPolicy, ContextPolicy, ContextVerdict, MAX_MISJUDGED_TITLES,
+    MINUTES_PER_DAY, MINUTES_PER_WEEK, NetworkRestriction, NetworkSchedulePolicy, RememberedTitle,
     RepeatOffenderRule, TitleReason, active_bans, allow_application, is_banned,
     is_browser_executable, normalize_executable, policy_weakenings, record_closure, remember_title,
     remember_titles_enabled, rememberable_title_key, title_digest, title_key,
 };
 use rand::{RngCore, rngs::OsRng};
-use serde_json::Value;
+use serde_json::{Value, json};
 use store::{
     AuditRecord, Change, MAX_AUDIT_ENTRIES, NetworkRestore, PersistedState, Store, StoredEvidence,
     UninstallRequest,
@@ -138,6 +138,37 @@ struct PendingDisposition {
     target: karma_ipc::ProcessIdentity,
     /// Window title to remember once image-triggered enforcement succeeds.
     remember: Option<TitleCandidate>,
+    /// Why the window is closed; written to the audit log with the outcome.
+    reason: ClosureReason,
+}
+
+/// What required a disposition. Every closure counts toward a
+/// repeat-offender ban, but only image closures can carry evidence, so the
+/// audit log records the reason for each one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClosureReason {
+    Image {
+        risk_millis: u16,
+        threshold_millis: u16,
+    },
+    RememberedTitle,
+    BlockedWebsite,
+    TitleKeyword,
+    BlockedApplication,
+    RepeatOffenderBan,
+}
+
+impl ClosureReason {
+    fn code(self) -> &'static str {
+        match self {
+            Self::Image { .. } => "image",
+            Self::RememberedTitle => "remembered_title",
+            Self::BlockedWebsite => "blocked_website",
+            Self::TitleKeyword => "title_keyword",
+            Self::BlockedApplication => "blocked_application",
+            Self::RepeatOffenderBan => "repeat_offender_ban",
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -686,6 +717,7 @@ impl ServiceCore {
                         observation.event_id,
                         target,
                         None,
+                        ClosureReason::RepeatOffenderBan,
                     ));
                 }
                 let context_policy = ContextPolicy::from_value(&runtime.stored.policy)
@@ -703,6 +735,10 @@ impl ServiceCore {
                 if !protection_enabled || !image_enabled || observation.risk_millis < threshold {
                     return Ok(ServiceResult::Acknowledged);
                 }
+                let closure = ClosureReason::Image {
+                    risk_millis: observation.risk_millis,
+                    threshold_millis: threshold,
+                };
                 let reason = TitleReason {
                     reason_code: observation.reason_code,
                     risk_millis: observation.risk_millis,
@@ -724,6 +760,7 @@ impl ServiceCore {
                     observation.event_id,
                     target,
                     remember,
+                    closure,
                 ))
             }
             ServiceRequest::AgentContextObservation {
@@ -751,6 +788,7 @@ impl ServiceCore {
                         observation.event_id,
                         observation.source,
                         None,
+                        ClosureReason::RepeatOffenderBan,
                     ));
                 }
                 let context_policy = ContextPolicy::from_value(&runtime.stored.policy)
@@ -773,6 +811,7 @@ impl ServiceCore {
                         observation.event_id,
                         observation.source,
                         None,
+                        ClosureReason::RememberedTitle,
                     ));
                 }
                 let verdict = context_policy.evaluate(
@@ -784,11 +823,19 @@ impl ServiceCore {
                 if !karma_policy::context_enforcement(verdict, application_effect) {
                     return Ok(ServiceResult::Acknowledged);
                 }
+                let reason = match verdict {
+                    ContextVerdict::Blocklisted => ClosureReason::BlockedWebsite,
+                    ContextVerdict::TitleKeyword => ClosureReason::TitleKeyword,
+                    ContextVerdict::Allowlisted | ContextVerdict::None => {
+                        ClosureReason::BlockedApplication
+                    }
+                };
                 Ok(disposition_required(
                     runtime,
                     observation.event_id,
                     observation.source,
                     None,
+                    reason,
                 ))
             }
             ServiceRequest::SubmitEvidence {
@@ -884,6 +931,26 @@ impl ServiceCore {
                         })
                         .collect(),
                 })
+            }
+            ServiceRequest::ListAudit {
+                session_token,
+                limit,
+            } => {
+                authorize(runtime, &session_token, now_ms)?;
+                let items = runtime
+                    .store
+                    .recent_audit(limit.min(karma_ipc::MAX_AUDIT_PAGE))
+                    .map_err(|_| ServiceErrorCode::StorageUnavailable)?
+                    .into_iter()
+                    .map(|(id, record)| karma_ipc::AuditEntry {
+                        id,
+                        occurred_at_ms: record.occurred_at_ms,
+                        kind: record.kind,
+                        outcome: record.outcome,
+                        detail: record.detail,
+                    })
+                    .collect();
+                Ok(ServiceResult::AuditList { items })
             }
             ServiceRequest::RevealEvidence {
                 session_token,
@@ -1661,10 +1728,39 @@ fn persist(runtime: &mut RuntimeState) -> Result<(), ServiceErrorCode> {
 }
 
 fn audit(runtime: &mut RuntimeState, occurred_at_ms: i64, kind: &str, outcome: &str) {
+    push_audit(runtime, occurred_at_ms, kind, outcome, None);
+}
+
+/// An audit row with a structured detail object. Callers must never put
+/// window titles or other browsing content into `detail`.
+fn audit_detail(
+    runtime: &mut RuntimeState,
+    occurred_at_ms: i64,
+    kind: &str,
+    outcome: &str,
+    detail: &Value,
+) {
+    push_audit(
+        runtime,
+        occurred_at_ms,
+        kind,
+        outcome,
+        Some(detail.to_string()),
+    );
+}
+
+fn push_audit(
+    runtime: &mut RuntimeState,
+    occurred_at_ms: i64,
+    kind: &str,
+    outcome: &str,
+    detail: Option<String>,
+) {
     runtime.pending.push(Change::Audit(AuditRecord {
         occurred_at_ms,
         kind: kind.into(),
         outcome: outcome.into(),
+        detail,
     }));
     runtime.stored.audit_count = runtime
         .stored
@@ -1775,12 +1871,14 @@ fn disposition_required(
     event_id: String,
     target: karma_ipc::ProcessIdentity,
     remember: Option<TitleCandidate>,
+    reason: ClosureReason,
 ) -> ServiceResult {
     runtime.pending_dispositions.insert(
         event_id.clone(),
         PendingDisposition {
             target: target.clone(),
             remember,
+            reason,
         },
     );
     ServiceResult::DispositionRequired {
@@ -1803,8 +1901,11 @@ fn record_disposition(
     if expected.process_id != report.process_id || expected.started_at_ms != report.started_at_ms {
         return Err(ServiceErrorCode::InvalidRequest);
     }
-    let Some(PendingDisposition { target, remember }) =
-        runtime.pending_dispositions.remove(&report.event_id)
+    let Some(PendingDisposition {
+        target,
+        remember,
+        reason,
+    }) = runtime.pending_dispositions.remove(&report.event_id)
     else {
         return Err(ServiceErrorCode::InvalidRequest);
     };
@@ -1816,7 +1917,19 @@ fn record_disposition(
         karma_ipc::DispositionOutcome::AccessDenied => "access_denied",
         karma_ipc::DispositionOutcome::SourceUncertain => "source_uncertain",
     };
-    audit(runtime, now_ms, "application_disposition", outcome);
+    let mut detail = json!({
+        "executable": normalize_executable(&executable_name),
+        "reason": reason.code(),
+    });
+    if let ClosureReason::Image {
+        risk_millis,
+        threshold_millis,
+    } = reason
+    {
+        detail["riskMillis"] = json!(risk_millis);
+        detail["thresholdMillis"] = json!(threshold_millis);
+    }
+    audit_detail(runtime, now_ms, "application_disposition", outcome, &detail);
     if matches!(
         report.outcome,
         karma_ipc::DispositionOutcome::ClosedGracefully | karma_ipc::DispositionOutcome::Terminated
@@ -1851,7 +1964,13 @@ fn record_disposition(
             runtime.stored.repeat_offenders.clone(),
         ));
         if banned {
-            audit(runtime, now_ms, "repeat_offender_banned", &executable);
+            audit_detail(
+                runtime,
+                now_ms,
+                "repeat_offender_banned",
+                "success",
+                &json!({ "executable": executable }),
+            );
         }
     }
     Ok(())
@@ -2571,8 +2690,8 @@ mod tests {
                 .audit
                 .iter()
                 .find(|record| record.kind == "repeat_offender_banned")
-                .map(|record| record.outcome.as_str()),
-            Some(r"c:\browser\chrome.exe")
+                .and_then(|record| record.detail.as_deref()),
+            Some(r#"{"executable":"c:\\browser\\chrome.exe"}"#)
         );
         assert!(
             state
@@ -2754,6 +2873,125 @@ mod tests {
             now_ms + 1,
         )
         .unwrap();
+    }
+
+    fn list_audit(core: &ServiceCore, nonce: &str, now_ms: i64) -> Vec<karma_ipc::AuditEntry> {
+        let session = authenticate_ui(core, nonce, now_ms);
+        match success(core.handle(
+            request(
+                &format!("audit-{nonce}"),
+                &format!("audit-{nonce}-nonce"),
+                ServiceRequest::ListAudit {
+                    session_token: session,
+                    limit: karma_ipc::MAX_AUDIT_PAGE,
+                },
+            ),
+            now_ms + 1,
+        )) {
+            ServiceResult::AuditList { items } => items,
+            _ => panic!("expected the audit list"),
+        }
+    }
+
+    fn closure_details(entries: &[karma_ipc::AuditEntry]) -> Vec<Value> {
+        entries
+            .iter()
+            .filter(|entry| entry.kind == "application_disposition")
+            .map(|entry| serde_json::from_str(entry.detail.as_deref().unwrap()).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn every_closure_reason_is_audited_without_window_titles() {
+        let directory = tempfile::tempdir().unwrap();
+        let core = open_core(directory.path(), 0);
+        configure_policy(&core, remembered_title_policy());
+        close_by_image(&core, "image-1", Some(PORN_TITLE), 42, 1_000);
+        let relaunch =
+            context_observation_at("relaunch", 2_000, "hot video 123 - GOOGLE chrome", None, 43);
+        assert!(matches!(
+            submit_context_at(&core, "relaunch-nonce", relaunch, 2_001),
+            ServiceResult::DispositionRequired { .. }
+        ));
+        core.record_disposition(
+            &DispositionReport {
+                event_id: "relaunch".into(),
+                process_id: 43,
+                started_at_ms: 77,
+                outcome: DispositionOutcome::ClosedGracefully,
+            },
+            2_002,
+        )
+        .unwrap();
+
+        let entries = list_audit(&core, "closures", 3_000);
+        // Newest first.
+        assert!(entries.windows(2).all(|pair| pair[0].id > pair[1].id));
+        let closures = closure_details(&entries);
+        assert_eq!(
+            closures,
+            vec![
+                json!({"executable": r"c:\browser\chrome.exe", "reason": "remembered_title"}),
+                json!({
+                    "executable": r"c:\browser\chrome.exe",
+                    "reason": "image",
+                    "riskMillis": 990,
+                    "thresholdMillis": 600
+                }),
+            ]
+        );
+        assert!(entries.iter().all(|entry| {
+            entry
+                .detail
+                .as_deref()
+                .is_none_or(|detail| !detail.contains("hot video"))
+        }));
+    }
+
+    #[test]
+    fn repeat_offender_strikes_are_audited_with_their_reason() {
+        let directory = tempfile::tempdir().unwrap();
+        let core = open_core(directory.path(), 0);
+        configure_policy(&core, repeat_offender_policy());
+        establish_repeat_offender_ban(&core, 10_000);
+
+        let entries = list_audit(&core, "strikes", 20_000);
+        let closures = closure_details(&entries);
+        assert_eq!(closures.len(), DEFAULT_STRIKES as usize);
+        assert!(closures.iter().all(|detail| {
+            *detail == json!({"executable": r"c:\browser\chrome.exe", "reason": "blocked_website"})
+        }));
+        let ban = entries
+            .iter()
+            .find(|entry| entry.kind == "repeat_offender_banned")
+            .unwrap();
+        assert_eq!(ban.outcome, "success");
+        assert_eq!(
+            ban.detail.as_deref(),
+            Some(r#"{"executable":"c:\\browser\\chrome.exe"}"#)
+        );
+    }
+
+    #[test]
+    fn audit_list_requires_a_session() {
+        let directory = tempfile::tempdir().unwrap();
+        let core = open_core(directory.path(), 0);
+        configure_policy(&core, remembered_title_policy());
+        assert!(
+            core.handle(
+                request(
+                    "audit-anon",
+                    "audit-anon-nonce",
+                    ServiceRequest::ListAudit {
+                        session_token: "not-a-session".into(),
+                        limit: 10,
+                    },
+                ),
+                100,
+            )
+            .result
+            .is_err()
+        );
     }
 
     #[test]

@@ -1331,6 +1331,13 @@ mod service_backend {
             ServiceResult::Enforcement(summary) => summary,
             _ => return Err(ConsoleError::InvalidResponse),
         };
+        let audit = match request(ServiceRequest::ListAudit {
+            session_token: session_token.clone(),
+            limit: karma_ipc::MAX_AUDIT_PAGE,
+        })? {
+            ServiceResult::AuditList { items } => items,
+            _ => return Err(ConsoleError::InvalidResponse),
+        };
         if !runtime_only.unwrap_or(false) {
             runtime
                 .0
@@ -1395,6 +1402,10 @@ mod service_backend {
             ),
         );
         object.insert(
+            "audit".into(),
+            Value::Array(audit.into_iter().map(audit_entry_json).collect()),
+        );
+        object.insert(
             "evidence".into(),
             Value::Array(
                 evidence
@@ -1415,6 +1426,24 @@ mod service_backend {
             ),
         );
         Ok(state)
+    }
+
+    /// An audit row for the console. The service writes `detail` as a JSON
+    /// object; anything else is dropped rather than shown raw.
+    fn audit_entry_json(entry: karma_ipc::AuditEntry) -> Value {
+        let detail = entry
+            .detail
+            .as_deref()
+            .and_then(|detail| serde_json::from_str::<Value>(detail).ok())
+            .filter(Value::is_object)
+            .unwrap_or(Value::Null);
+        json!({
+            "id": entry.id.to_string(),
+            "occurredAtMs": entry.occurred_at_ms,
+            "kind": entry.kind,
+            "outcome": entry.outcome,
+            "detail": detail
+        })
     }
 
     fn component_state(

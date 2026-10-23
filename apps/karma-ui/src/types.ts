@@ -153,12 +153,24 @@ export interface EvidenceItem {
   originalAvailable: boolean;
 }
 
+/** Why the Service required a window to be closed. */
+export type ClosureReason = "image" | "remembered_title" | "blocked_website" | "title_keyword" | "blocked_application" | "repeat_offender_ban";
+
+/** Title-free context the Service records with some audit rows. */
+export interface AuditDetail {
+  executable?: string;
+  reason?: ClosureReason;
+  riskMillis?: number;
+  thresholdMillis?: number;
+}
+
 export interface AuditItem {
   id: string;
-  occurredAt: string;
+  occurredAtMs: number;
   kind: string;
-  detail: string;
-  outcome: "success" | "warning" | "denied";
+  /** Raw Service outcome, such as `success`, `denied`, or `terminated`. */
+  outcome: string;
+  detail: AuditDetail | null;
 }
 
 export interface UninstallStatus {
