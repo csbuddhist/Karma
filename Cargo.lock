@@ -2175,6 +2175,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "karma-macos"
+version = "0.1.0"
+dependencies = [
+ "karma-macos-ipc",
+ "libc",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "karma-macos-ipc"
+version = "0.1.0"
+dependencies = [
+ "karma-ipc",
+ "libc",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "karma-onnx"
 version = "0.1.0"
 dependencies = [
@@ -2222,6 +2242,22 @@ dependencies = [
  "serde_json",
  "sha2",
  "subtle",
+ "tempfile",
+ "thiserror 2.0.19",
+ "zeroize",
+]
+
+[[package]]
+name = "karma-service-macos"
+version = "0.1.0"
+dependencies = [
+ "karma-disposition",
+ "karma-ipc",
+ "karma-macos",
+ "karma-macos-ipc",
+ "karma-service-core",
+ "libc",
+ "rand 0.8.7",
  "tempfile",
  "thiserror 2.0.19",
  "zeroize",

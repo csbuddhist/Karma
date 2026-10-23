@@ -1,0 +1,16 @@
+[package]
+name = "karma-macos"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+
+[dependencies]
+karma-macos-ipc = { path = "../karma-macos-ipc" }
+thiserror.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"

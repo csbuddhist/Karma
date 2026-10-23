@@ -1,0 +1,30 @@
+[package]
+name = "karma-service-macos"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "KarmaService"
+path = "src/main.rs"
+
+[[bin]]
+name = "KarmaControl"
+path = "src/control.rs"
+
+[dependencies]
+karma-disposition = { path = "../../crates/karma-disposition" }
+karma-ipc = { path = "../../crates/karma-ipc" }
+karma-macos = { path = "../../crates/karma-macos" }
+karma-macos-ipc = { path = "../../crates/karma-macos-ipc" }
+karma-service-core = { path = "../../crates/karma-service-core" }
+rand = "0.8"
+thiserror.workspace = true
+zeroize = "1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"

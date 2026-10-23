@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "apps/karma-agent-windows",
+    "apps/karma-service-macos",
     "apps/karma-service-windows",
     "apps/karma-ui/src-tauri",
     "crates/karma-ai",
@@ -8,6 +9,8 @@ members = [
     "crates/karma-domain",
     "crates/karma-evidence",
     "crates/karma-ipc",
+    "crates/karma-macos",
+    "crates/karma-macos-ipc",
     "crates/karma-onnx",
     "crates/karma-policy",
     "crates/karma-service-core",
