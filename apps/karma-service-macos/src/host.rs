@@ -100,7 +100,11 @@ pub fn serve(config: HostConfig) -> Result<(), HostError> {
         .agent_executable
         .iter()
         .cloned()
-        .chain(std::env::current_exe().ok())
+        .chain(
+            std::env::current_exe()
+                .and_then(|path| path.canonicalize())
+                .ok(),
+        )
         .collect();
     let maintenance = maintenance::start(Arc::clone(&core), Arc::clone(&shutdown));
     let shared = Arc::new(Shared {
@@ -236,13 +240,16 @@ fn handle_connection(
             )
         };
     }
-    if shutdown_requested && response.result.is_ok() {
-        // Authorization is terminal in the core; honor it even if the
-        // client disconnects before reading the response.
+    let authorized_shutdown = shutdown_requested && response.result.is_ok();
+    let sent = connection.send_response(&response);
+    if authorized_shutdown {
+        // Authorization is terminal in the core; honor it even if the client
+        // disconnected. Wake the accept loop only after responding, so the
+        // process cannot exit before KarmaControl reads the answer.
         shared.shutdown.store(true, Ordering::Release);
         let _ = UnixStream::connect(&shared.socket_path);
     }
-    connection.send_response(&response)
+    sent
 }
 
 /// Creates the socket directory as root-owned 0755, repairing an existing one
