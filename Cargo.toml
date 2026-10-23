@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "apps/karma-agent-macos",
     "apps/karma-agent-windows",
     "apps/karma-service-macos",
     "apps/karma-service-windows",

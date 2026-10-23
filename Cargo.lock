@@ -2122,6 +2122,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "karma-agent-macos"
+version = "0.1.0"
+dependencies = [
+ "karma-agent-core",
+ "karma-ai",
+ "karma-ipc",
+ "karma-macos",
+ "karma-macos-ipc",
+ "karma-onnx",
+ "libc",
+ "serde_json",
+ "zeroize",
+]
+
+[[package]]
 name = "karma-agent-windows"
 version = "0.1.0"
 dependencies = [
