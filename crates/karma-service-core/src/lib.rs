@@ -4777,6 +4777,7 @@ mod tests {
     fn guarded_policy() -> Value {
         json!({
             "protectionEnabled": true,
+            "launchAtStartup": true,
             "recognition": {"imageEnabled": true, "ocrEnabled": true, "titleMatchingEnabled": true, "rememberTitlesEnabled": true, "sensitivity": 80},
             "repeatOffender": {"windowMinutes": 20, "strikeLimit": 5},
             "websites": [{"id":"b", "pattern":"blocked.example", "action":"block", "enabled":true}],
@@ -4795,6 +4796,7 @@ mod tests {
         let mut weakened = Vec::new();
         for pointer in [
             "/protectionEnabled",
+            "/launchAtStartup",
             "/recognition/imageEnabled",
             "/recognition/ocrEnabled",
             "/recognition/titleMatchingEnabled",
@@ -4897,7 +4899,7 @@ mod tests {
                 .iter()
                 .filter(|event| event.kind == "policy_weakening" && event.outcome == "denied")
                 .count(),
-            13
+            14
         );
     }
 

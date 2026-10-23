@@ -96,7 +96,7 @@ Karma-windows-x64-test-v0.3.7-setup.exe
 - 按第 2.2 节检查 Microsoft Visual C++ 运行库，必要时校验签名后静默安装；
 - 在注册 Service 前验证全部二进制和模型哈希；
 - 注册并启动具有延迟自动启动和崩溃恢复配置的 `KarmaService`；
-- 默认配置管理控制台在用户登录后后台启动，可在控制台“系统设置”中关闭；
+- 默认配置管理控制台在用户登录后后台启动，可在控制台“系统设置”中关闭（已设置超级密码时需超级密码）；
 - 创建桌面和开始菜单管理控制台快捷方式；
 - 在 Windows“已安装的应用”中注册卸载入口。卸载需超级密码，或等待期满后的管理员密码（未设置超级密码时使用管理员密码）。
 
@@ -106,9 +106,9 @@ For v0.2.4 and later, setup detects the updater using `KarmaControl version`, co
 
 EXE 和安装器尚无 Authenticode 签名，SmartScreen 可能显示“未知发布者”。Ed25519 升级清单签名验证开发者发布内容，不能代替 Windows 代码签名。EXEs and setup still lack Authenticode signatures; the Ed25519 update-manifest signature authenticates release contents and does not replace Windows code signing.
 
-系统设置可设置由监督人保管的超级密码，首次设置需复验管理员密码，至少 10 个字符且与管理员密码不同；修改需当前超级密码。服务逐项判断策略，任何削弱保护的操作都需超级密码，增强保护使用普通管理员会话。提前恢复网络和删除已记住标题也需超级密码。未设置时保持旧行为。设置与申请保存在 SQLite，日志不记录密码。
+系统设置可设置由监督人保管的超级密码，首次设置需复验管理员密码，至少 10 个字符且与管理员密码不同；修改需当前超级密码。服务逐项判断策略，任何削弱保护的操作（包括关闭控制台登录后自动启动）都需超级密码，增强保护使用普通管理员会话。提前恢复网络和删除已记住标题也需超级密码。未设置时保持旧行为。设置与申请保存在 SQLite，日志不记录密码。
 
-System Settings supports an optional supervisor-held super password. Setup rechecks the administrator password, requires at least 10 characters and a different password; changing requires the current super password. The service requires it whenever any policy change weakens protection, when restoring the network early, and when forgetting titles. Tightening protection uses the administrator session. Without a super password, existing behavior remains. State is persisted in SQLite and audit logs contain no passwords.
+System Settings supports an optional supervisor-held super password. Setup rechecks the administrator password, requires at least 10 characters and a different password; changing requires the current super password. The service requires it whenever any policy change weakens protection (including turning off launching the console at sign-in), when restoring the network early, and when forgetting titles. Tightening protection uses the administrator session. Without a super password, existing behavior remains. State is persisted in SQLite and audit logs contain no passwords.
 
 软件更新默认自动安装（`updates.autoInstall`），服务定期查询 GitHub Releases，控制台可立即检查；自动和安装器升级使用同一签名/哈希/版本校验。The service periodically checks GitHub Releases with automatic installation enabled by default (`updates.autoInstall`); Check now provides a manual trigger. Both entry points use the same signature/hash/version checks. Windows 真机验收仍待完成 / Windows hardware acceptance remains pending: [验收清单 / checklist](windows-update-acceptance.md)。
 

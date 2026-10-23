@@ -9,7 +9,7 @@ Status: **pending real Windows hardware evidence**. Cross-compilation and portab
 - [ ] Without a super password, existing administrator workflows still work. / 未设置超级密码时，原有管理员操作可用。
 - [ ] First setup rejects incorrect administrator confirmation, fewer than 10 characters, or the same password; setting and changing survive restart. / 首次设置拒绝错误管理员确认、少于 10 个字符或相同密码；设置和修改跨重启保留。
 - [ ] The supervisor keeps the super password. Ordinary administrator sessions can tighten rules, view evidence, and configure updates. / 监督人保管超级密码；普通管理员会话可加强规则、查看证据和设置更新。
-- [ ] Direct authenticated IPC cannot disable any recognition switch, raise the detection threshold, relax website/application/keyword/repeat rules, shorten/delete schedules, forget titles, or restore network access without the super password. Mixed tightening/weakening requests also require it. / 直接认证 IPC 不能绕过超级密码关闭识别、提高识别阈值、放宽网站/应用/关键词/重复限制、缩短或删除时段、删除标题或恢复网络；混合加强/削弱也需超级密码。
+- [ ] Direct authenticated IPC cannot disable any recognition switch or console launch at sign-in, raise the detection threshold, relax website/application/keyword/repeat rules, shorten/delete schedules, forget titles, or restore network access without the super password. Mixed tightening/weakening requests also require it. / 直接认证 IPC 不能绕过超级密码关闭识别或控制台登录后自动启动、提高识别阈值、放宽网站/应用/关键词/重复限制、缩短或删除时段、删除标题或恢复网络；混合加强/削弱也需超级密码。
 - [ ] Wrong super passwords are rate-limited and audited without secrets. / 错误超级密码受到限速并写入不含秘密的审计。
 - [ ] Changing the administrator password cannot make it equal to the super password. / 修改管理员密码不能使其与超级密码相同。
 

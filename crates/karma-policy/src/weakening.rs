@@ -15,6 +15,9 @@ use crate::{
 pub enum Weakening {
     /// The master protection switch was turned off.
     ProtectionDisabled,
+    /// The console no longer starts at sign-in, so a restart would leave it
+    /// closed.
+    LaunchAtStartupDisabled,
     /// Image, OCR, window-title, or remembered-title recognition was turned off.
     RecognitionDisabled,
     /// The image risk threshold was raised, so fewer frames are enforced.
@@ -39,6 +42,9 @@ pub fn policy_weakenings(old: &Value, new: &Value) -> Vec<Weakening> {
     let mut found = Vec::new();
     if switched_off(old, new, "/protectionEnabled") {
         found.push(Weakening::ProtectionDisabled);
+    }
+    if switched_off(old, new, "/launchAtStartup") {
+        found.push(Weakening::LaunchAtStartupDisabled);
     }
     if [
         "/recognition/imageEnabled",
@@ -173,6 +179,7 @@ mod tests {
     fn base() -> Value {
         json!({
             "protectionEnabled": true,
+            "launchAtStartup": true,
             "recognition": {
                 "imageEnabled": true,
                 "ocrEnabled": true,
@@ -262,6 +269,17 @@ mod tests {
             weakenings(|policy| policy["recognition"]["sensitivity"] = json!(90)),
             vec![Weakening::SensitivityLowered]
         );
+    }
+
+    #[test]
+    fn turning_launch_at_startup_off_is_weaker() {
+        assert_eq!(
+            weakenings(|policy| policy["launchAtStartup"] = json!(false)),
+            vec![Weakening::LaunchAtStartupDisabled]
+        );
+        let mut disabled = base();
+        disabled["launchAtStartup"] = json!(false);
+        assert!(policy_weakenings(&disabled, &base()).is_empty());
     }
 
     #[test]
