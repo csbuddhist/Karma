@@ -79,11 +79,24 @@ pub trait ImageClassifier {
     fn classify(&mut self, frame: &PreparedFrame) -> Result<ImageInference, Self::Error>;
 }
 
+/// Hentai at or above this probability counts fully toward the risk score.
+const HENTAI_CONFIDENT_PROBABILITY: f32 = 0.95;
+/// Weight of a less confident, hentai-dominant probability. Dark, text-heavy
+/// screen UI (for example GitHub pages) is commonly misread as line-art hentai.
+const HENTAI_UNCONFIRMED_WEIGHT: f32 = 0.5;
+
 pub struct ViddexaRiskMapper;
 
 impl ViddexaRiskMapper {
     pub fn map(output: &ClassifierOutput) -> Result<ImageInference, ClassifierOutputError> {
-        let explicit = output.probability("porn")? + output.probability("hentai")?;
+        let porn = output.probability("porn")?;
+        let hentai = output.probability("hentai")?;
+        let hentai_weight = if hentai >= HENTAI_CONFIDENT_PROBABILITY || porn >= hentai {
+            1.0
+        } else {
+            HENTAI_UNCONFIRMED_WEIGHT
+        };
+        let explicit = porn + hentai_weight * hentai;
         let suggestive = output.probability("sexy")?;
         let score = (explicit + 0.35 * suggestive).clamp(0.0, 1.0);
         let mut categories = Vec::with_capacity(2);
@@ -143,6 +156,51 @@ mod tests {
 
         assert_eq!(inference.score_millis, 310);
         assert_eq!(inference.categories, vec![RiskCategory::Suggestive]);
+    }
+
+    fn hentai_output(normal: f32, hentai: f32, porn: f32, drawing: f32) -> ClassifierOutput {
+        ClassifierOutput::new(
+            vec![
+                "normal".into(),
+                "hentai".into(),
+                "porn".into(),
+                "sexy".into(),
+                "drawing".into(),
+            ],
+            vec![normal, hentai, porn, 0.0, drawing],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn dark_text_page_misread_as_hentai_stays_below_default_threshold() {
+        // Probabilities observed for a dark-theme GitHub README screenshot.
+        let output = hentai_output(0.061, 0.865, 0.001, 0.073);
+
+        let inference = ViddexaRiskMapper::map(&output).unwrap();
+
+        assert!((433..=434).contains(&inference.score_millis));
+        assert!(inference.categories.is_empty());
+    }
+
+    #[test]
+    fn confident_hentai_counts_fully() {
+        let output = hentai_output(0.01, 0.97, 0.01, 0.01);
+
+        let inference = ViddexaRiskMapper::map(&output).unwrap();
+
+        assert_eq!(inference.score_millis, 980);
+        assert_eq!(inference.categories, vec![RiskCategory::Nudity]);
+    }
+
+    #[test]
+    fn hentai_counts_fully_when_porn_is_at_least_as_likely() {
+        let output = hentai_output(0.05, 0.45, 0.45, 0.05);
+
+        let inference = ViddexaRiskMapper::map(&output).unwrap();
+
+        assert_eq!(inference.score_millis, 900);
+        assert_eq!(inference.categories, vec![RiskCategory::Nudity]);
     }
 
     #[test]

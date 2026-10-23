@@ -201,6 +201,8 @@ Below threshold continuously for 10 seconds → Clear risk state
 
 Thresholds must be updatable through signed configuration. After a model match, first identify the foreground window on that display and its owning PID/Bundle ID, and then act on the source application to avoid terminating unrelated browsers or background processes.
 
+The image risk score is `porn + w × hentai + 0.35 × sexy`. `hentai` counts fully (`w = 1`) only when its probability is at least 0.95 or `porn` is at least as likely; otherwise `w = 0.5`. Dark, text-heavy screen UI such as GitHub pages is often misread by the model as line-art hentai, and this rule keeps those frames below the enforcement threshold.
+
 In the current Windows test build, saving the console risk threshold also updates the immediate-enforcement threshold, including migration of previously saved mismatched values. Disabling image recognition stops image classifier work and prevents image evidence or disposition events.
 
 ### Data and Encryption
