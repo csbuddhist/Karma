@@ -2103,7 +2103,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "karma-agent-windows"
+name = "karma-agent-core"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
@@ -2113,13 +2113,24 @@ dependencies = [
  "karma-ipc",
  "karma-onnx",
  "karma-policy",
- "karma-windows",
- "karma-windows-ipc",
  "rand 0.8.7",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.19",
+ "zeroize",
+]
+
+[[package]]
+name = "karma-agent-windows"
+version = "0.1.0"
+dependencies = [
+ "karma-agent-core",
+ "karma-ai",
+ "karma-ipc",
+ "karma-onnx",
+ "karma-windows",
+ "karma-windows-ipc",
  "windows 0.62.2",
  "zeroize",
 ]

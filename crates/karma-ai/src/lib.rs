@@ -22,7 +22,7 @@ mod word_pack;
 pub use ctc::{CtcDecoder, CtcDictionary, CtcError, DecodedLine};
 pub use detection_map::{DetectionMap, DetectionMapError, DetectionMask};
 pub use frame::{BgraFrame, FrameDimensions, FrameError, PreparedFrame};
-pub use frame_pipeline::{FramePipeline, ScheduledFrame};
+pub use frame_pipeline::{FramePipeline, PreparedFrameConsumer, ScheduledFrame};
 pub use image_classifier::{
     ClassifierOutput, ClassifierOutputError, ImageClassifier, ViddexaRiskMapper,
 };

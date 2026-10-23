@@ -136,11 +136,7 @@ mod native {
     };
     use crate::{WgcCaptureSession, WindowsFrameProcessor, WindowsRuntimeApartment};
 
-    pub trait PreparedFrameConsumer: Send + 'static {
-        fn begin_frame(&mut self) {}
-
-        fn consume(&mut self, frame: PreparedFrame, work: FrameWork);
-    }
+    pub use karma_ai::PreparedFrameConsumer;
 
     #[derive(Default)]
     pub struct NoopFrameConsumer;

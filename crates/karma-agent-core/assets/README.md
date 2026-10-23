@@ -1,8 +1,8 @@
-# Windows OCR word-pack boundary
+# OCR word-pack boundary
 
-`ocr-word-pack.json` is the production Windows Agent's source-controlled OCR policy boundary. The
-file is embedded into the executable with `include_str!`; the Agent does not accept a runtime path
-or environment override for these rules. Changing a rule therefore requires source review,
+`ocr-word-pack.json` is the production Agents' (Windows and macOS) source-controlled OCR policy
+boundary. The file is embedded into each Agent executable with `include_str!`; the Agent does not
+accept a runtime path or environment override for these rules. Changing a rule therefore requires source review,
 building, signing, and distributing a new Agent binary.
 
 Startup strictly parses, bounds, validates, and compiles the embedded document before any screen

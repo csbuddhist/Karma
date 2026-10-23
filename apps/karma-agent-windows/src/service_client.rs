@@ -1,38 +1,27 @@
-use std::{
-    collections::HashSet,
-    env,
-    fmt::Write as _,
-    hash::{DefaultHasher, Hash, Hasher},
-    mem::size_of,
-    sync::{
-        Arc, RwLock,
-        atomic::{AtomicU64, Ordering},
-        mpsc::{SyncSender, sync_channel},
-    },
-    thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+//! Windows glue for the shared agent service client: the named-pipe
+//! transport, the agent token handed down by KarmaService, the signed-in
+//! user's SID, and foreground-window attribution through Win32 and UI
+//! Automation.
 
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
-use image::{ExtendedColorType, codecs::jpeg::JpegEncoder};
-use karma_ai::{ImageInference, OcrMatchSummary, PreparedFrame};
-use karma_ipc::{
-    AgentContextObservation, AgentEnforcement, AgentHeartbeat, AgentObservation, ClientKind,
-    ComponentState, EvidenceSubmission, MAX_WINDOW_TITLE_CHARS, MonitorHealth, ProcessIdentity,
-    RequestEnvelope, ServiceRequest, ServiceResult,
+use std::{env, mem::size_of, sync::Arc, thread};
+
+use karma_agent_core::{
+    inference::InferenceHealthHandle,
+    service::{
+        self, AgentServiceClient, AgentServiceError, ApplicationPolicyHandle, ContextPolicyHandle,
+        ForegroundContext, SourceContext, SourceIdentityProvider, inference_state, random_opaque,
+        unix_time_ms,
+    },
 };
-use karma_policy::{
-    ApplicationEffect, ApplicationPolicy, ContextPolicy, normalize_executable, title_digest,
+use karma_ipc::{
+    AgentContextObservation, ComponentState, MonitorHealth, ProcessIdentity, RequestEnvelope,
+    ResponseEnvelope,
 };
 use karma_windows::{
     AttributionResult, FrameWorkerReport, FrameWorkerStatus, MonitorSnapshot, Rect,
     SourceAttributor, WindowCandidate, WindowsRuntimeApartment, browser_host, foreground_window,
     inspect_process, window_title,
 };
-use karma_windows_ipc::send_request;
-use rand::{RngCore, rngs::OsRng};
-use serde_json::Value;
-use thiserror::Error;
 use windows::{
     Win32::{
         Foundation::{CloseHandle, HANDLE, HLOCAL, LocalFree},
@@ -40,199 +29,54 @@ use windows::{
             Authorization::ConvertSidToStringSidW, GetTokenInformation, TOKEN_QUERY, TOKEN_USER,
             TokenUser,
         },
-        System::Threading::{GetCurrentProcess, GetCurrentProcessId, OpenProcessToken},
+        System::Threading::{GetCurrentProcess, OpenProcessToken},
     },
     core::PWSTR,
 };
-use zeroize::{Zeroize, Zeroizing};
-
-use crate::inference_consumer::{OcrSummarySink, should_capture_evidence};
+use zeroize::Zeroizing;
 
 const AGENT_TOKEN_ENV: &str = "KARMA_AGENT_TOKEN";
-const IPC_TIMEOUT_MS: u32 = 1500;
-const EVIDENCE_COOLDOWN_MS: i64 = 5000;
-const DISPOSITION_COOLDOWN_MS: i64 = 5000;
-const CONTEXT_POLL_INTERVAL: Duration = Duration::from_millis(750);
-const CONTEXT_RETRY_COOLDOWN_MS: i64 = 5000;
-const JPEG_QUALITY: u8 = 80;
 
-#[derive(Debug, Error)]
-pub enum AgentServiceError {
-    #[error("agent identity is unavailable")]
-    IdentityUnavailable,
-    #[error("service connection is unavailable")]
-    ServiceUnavailable,
-    #[error("service rejected the agent")]
-    AgentRejected,
-    #[error("service returned an invalid response")]
-    InvalidResponse,
-}
-
-pub struct AgentServiceClient {
-    token: Zeroizing<String>,
-    instance_id: String,
-    user_sid: String,
-    request_sequence: AtomicU64,
-    /// Bans and remembered titles from the latest policy fetch.
-    enforcement: RwLock<Arc<LearnedEnforcement>>,
-}
-
-/// `AgentEnforcement` indexed for the foreground poll.
-#[derive(Debug, Default)]
-struct LearnedEnforcement {
-    banned_executables: HashSet<String>,
-    remembered_title_digests: HashSet<String>,
-}
-
-impl From<AgentEnforcement> for LearnedEnforcement {
-    fn from(enforcement: AgentEnforcement) -> Self {
-        Self {
-            banned_executables: enforcement.banned_executables.into_iter().collect(),
-            remembered_title_digests: enforcement.remembered_title_digests.into_iter().collect(),
-        }
+/// The client for the token KarmaService passed in the environment, or
+/// `None` when the agent was started without one.
+pub fn client_from_environment() -> Result<Option<AgentServiceClient>, AgentServiceError> {
+    let Some(token) = env::var_os(AGENT_TOKEN_ENV) else {
+        eprintln!("status=degraded component=service_ipc error=agent_token_missing");
+        return Ok(None);
+    };
+    let token = token
+        .into_string()
+        .map_err(|_| AgentServiceError::IdentityUnavailable)?;
+    if token.len() != 64 || !token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(AgentServiceError::IdentityUnavailable);
     }
+    Ok(Some(AgentServiceClient::new(
+        Zeroizing::new(token),
+        current_user_sid()?,
+        pipe_transport,
+    )))
 }
 
-pub struct PolicySnapshot {
-    pub revision: u64,
-    pub protection_enabled: bool,
-    pub policy: Value,
+fn pipe_transport(request: &RequestEnvelope, timeout_ms: u32) -> Result<ResponseEnvelope, ()> {
+    karma_windows_ipc::send_request(request, timeout_ms).map_err(drop)
 }
 
-#[derive(Debug, Clone, Copy)]
-struct RecognitionPolicy {
-    protection_enabled: bool,
-    image_enabled: bool,
-    evidence_enabled: bool,
-    threshold_millis: u16,
-}
-
-impl Default for RecognitionPolicy {
-    fn default() -> Self {
-        Self {
-            protection_enabled: true,
-            image_enabled: true,
-            evidence_enabled: false,
-            threshold_millis: 820,
-        }
-    }
-}
-
-#[derive(Clone, Default)]
-pub struct RecognitionPolicyHandle(Arc<RwLock<RecognitionPolicy>>);
-
-impl RecognitionPolicyHandle {
-    pub fn update(&self, policy: &Value) {
-        let protection_enabled = policy
-            .get("protectionEnabled")
-            .and_then(Value::as_bool)
-            .unwrap_or(true);
-        let recognition = policy.get("recognition");
-        let image_enabled = recognition
-            .and_then(|value| value.get("imageEnabled"))
-            .and_then(Value::as_bool)
-            .unwrap_or(true);
-        let evidence_enabled = recognition
-            .and_then(|value| value.get("evidenceEnabled"))
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        let threshold = recognition
-            .and_then(|value| {
-                value
-                    .get("sensitivity")
-                    .or_else(|| value.get("immediateThreshold"))
-            })
-            .and_then(Value::as_u64)
-            .unwrap_or(82)
-            .min(100) as u16
-            * 10;
-        *self
-            .0
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = RecognitionPolicy {
-            protection_enabled,
-            image_enabled,
-            evidence_enabled,
-            threshold_millis: threshold,
-        };
-    }
-
-    fn snapshot(&self) -> RecognitionPolicy {
-        *self
-            .0
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-}
-
-#[derive(Clone, Default)]
-pub struct ContextPolicyHandle(Arc<RwLock<ContextPolicy>>);
-
-impl ContextPolicyHandle {
-    pub fn update(&self, policy: &Value) {
-        if let Ok(policy) = ContextPolicy::from_value(policy) {
-            *self
-                .0
-                .write()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = policy;
-        }
-    }
-
-    fn snapshot(&self) -> ContextPolicy {
-        self.0
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
-    }
-}
-
-#[derive(Clone, Default)]
-pub struct ApplicationPolicyHandle(Arc<RwLock<ApplicationPolicy>>);
-
-impl ApplicationPolicyHandle {
-    pub fn update(&self, policy: &Value) {
-        if let Ok(policy) = ApplicationPolicy::from_value(policy) {
-            *self
-                .0
-                .write()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = policy;
-        }
-    }
-
-    fn snapshot(&self) -> ApplicationPolicy {
-        self.0
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
-    }
-}
-
-#[derive(Clone)]
-pub struct SourceContext {
-    identity: ProcessIdentity,
-    window_handle: isize,
-    /// Title of the attributed window when the frame was prepared.
-    window_title: String,
-}
-
-pub struct AgentInferenceSink {
-    agent_instance_id: Option<String>,
-    observation_sender: Option<SyncSender<AgentObservation>>,
-    evidence_sender: Option<SyncSender<EvidenceFrame>>,
-    recognition_policy: RecognitionPolicyHandle,
-    source: WindowsSourceIdentityProvider,
-    monitor_name: String,
-    last_disposition_at_ms: i64,
-    last_evidence_at_ms: i64,
-    ocr_summaries: u64,
-}
-
-struct WindowsSourceIdentityProvider {
+/// Attributes a monitor's frames to the foreground window covering it.
+pub struct WindowsSourceIdentityProvider {
     monitor_bounds: Rect,
     cached_process: Option<ProcessIdentity>,
 }
 
 impl WindowsSourceIdentityProvider {
+    pub fn new(monitor_bounds: Rect) -> Self {
+        Self {
+            monitor_bounds,
+            cached_process: None,
+        }
+    }
+}
+
+impl SourceIdentityProvider for WindowsSourceIdentityProvider {
     fn snapshot(&mut self) -> Option<SourceContext> {
         let foreground = foreground_window().ok().flatten()?;
         let candidate = WindowCandidate {
@@ -272,327 +116,22 @@ impl WindowsSourceIdentityProvider {
             window_title: title,
         })
     }
-}
 
-struct EvidenceFrame {
-    evidence_id: String,
-    captured_at_ms: i64,
-    monitor_name: String,
-    application_name: String,
-    risk_millis: u16,
-    width: u32,
-    height: u32,
-    bgra: Zeroizing<Vec<u8>>,
-}
-
-impl AgentInferenceSink {
-    pub fn new(
-        client: Option<Arc<AgentServiceClient>>,
-        recognition_policy: RecognitionPolicyHandle,
-        monitor_name: String,
-        monitor_bounds: Rect,
-    ) -> Self {
-        let agent_instance_id = client.as_ref().map(|client| client.instance_id.clone());
-        let (observation_sender, evidence_sender) = match client {
-            Some(client) => {
-                let (observation_sender, observation_receiver) =
-                    sync_channel::<AgentObservation>(4);
-                let observation_client = Arc::clone(&client);
-                thread::Builder::new()
-                    .name("karma-observation-submit".into())
-                    .spawn(move || {
-                        while let Ok(observation) = observation_receiver.recv() {
-                            let _ = observation_client.submit_observation(observation);
-                        }
-                    })
-                    .expect("failed to start observation submitter");
-                let (evidence_sender, evidence_receiver) = sync_channel::<EvidenceFrame>(1);
-                thread::Builder::new()
-                    .name("karma-evidence-submit".into())
-                    .spawn(move || {
-                        while let Ok(frame) = evidence_receiver.recv() {
-                            let _ = client.submit_evidence(frame);
-                        }
-                    })
-                    .expect("failed to start evidence submitter");
-                (Some(observation_sender), Some(evidence_sender))
-            }
-            None => (None, None),
-        };
-        Self {
-            agent_instance_id,
-            observation_sender,
-            evidence_sender,
-            recognition_policy,
-            source: WindowsSourceIdentityProvider {
-                monitor_bounds,
-                cached_process: None,
-            },
-            monitor_name,
-            last_disposition_at_ms: i64::MIN,
-            last_evidence_at_ms: i64::MIN,
-            ocr_summaries: 0,
-        }
-    }
-}
-
-impl OcrSummarySink for AgentInferenceSink {
-    type ImageContext = Option<SourceContext>;
-
-    fn consume(&mut self, _summary: OcrMatchSummary) {
-        self.ocr_summaries = self.ocr_summaries.saturating_add(1);
-    }
-
-    fn image_recognition_enabled(&self) -> bool {
-        self.recognition_policy.snapshot().image_enabled
-    }
-
-    fn prepare_image(&mut self) -> Self::ImageContext {
-        self.recognition_policy
-            .snapshot()
-            .protection_enabled
-            .then(|| self.source.snapshot())
+    fn browser_host(&mut self, source: &SourceContext) -> Option<String> {
+        is_supported_browser(&source.identity.executable_name)
+            .then(|| browser_host(source.window_handle))
             .flatten()
     }
-
-    fn consume_image(
-        &mut self,
-        frame: &PreparedFrame,
-        inference: &ImageInference,
-        source: Self::ImageContext,
-    ) {
-        let policy = self.recognition_policy.snapshot();
-        let occurred_at_ms = unix_time_ms();
-        let evidence_pending = should_capture_evidence(
-            policy.protection_enabled && policy.image_enabled && policy.evidence_enabled,
-            policy.threshold_millis,
-            inference.score_millis,
-            frame.captured_at_ms(),
-            self.last_evidence_at_ms,
-            EVIDENCE_COOLDOWN_MS,
-        ) && self.evidence_sender.as_ref().is_some_and(|sender| {
-            let dimensions = frame.dimensions();
-            let evidence = EvidenceFrame {
-                evidence_id: format!("evidence-{}", random_opaque()),
-                captured_at_ms: occurred_at_ms,
-                monitor_name: self.monitor_name.clone(),
-                application_name: source.as_ref().map_or_else(
-                    || "来源应用无法可靠归属".into(),
-                    |value| value.identity.executable_name.clone(),
-                ),
-                risk_millis: inference.score_millis,
-                width: dimensions.width(),
-                height: dimensions.height(),
-                bgra: Zeroizing::new(frame.pixels().to_vec()),
-            };
-            sender.try_send(evidence).is_ok()
-        });
-        if evidence_pending {
-            self.last_evidence_at_ms = frame.captured_at_ms();
-        }
-
-        if !should_capture_evidence(
-            policy.protection_enabled && policy.image_enabled,
-            policy.threshold_millis,
-            inference.score_millis,
-            frame.captured_at_ms(),
-            self.last_disposition_at_ms,
-            DISPOSITION_COOLDOWN_MS,
-        ) {
-            return;
-        }
-        let (Some(sender), Some(agent_instance_id), Some(source)) =
-            (&self.observation_sender, &self.agent_instance_id, source)
-        else {
-            return;
-        };
-        let observation = AgentObservation {
-            event_id: format!("event-{}", random_opaque()),
-            agent_instance_id: agent_instance_id.clone(),
-            occurred_at_ms,
-            monitor_id: frame.monitor_id().0.clone(),
-            risk_millis: inference.score_millis,
-            reason_code: "image_immediate".into(),
-            browser_host: is_supported_browser(&source.identity.executable_name)
-                .then(|| browser_host(source.window_handle))
-                .flatten(),
-            source: Some(source.identity),
-            evidence_pending,
-            window_title: sendable_title(source.window_title),
-        };
-        if sender.try_send(observation).is_ok() {
-            self.last_disposition_at_ms = frame.captured_at_ms();
-        }
-    }
 }
 
-impl AgentServiceClient {
-    pub fn from_environment() -> Result<Option<Self>, AgentServiceError> {
-        let Some(token) = env::var_os(AGENT_TOKEN_ENV) else {
-            eprintln!("status=degraded component=service_ipc error=agent_token_missing");
-            return Ok(None);
-        };
-        let token = token
-            .into_string()
-            .map_err(|_| AgentServiceError::IdentityUnavailable)?;
-        if token.len() != 64 || !token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            return Err(AgentServiceError::IdentityUnavailable);
-        }
-        Ok(Some(Self {
-            token: Zeroizing::new(token),
-            instance_id: random_opaque(),
-            user_sid: current_user_sid()?,
-            request_sequence: AtomicU64::new(1),
-            enforcement: RwLock::new(Arc::default()),
-        }))
-    }
+/// UI Automation needs a multithreaded apartment on the monitor thread.
+struct WindowsForegroundContext {
+    _runtime: WindowsRuntimeApartment,
+}
 
-    pub fn publish_health(
-        &self,
-        monitors: Vec<MonitorHealth>,
-    ) -> Result<PolicySnapshot, AgentServiceError> {
-        let sent_at_ms = unix_time_ms();
-        let heartbeat = AgentHeartbeat {
-            agent_instance_id: self.instance_id.clone(),
-            user_sid: self.user_sid.clone(),
-            process_id: unsafe { GetCurrentProcessId() },
-            sent_at_ms,
-            monitors,
-        };
-        match self.request(ServiceRequest::AgentHeartbeat {
-            agent_token: self.token.to_string(),
-            heartbeat,
-        })? {
-            ServiceResult::Acknowledged => {}
-            _ => return Err(AgentServiceError::InvalidResponse),
-        }
-        self.fetch_policy()
-    }
-
-    pub fn fetch_policy(&self) -> Result<PolicySnapshot, AgentServiceError> {
-        match self.request(ServiceRequest::GetAgentPolicy {
-            agent_token: self.token.to_string(),
-        })? {
-            ServiceResult::AgentPolicy {
-                revision,
-                policy,
-                enforcement,
-            } => {
-                *self
-                    .enforcement
-                    .write()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-                    Arc::new(enforcement.into());
-                Ok(PolicySnapshot {
-                    revision,
-                    protection_enabled: policy
-                        .get("protectionEnabled")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(true),
-                    policy,
-                })
-            }
-            _ => Err(AgentServiceError::InvalidResponse),
-        }
-    }
-
-    fn enforcement(&self) -> Arc<LearnedEnforcement> {
-        Arc::clone(
-            &self
-                .enforcement
-                .read()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()),
-        )
-    }
-
-    fn submit_observation(&self, observation: AgentObservation) -> Result<(), AgentServiceError> {
-        let result = self.request(ServiceRequest::AgentObservation {
-            agent_token: self.token.to_string(),
-            observation,
-        })?;
-        self.after_submission(result)
-    }
-
-    fn submit_context_observation(
-        &self,
-        observation: AgentContextObservation,
-    ) -> Result<(), AgentServiceError> {
-        let result = self.request(ServiceRequest::AgentContextObservation {
-            agent_token: self.token.to_string(),
-            observation,
-        })?;
-        self.after_submission(result)
-    }
-
-    /// A completed closure may have remembered a title or started a ban;
-    /// refresh enforcement now instead of waiting for the next heartbeat.
-    fn after_submission(&self, result: ServiceResult) -> Result<(), AgentServiceError> {
-        match result {
-            ServiceResult::DispositionCompleted { .. } => {
-                let _ = self.fetch_policy();
-                Ok(())
-            }
-            ServiceResult::Acknowledged => Ok(()),
-            _ => Err(AgentServiceError::InvalidResponse),
-        }
-    }
-
-    fn submit_evidence(&self, mut frame: EvidenceFrame) -> Result<(), AgentServiceError> {
-        let pixel_count = usize::try_from(frame.width)
-            .ok()
-            .and_then(|width| {
-                usize::try_from(frame.height)
-                    .ok()
-                    .and_then(|height| width.checked_mul(height))
-            })
-            .ok_or(AgentServiceError::InvalidResponse)?;
-        if frame.bgra.len() != pixel_count.saturating_mul(4) {
-            return Err(AgentServiceError::InvalidResponse);
-        }
-        let mut rgb = Zeroizing::new(Vec::with_capacity(pixel_count.saturating_mul(3)));
-        for pixel in frame.bgra.chunks_exact(4) {
-            rgb.extend_from_slice(&[pixel[2], pixel[1], pixel[0]]);
-        }
-        frame.bgra.zeroize();
-        let mut jpeg = Zeroizing::new(Vec::new());
-        JpegEncoder::new_with_quality(&mut *jpeg, JPEG_QUALITY)
-            .encode(&rgb, frame.width, frame.height, ExtendedColorType::Rgb8)
-            .map_err(|_| AgentServiceError::InvalidResponse)?;
-        rgb.zeroize();
-        let submission = EvidenceSubmission {
-            evidence_id: frame.evidence_id,
-            captured_at_ms: frame.captured_at_ms,
-            monitor_name: frame.monitor_name,
-            application_name: frame.application_name,
-            reason_code: "image_immediate".into(),
-            risk_millis: frame.risk_millis,
-            media_type: "image/jpeg".into(),
-            bytes_base64: BASE64.encode(&*jpeg),
-        };
-        jpeg.zeroize();
-        match self.request(ServiceRequest::SubmitEvidence {
-            agent_token: self.token.to_string(),
-            evidence: submission,
-        })? {
-            ServiceResult::Acknowledged => Ok(()),
-            _ => Err(AgentServiceError::InvalidResponse),
-        }
-    }
-
-    fn request(&self, body: ServiceRequest) -> Result<ServiceResult, AgentServiceError> {
-        let sequence = self.request_sequence.fetch_add(1, Ordering::Relaxed);
-        let request = RequestEnvelope::new(
-            format!("{}-{sequence}", self.instance_id),
-            random_opaque(),
-            ClientKind::Agent,
-            body,
-        );
-        let response = send_request(&request, IPC_TIMEOUT_MS)
-            .map_err(|_| AgentServiceError::ServiceUnavailable)?;
-        response.result.map_err(|failure| match failure.code {
-            karma_ipc::ServiceErrorCode::AgentUnauthorized => AgentServiceError::AgentRejected,
-            _ => AgentServiceError::ServiceUnavailable,
-        })
+impl ForegroundContext for WindowsForegroundContext {
+    fn observe(&mut self, agent_instance_id: &str) -> Option<AgentContextObservation> {
+        foreground_context_observation(agent_instance_id)
     }
 }
 
@@ -601,53 +140,15 @@ pub fn start_context_monitor(
     policy: ContextPolicyHandle,
     applications: ApplicationPolicyHandle,
 ) -> thread::JoinHandle<()> {
-    thread::Builder::new()
-        .name("karma-foreground-context".into())
-        .spawn(move || {
-            let Ok(_runtime) = WindowsRuntimeApartment::initialize_mta() else {
+    service::start_context_monitor(client, policy, applications, || {
+        match WindowsRuntimeApartment::initialize_mta() {
+            Ok(runtime) => Some(WindowsForegroundContext { _runtime: runtime }),
+            Err(_) => {
                 eprintln!("status=degraded component=foreground_context error=runtime_unavailable");
-                return;
-            };
-            let mut last_fingerprint = None;
-            let mut last_submitted_at_ms = i64::MIN;
-            loop {
-                thread::sleep(CONTEXT_POLL_INTERVAL);
-                let Some(observation) = foreground_context_observation(&client.instance_id) else {
-                    continue;
-                };
-                let context_policy = policy.snapshot();
-                let effect = applications
-                    .snapshot()
-                    .effect_for(&observation.source.executable_name);
-                let verdict = context_policy.evaluate(
-                    observation.browser_host.as_deref(),
-                    &observation.window_title,
-                );
-                if !learned_enforcement_applies(
-                    &client.enforcement(),
-                    &context_policy,
-                    effect,
-                    &observation,
-                ) && !karma_policy::context_enforcement(verdict, effect)
-                {
-                    continue;
-                }
-                let fingerprint = context_fingerprint(&observation);
-                if last_fingerprint == Some(fingerprint)
-                    && observation
-                        .occurred_at_ms
-                        .saturating_sub(last_submitted_at_ms)
-                        < CONTEXT_RETRY_COOLDOWN_MS
-                {
-                    continue;
-                }
-                if client.submit_context_observation(observation).is_ok() {
-                    last_fingerprint = Some(fingerprint);
-                    last_submitted_at_ms = unix_time_ms();
-                }
+                None
             }
-        })
-        .expect("failed to start foreground context monitor")
+        }
+    })
 }
 
 fn foreground_context_observation(agent_instance_id: &str) -> Option<AgentContextObservation> {
@@ -676,51 +177,6 @@ fn foreground_context_observation(agent_instance_id: &str) -> Option<AgentContex
     })
 }
 
-/// Mirrors the service: banned executables are closed unconditionally, and
-/// remembered titles yield to allowlisted hosts and allowed applications.
-fn learned_enforcement_applies(
-    enforcement: &LearnedEnforcement,
-    context_policy: &ContextPolicy,
-    effect: ApplicationEffect,
-    observation: &AgentContextObservation,
-) -> bool {
-    if enforcement.banned_executables.is_empty() && enforcement.remembered_title_digests.is_empty()
-    {
-        return false;
-    }
-    let executable = normalize_executable(&observation.source.executable_name);
-    if enforcement.banned_executables.contains(&executable) {
-        return true;
-    }
-    if context_policy.allows_host(observation.browser_host.as_deref())
-        || effect == ApplicationEffect::Allow
-    {
-        return false;
-    }
-    title_digest(&executable, &observation.window_title)
-        .is_some_and(|digest| enforcement.remembered_title_digests.contains(&digest))
-}
-
-/// The title to report with an image observation, or `None` when it would
-/// fail protocol validation and cost the observation itself.
-fn sendable_title(title: String) -> Option<String> {
-    (!title.is_empty()
-        && title.chars().count() <= MAX_WINDOW_TITLE_CHARS
-        && !title
-            .chars()
-            .any(|character| character.is_control() && !character.is_whitespace()))
-    .then_some(title)
-}
-
-fn context_fingerprint(observation: &AgentContextObservation) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    observation.source.process_id.hash(&mut hasher);
-    observation.source.started_at_ms.hash(&mut hasher);
-    observation.window_title.hash(&mut hasher);
-    observation.browser_host.hash(&mut hasher);
-    hasher.finish()
-}
-
 fn is_supported_browser(executable_name: &str) -> bool {
     let file_name = executable_name
         .rsplit(['\\', '/'])
@@ -744,8 +200,8 @@ pub fn monitor_health(
     monitor: &MonitorSnapshot,
     index: usize,
     worker: FrameWorkerReport,
-    image: &crate::InferenceHealthHandle,
-    ocr: &crate::InferenceHealthHandle,
+    image: &InferenceHealthHandle,
+    ocr: &InferenceHealthHandle,
 ) -> MonitorHealth {
     let image_snapshot = image.snapshot();
     let ocr_snapshot = ocr.snapshot();
@@ -782,16 +238,6 @@ fn frame_state(status: FrameWorkerStatus) -> ComponentState {
         | FrameWorkerStatus::DeviceLost
         | FrameWorkerStatus::AccessDenied
         | FrameWorkerStatus::Failed => ComponentState::Unavailable,
-    }
-}
-
-fn inference_state(inferences: u64, available: bool) -> ComponentState {
-    if !available {
-        ComponentState::Unavailable
-    } else if inferences == 0 {
-        ComponentState::Starting
-    } else {
-        ComponentState::Healthy
     }
 }
 
@@ -832,109 +278,4 @@ fn current_user_sid() -> Result<String, AgentServiceError> {
         let _ = CloseHandle(token);
     }
     result
-}
-
-fn random_opaque() -> String {
-    let mut bytes = [0_u8; 24];
-    OsRng.fill_bytes(&mut bytes);
-    let mut value = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        write!(&mut value, "{byte:02x}").expect("writing to a String cannot fail");
-    }
-    value
-}
-
-fn unix_time_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .min(i64::MAX as u128) as i64
-}
-
-#[cfg(test)]
-mod tests {
-    use serde_json::json;
-
-    use super::*;
-
-    fn observation(executable: &str, title: &str, host: Option<&str>) -> AgentContextObservation {
-        AgentContextObservation {
-            event_id: "context-1".into(),
-            agent_instance_id: "agent-1".into(),
-            occurred_at_ms: 1,
-            source: ProcessIdentity {
-                process_id: 42,
-                started_at_ms: 1,
-                executable_name: executable.into(),
-                executable_sha256: None,
-            },
-            window_title: title.into(),
-            browser_host: host.map(str::to_owned),
-        }
-    }
-
-    fn enforcement() -> LearnedEnforcement {
-        AgentEnforcement {
-            banned_executables: vec![r"d:\games\game.exe".into()],
-            remembered_title_digests: vec![
-                title_digest(r"c:\browser\chrome.exe", "Hot Video - Google Chrome").unwrap(),
-            ],
-        }
-        .into()
-    }
-
-    #[test]
-    fn banned_executables_and_remembered_titles_are_submitted() {
-        let context = ContextPolicy::default();
-        assert!(learned_enforcement_applies(
-            &enforcement(),
-            &context,
-            ApplicationEffect::Allow,
-            &observation(r"D:\Games\Game.exe", "Main menu", None),
-        ));
-        assert!(learned_enforcement_applies(
-            &enforcement(),
-            &context,
-            ApplicationEffect::ContentOnly,
-            &observation(r"C:\Browser\chrome.exe", "Hot  Video - Google Chrome", None),
-        ));
-        assert!(!learned_enforcement_applies(
-            &enforcement(),
-            &context,
-            ApplicationEffect::ContentOnly,
-            &observation(r"C:\Browser\chrome.exe", "Homework - Google Chrome", None),
-        ));
-        assert!(!learned_enforcement_applies(
-            &enforcement(),
-            &context,
-            ApplicationEffect::Allow,
-            &observation(r"C:\Browser\chrome.exe", "Hot Video - Google Chrome", None),
-        ));
-        let allowlist = ContextPolicy::from_value(&json!({
-            "websites": [{"id":"a","pattern":"safe.example","action":"allow","enabled":true}]
-        }))
-        .unwrap();
-        assert!(!learned_enforcement_applies(
-            &enforcement(),
-            &allowlist,
-            ApplicationEffect::ContentOnly,
-            &observation(
-                r"C:\Browser\chrome.exe",
-                "Hot Video - Google Chrome",
-                Some("safe.example")
-            ),
-        ));
-    }
-
-    #[test]
-    fn only_protocol_valid_titles_accompany_image_observations() {
-        assert_eq!(sendable_title(String::new()), None);
-        assert_eq!(sendable_title("bad\u{7}title".into()), None);
-        assert_eq!(sendable_title("x".repeat(MAX_WINDOW_TITLE_CHARS + 1)), None);
-        assert_eq!(
-            sendable_title("视频 - Google Chrome".into()).as_deref(),
-            Some("视频 - Google Chrome")
-        );
-    }
 }

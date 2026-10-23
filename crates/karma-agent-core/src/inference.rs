@@ -221,8 +221,7 @@ where
     }
 }
 
-#[cfg(windows)]
-impl<I, O, S> karma_windows::PreparedFrameConsumer for ScheduledInferenceConsumer<I, O, S>
+impl<I, O, S> karma_ai::PreparedFrameConsumer for ScheduledInferenceConsumer<I, O, S>
 where
     I: ImageClassifier + Send + 'static,
     O: OcrEngine + Send + 'static,
