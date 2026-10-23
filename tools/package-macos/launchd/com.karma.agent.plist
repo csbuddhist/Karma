@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.karma.agent</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Library/Karma/KarmaAgent.app/Contents/MacOS/karma-agent-macos</string>
+	</array>
+	<!-- One agent per graphical login; KarmaService accepts only the console user's. -->
+	<key>LimitLoadToSessionType</key>
+	<string>Aqua</string>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>2</integer>
+	<!-- Capture and inference must not be throttled like background work. -->
+	<key>ProcessType</key>
+	<string>Interactive</string>
+</dict>
+</plist>
