@@ -7,6 +7,22 @@ license.workspace = true
 
 [features]
 default = []
+# Displays, windows, and ScreenCaptureKit capture for the session agent; the
+# root daemon leaves these frameworks unlinked.
+session-agent = [
+    "dep:block2",
+    "dep:dispatch2",
+    "dep:karma-agent-core",
+    "dep:karma-ai",
+    "dep:karma-domain",
+    "dep:objc2",
+    "dep:objc2-core-foundation",
+    "dep:objc2-core-graphics",
+    "dep:objc2-core-media",
+    "dep:objc2-core-video",
+    "dep:objc2-foundation",
+    "dep:objc2-screen-capture-kit",
+]
 
 [dependencies]
 karma-macos-ipc = { path = "../karma-macos-ipc" }
@@ -14,3 +30,19 @@ thiserror.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
+block2 = { version = "0.6", optional = true }
+dispatch2 = { version = "0.3", optional = true }
+karma-agent-core = { path = "../karma-agent-core", optional = true }
+karma-ai = { path = "../karma-ai", optional = true }
+karma-domain = { path = "../karma-domain", optional = true }
+objc2 = { version = "0.6", optional = true }
+objc2-core-foundation = { version = "0.3", optional = true }
+objc2-core-graphics = { version = "0.3", optional = true }
+objc2-core-media = { version = "0.3", optional = true }
+objc2-core-video = { version = "0.3", optional = true }
+objc2-foundation = { version = "0.3", optional = true }
+objc2-screen-capture-kit = { version = "0.3", optional = true }
+
+[[example]]
+name = "capture-probe"
+required-features = ["session-agent"]
