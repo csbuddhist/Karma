@@ -90,8 +90,6 @@ Uninstall keeps local data by default. See the [Windows installation and testing
 
 Karma hardens its two Windows services (KarmaService and a companion watchdog): stopping them in services.msc or Task Manager, setting “Startup type” to Disabled, and editing their registry keys in Registry Editor are refused even to administrators; the two services restart each other every few seconds; and an End-task kill is recovered automatically by the Service Control Manager. This defeats a non-technical administrator who only uses graphical tools.
 
-It **cannot** guarantee resistance to a technical administrator: terminal commands such as `sc.exe`, taking ownership of the service or registry keys, safe mode or the recovery environment, offline registry edits, or physical control of the device can all bypass it. Real resistance to a technical administrator requires a signed kernel-level layer (PPL/ELAM), which this test build does not include.
-
 **Most effective setup**: the protected person uses a standard Windows account daily, while the supervisor holds the Windows administrator account and the Karma super password.
 
 ### Passwords and Permissions
