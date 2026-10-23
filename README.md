@@ -1,555 +1,160 @@
 # Karma
 
-[中文版](README.zh-CN.md)
+[English](README.en.md) · [技术说明](技术说明.md) · [Windows 安装与测试指南](docs/windows-installation-guide.md)
 
-Karma is a local pornography-protection and digital-wellbeing application for macOS and Windows. It continuously monitors every display, closes the source application when it detects high-risk images or videos, and provides application allowlists and blocklists, internet access schedules, administrator passwords, audit logs, and protection against casual termination.
+Karma 是一款面向 Windows（macOS 规划中）的本地色情内容防护与数字健康软件。它持续监控所有显示器，识别到高风险图片或视频后关闭来源应用，并提供网址与应用黑白名单、断网时段、两级密码、审计日志和防随意退出能力。所有识别都在本机完成，屏幕画面不会上传。
 
-The project follows a “single product, shared core, two native executors” architecture. The UI, policies, AI, and data formats can be shared, while screen capture, process control, network filtering, background persistence, and device management must use native capabilities supported by each platform.
+![Karma 管理控制台：保护总览](docs/images/console-overview-zh-CN.png)
 
-> On Windows, Karma hardens its two services (KarmaService and a companion watchdog) so that routine GUI tampering is denied without the Karma password: the Stop action in Services.msc / Task Manager and the "Startup type = Disabled" change are refused even to administrators (service ACL), editing the service registry keys in regedit — e.g. setting `Start = 4` to disable, or rewriting the stored service permissions — is likewise refused (registry-key ACL grants SYSTEM full control and administrators read-only), the two services restart each other every few seconds, and an End-task kill is recovered automatically by the Service Control Manager. This defeats a non-technical administrator who only uses graphical tools. It still cannot promise absolute resistance to someone who applies terminal commands (`sc.exe`), takes ownership of the service or registry key, uses the recovery environment, edits the registry hive offline, or has physical control of the device; genuine resistance to a technical administrator would require a signed kernel-level layer (PPL/ELAM), which this unsigned test build does not include. Running the monitored person as a standard user (with the administrator password on a separate account) remains the strongest option and makes even the technical vectors inaccessible.
+*Windows 管理控制台的“保护总览”页（v0.3.3）*
 
-## Screenshot
+## 功能特性
 
-The Windows management console's Protection Overview (v0.3.3):
+### 内容识别与处置
 
-![Karma management console: Protection Overview](docs/images/console-overview-en.png)
+- **多显示器实时识别**：每个显示器独立采集画面，本地 ONNX 模型识别色情图像；PP-OCRv5 模型识别屏幕上的简体中文、繁体中文和英文文字。
+- **精准关闭来源应用**：命中后定位该显示器上的前台窗口及其进程，二次核验进程身份后关闭，不误杀无关程序。
+- **窗口标题关键词**：内置 26 种语言、2,543 个成人内容词（1,592 个严格词始终生效，951 个易误报词默认关闭、可手动开启）；支持自定义拦截词、敏感词、豁免词，并可向内置词库补充关键词。
+- **记住窗口标题**：图像识别关闭某个页面后，记住其标题和域名，同一应用再次显示相同标题时直接关闭；误判的标题可标记为“误判”，以后不再记住。
+- **网址黑白名单**：支持 Chrome、Edge、Firefox、Brave、Opera/Opera GX、Vivaldi、Arc 的域名识别。白名单网站不会因图像分数被关闭；黑名单网站立即关闭。规则覆盖子域名。
 
-## Windows Test Installer
+### 应用与上网管控
 
-New users can download the single-file `Karma-windows-x64-test-v0.3.7-setup.exe` from the [v0.3.7 Windows Test Build](https://github.com/csbuddhist/Karma/releases/tag/v0.3.7). On Windows 10 22H2 or Windows 11 x64, run it as an administrator to install the files, verify their hashes, register the Service, and create shortcuts. The installer includes the official Microsoft Visual C++ 2015–2022 x64 Redistributable: it verifies the Microsoft signature and installs it silently only when the runtime is missing or older than 14.44, before registering the Service.
+- **应用黑白名单**：“允许使用”的应用不会被图像或标题识别关闭（网址黑名单仍有效）；“始终禁止”的应用一出现在前台就被关闭。可从本机已安装的应用中选择或批量添加。
+- **重复关闭限制**：同一程序在 20 分钟内被关闭 5 次后封禁 1 小时（时间窗口和次数可调），封禁跨重启有效。
+- **断网时段**：为每周每天设置任意多个断网时段（支持跨午夜），对象可选浏览器、指定软件或全部联网应用，由 Windows WFP 过滤器执行。
 
-`main` also retains the auditable **cloneable Windows test bundle** at [`release/windows-x64-test/`](release/windows-x64-test/). From v0.2.4, setup upgrades an existing v0.2.4+ installation in place with the administrator password: it submits a signed bundle to the running service, which accepts only a strictly newer version, validates private staged copies, replaces files with rollback, and restarts the services. Protection services remain registered. The management console is closed during the upgrade (it holds no data); reopen it afterwards. Only v0.2.3 and earlier use the legacy password-authorized uninstall/reinstall flow. The console starts in the background at sign-in by default; this can be disabled in System Settings. EXEs and setup still lack Authenticode signatures; the Ed25519 release signature authenticates update contents, not the Windows publisher. See the [installation guide](docs/windows-installation-guide.md) and [pending Windows update acceptance checklist](docs/windows-update-acceptance.md).
+### 管理与自我保护
 
-The optional **super password** should be set and held by a supervisor, separately from the administrator password. The service compares every policy change and requires the super password for weakening protection: disabling protection or recognition, raising the image risk threshold, relaxing website/application/keyword/schedule/repeat-closure rules, forgetting a remembered title, or restoring the network early. Tightening protection uses the administrator session. Initial setup rechecks the administrator password; the super password must have at least 10 characters and differ from it. Changing it requires the current super password. Without a super password, existing behavior is preserved.
+- **总保护开关**：“保护总览”顶部可停止或恢复保护（“系统设置”中为同一开关），点击“保存设置”后生效；已设置超级密码时，停止保护需超级密码。
+- **两级密码**：普通管理员密码负责日常管理；可选的超级密码由监督人保管，任何削弱保护的操作都需要它。
+- **防篡改**：两个 Windows 服务互相守护，管理员也无法通过“服务”管理器、任务管理器或注册表编辑器停止或禁用；被强杀后自动拉起。
+- **延时卸载**：卸载需超级密码，或申请后等待 72 小时再用管理员密码卸载。
+- **事件证据（可选）**：命中画面经加密后保存，查看原图需再次输入密码；可一键把误判来源应用加入白名单。
+- **安全自动更新**：定期检查 GitHub Releases，仅接受开发者签名、哈希一致且版本更高的升级包，禁止降级。
+- **策略备份**：策略可导出为 JSON，导入时校验结构与合法性。
+- **中英文界面**：控制台可切换语言，默认登录后在后台启动；关闭窗口只隐藏界面，保护继续运行。
 
-Uninstall immediately with the super password, or request uninstall in the console with the administrator password, wait **72 hours**, then uninstall with the administrator password during the following **24 hours**. Requests survive restarts, can be cancelled, and are audited; expired requests must be renewed. This is also the recovery route for a forgotten super password. Software updates need only the administrator password. `updates.autoInstall` defaults to enabled; the service checks GitHub Releases periodically, and the console can check immediately. All updates require the embedded developer key's Ed25519 signature, SHA-256 file hashes, and a strictly higher version. Same-version reinstall and downgrade are refused. A technical Windows administrator can still take ownership of files, use safe mode, or otherwise bypass user-mode protection; keeping the Windows administrator account with the supervisor and using a standard account daily remains the strongest supplement.
+## 安装方法
 
-## Administrator and Super Password Permissions (v0.2.4)
+### 系统要求
 
-**Summary:** Karma uses two password levels: an ordinary administrator password and a super password. After a super password is set, the ordinary administrator can still do daily management, tighten rules, change the ordinary password, manage evidence, upgrade the software, and request or cancel uninstall. Viewing an original evidence image, setting the super password for the first time, and requesting uninstall each ask for the ordinary password again. Weakening protection or uninstalling immediately needs the super password.
+- Windows 10 22H2 x64 或 Windows 11 x64，交互式桌面会话；
+- 支持 D3D11 和 Windows Graphics Capture 的显卡及驱动；
+- 建议 4 核 CPU、8 GB 内存、2 GB 可用磁盘空间；
+- 安装需要 Windows 管理员权限。
 
-The following describes the current **installed Windows Service**, with a super password already configured. Entering the ordinary administrator password unlocks the console and creates an authenticated session. Most everyday actions use that session; the actions marked below require entering the ordinary password again. The super password authorizes sensitive actions and immediate uninstall; console login still uses the ordinary password.
+### 使用安装器（推荐）
 
-| Area | Ordinary administrator password or session | Additional super password required |
+1. 从 [v0.3.7 Windows Test Build](https://github.com/csbuddhist/Karma/releases/tag/v0.3.7) 下载单文件安装器 `Karma-windows-x64-test-v0.3.7-setup.exe`。
+2. 右键安装器，选择“以管理员身份运行”。安装器会把程序安装到 `C:\Program Files\Karma`，校验全部文件哈希，注册并启动 `KarmaService`，创建桌面和开始菜单快捷方式。安装器内置微软官方 Visual C++ 2015–2022 x64 运行库，校验微软签名后，仅在本机运行库缺失或低于 14.44 时静默安装。
+3. 从桌面的“Karma 家庭保护”或开始菜单的“Karma 管理控制台”打开控制台，首次连接后创建至少 10 个字符的管理员密码。
+4. 建议随后在“系统设置”中设置超级密码，交由监督人保管。
+
+由于安装器和程序尚未进行 Authenticode 代码签名，Windows SmartScreen 可能提示“未知发布者”。请勿为了安装而永久关闭安全软件。
+
+### 升级
+
+- **自动更新**：默认开启（`updates.autoInstall`），服务定期检查 GitHub Releases；也可在控制台中立即检查。
+- **手动升级**：已安装 v0.2.4 及以上版本时，直接运行新版安装器并输入管理员密码，即可原地升级。服务验签、复验文件哈希后带回滚地替换文件，保护服务全程保持注册。升级期间会关闭管理控制台，完成后重新打开即可。
+- v0.2.3 及更早版本需先用密码授权卸载，再安装新版。
+
+### 从仓库安装
+
+`main` 分支保留可审查的 **cloneable Windows test bundle**：[`release/windows-x64-test/`](release/windows-x64-test/)。克隆仓库后，以管理员身份在该目录运行：
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\Install-Karma.ps1 -StartConsole
+```
+
+### 卸载
+
+- 输入超级密码可立即卸载；
+- 或在控制台用管理员密码申请卸载，等待 **72 小时**后，在随后的 **24 小时**内用管理员密码卸载；
+- 未设置超级密码时，用管理员密码即可卸载，无需等待。
+
+卸载默认保留本地数据。详细步骤、诊断方法和故障排查见 [Windows 安装与测试指南](docs/windows-installation-guide.md)。
+
+## 注意事项
+
+### 当前为测试版
+
+- 目前仅提供 Windows 未签名测试版，尚不适合作为家庭正式部署的完整产品；macOS 版本仍处于设计阶段。
+- 连续帧风险融合、按时段阻止应用启动等功能尚未完成；GPU 采集、ONNX 推理、网络执行和升级流程的 Windows 真机验收仍在进行中。
+- 断网时段、策略修改和提前恢复网络最长约 60 秒后生效。
+- 如果浏览器隐藏地址栏或未向辅助功能公开地址栏，Karma 无法识别该窗口的网址，但标题与图像识别仍然有效。网址规则只匹配域名，不匹配路径。
+- 控制台暂未提供完整审计日志的查看入口。
+
+### 防篡改能力的边界
+
+Karma 收紧了两个 Windows 服务（KarmaService 及配套守护服务）的权限：在 services.msc 或任务管理器中“停止”、把“启动类型”改为“禁用”、在注册表编辑器中修改服务键值，即使是管理员也会被拒绝；两个服务每几秒互相守护；“结束任务”强杀后由服务控制管理器自动拉起。这足以挡住只会使用图形工具的非专业管理员。
+
+但它**不能**保证抵御懂技术的管理员：使用 `sc.exe` 等终端命令、夺取服务或注册表键的所有权、进入安全模式或恢复环境、离线修改注册表、或拥有设备物理控制权，都可能绕过保护。真正抵御技术型管理员需要带签名的内核级保护（PPL/ELAM），当前测试版不包含。
+
+**最有效的做法**：让被保护的人日常使用 Windows 标准用户账户，Windows 管理员账户和 Karma 超级密码由监督人保管。
+
+### 密码与权限
+
+- 普通管理员密码和超级密码都至少 10 个字符，且两者不能相同。
+- 设置超级密码后，**任何削弱保护的修改**都需要超级密码，包括：关闭保护、识别功能或控制台登录后自动启动，提高图像风险阈值，放宽网址/应用/关键词/断网时段/重复关闭限制，删除已记住标题，提前恢复网络，立即卸载。加强保护只需普通管理员会话。
+- 服务会比较**整份提交的策略**：只要其中一项削弱保护，整次保存就需要超级密码。直接绕过控制台请求服务，也执行同样的检查。
+- 修改超级密码需要当前超级密码，普通密码无法覆盖或清空它。
+- 未设置超级密码时，普通管理员会话即可执行上述操作。
+
+<details>
+<summary>已设置超级密码时的完整权限表（v0.2.4 起）</summary>
+
+输入普通管理员密码解锁控制台后会建立已认证会话；多数日常操作使用该会话即可，表中注明的操作还会再次要求输入普通密码。
+
+| 操作范围 | 普通管理员密码或会话可以执行 | 需要追加超级密码的操作 |
 | --- | --- | --- |
-| Console and status | Unlock or lock the console; view Service/Agent/display health, policy, network state, current application bans, update status, and uninstall countdown; search and page through remembered titles, with the recognition reason for each; review titles marked as misjudged and let one be remembered again | Forgetting a remembered title, or marking it as misjudged |
-| Ordinary administrator password | Change it after entering the current ordinary password again; the new password must have at least 10 characters and differ from the configured super password | No super password needed for this change |
-| Super password setup | Set it for the first time after entering the ordinary password again; it must have at least 10 characters and differ from the ordinary password. The supervisor should enter and keep it | Changing an existing super password requires the current super password; the ordinary password cannot overwrite or clear it |
-| Protection and recognition | Enable protection, image recognition, OCR, title matching, or remembered titles; lower the image risk threshold | Disable any of those switches, or raise the image risk threshold |
-| Website rules | Add or enable block rules; remove or disable allow rules | Add or enable allow rules; remove, disable, or narrow block rules |
-| Application rules | Add or enable “Always block” rules; remove or disable “Allow” rules. When adding an application, type its executable or choose one from the applications installed on this computer (read from the Windows installed-program and App Paths registrations and from Start menu and desktop shortcuts) | Add or enable “Allow” rules; remove, disable, or narrow “Always block” rules |
-| Bulk add applications | Search the applications installed on this computer and check several at once; browsers (known browsers or application rules categorized as browsers) are marked and cannot be checked | Checked applications become “Allow” rules (an “Always block” rule matching one also becomes “Allow”). Like other application edits, they apply after **Save settings**, which needs the super password |
-| Keywords | Add or enable enforced keywords; add keywords to the built-in list; turn on the built-in terms prone to false positives; remove or disable exemptions | Remove, disable, or replace enforced custom keywords; remove a keyword added to the built-in list; turn off the terms prone to false positives; add or enable exemptions |
-| Network schedules | Add, enable, or extend restricted periods; expand restricted targets while preserving all existing coverage | Remove, disable, shorten, move, or retarget periods in a way that reduces existing restricted coverage; restore network access before a block ends |
-| Repeat-closure limits | Lengthen the counting window or reduce the number of closures needed to trigger a ban | Shorten the counting window or increase the number of closures needed |
-| Currently restricted applications | View each restricted application and when its restriction ends | **Always allow**: one click sets that application to “Allow” in the application list (an “Always block” rule matching it also becomes “Allow”) and lifts its current restriction immediately. Browsers (known browsers or application rules categorized as browsers) cannot be allowed: the button is grayed out, the Service refuses the request, and the restriction ends when it expires. It is saved at once, separately from other unsaved edits, and audited |
-| Event evidence | View and filter the evidence list, with the reason each item was saved; enter the ordinary password again to view each original; delete one item or several selected items after confirming; enable or disable evidence saving; turn **Skip allowlisted applications** on or off (when on, the Service discards new evidence attributed to an application with an enabled “Allow” rule instead of saving it; saved evidence is kept) | These evidence operations do not require the super password; forgetting a remembered title is a separate protected operation. **Add to allowlist**: after confirming, the application an evidence item was attributed to is added to Application control as “Allow” (an “Always block” rule matching it also becomes “Allow”) and any repeat-closure restriction on it is lifted. The Service takes the executable path from its own evidence record; evidence whose source application could not be attributed, or whose source is a browser (a known browser or an application rule categorized as a browser), cannot be allowlisted, and its button is grayed out. It is saved at once and audited |
-| Policy backups | Export policy, import a backup for review, and save it when it preserves or strengthens protection | Saving an imported policy that weakens protection; importing does not bypass service authorization |
-| Console preferences | Change the interface language or whether the console starts at sign-in. Closing the console hides its window while protection continues | These preferences do not require the super password |
-| Software updates | Enable or disable automatic installation; check and install updates now; enter the ordinary password in setup to request an in-place upgrade | No super password needed. Every upgrade still requires a valid developer signature, matching file hashes, and a strictly higher version |
-| Uninstall request | Enter the ordinary password again to request uninstall; cancel a request with the administrator session; after the 72-hour wait, enter the ordinary password to uninstall during the following 24 hours | Immediate uninstall before the waiting period has elapsed requires the super password |
+| 控制台与状态 | 解锁、锁定控制台；查看服务、Agent、显示器健康、策略、网络状态、当前应用封禁、更新状态和卸载倒计时；分页查看和搜索已记住标题及每条的识别原因；查看已标记误判的标题，并可恢复记住 | 删除已记住标题，或将其标记为误判 |
+| 普通管理员密码 | 再次输入当前普通密码后修改；新密码至少 10 个字符，且不能与已设置的超级密码相同 | 修改普通密码本身不需要超级密码 |
+| 超级密码设置 | 再次输入普通密码后首次设置；超级密码至少 10 个字符，且与普通密码不同，应由监督人输入和保管 | 修改已有超级密码需要当前超级密码，普通密码不能覆盖或清空它 |
+| 保护与内容识别 | 开启保护、图像识别、OCR、标题识别或记住标题；降低图像风险阈值 | 关闭上述任一开关，或提高图像风险阈值 |
+| 网站规则 | 新增或启用黑名单；删除或停用白名单 | 新增或启用白名单；删除、停用或缩小黑名单范围 |
+| 应用规则 | 新增或启用“始终禁止”；删除或停用“允许使用”。添加应用时可手动填写可执行文件，也可从本机已安装的应用中选择（读取 Windows 已安装程序与 App Paths 注册信息，以及开始菜单和桌面快捷方式） | 新增或启用“允许使用”；删除、停用或缩小“始终禁止”的范围 |
+| 批量添加应用 | 搜索本机已安装的应用并一次勾选多个；浏览器（已知浏览器或类别为“浏览器”的应用规则）会被标出且不能勾选 | 勾选的应用设为“允许使用”（匹配它的“始终禁止”规则也会改为“允许使用”）。与其他应用规则修改一样，点击**保存设置**后生效，需要超级密码 |
+| 关键词 | 新增或启用拦截关键词；向内置词库补充关键词；开启内置易误报词；删除或停用豁免词 | 删除、停用或替换已有自定义拦截关键词；删除补充到内置词库的关键词；关闭易误报词；新增或启用豁免词 |
+| 断网时段 | 新增、启用、延长断网时段；扩大断网对象，且保留原有全部覆盖范围 | 删除、停用、缩短、移动时段或修改断网对象，导致原有断网覆盖减少；在时段结束前提前恢复网络 |
+| 重复关闭限制 | 延长重复违规统计窗口，或降低触发封禁所需的关闭次数 | 缩短统计窗口，或提高触发封禁所需的关闭次数 |
+| 当前被限制的应用 | 查看被限制的应用及解除时间 | **一键允许**：把该应用在应用列表中设为“允许使用”（匹配它的“始终禁止”规则也会改为“允许使用”），并立即解除当前限制。浏览器（已知浏览器或类别为“浏览器”的应用规则）不能一键允许：按钮显示为灰色，Service 也会拒绝，限制到期后自动解除。该操作立即保存，不会顺带保存其他未保存的修改，并写入审计 |
+| 事件证据 | 查看和筛选证据列表及每条证据的保存原因；每次查看原图时再次输入普通密码；确认后删除单条或批量删除所选证据；开启或关闭证据保存；开启或关闭**不拦截白名单应用**（开启后，Service 直接丢弃来源为已启用“允许使用”规则应用的新证据，不再保存；已保存的证据不受影响） | 这些证据操作不需要超级密码；删除已记住标题是另一项受保护操作。**加入白名单**：确认后把该证据的来源应用加入“应用管控”列表并设为“允许使用”（匹配它的“始终禁止”规则也会改为“允许使用”），同时解除对它的重复关闭限制。可执行文件路径由 Service 从自身证据记录读取；来源应用无法可靠归属或为浏览器（已知浏览器或类别为“浏览器”的应用规则）的证据不能加入白名单，按钮显示为灰色。该操作立即保存并写入审计 |
+| 策略备份 | 导出策略、导入备份供检查，并在不削弱保护时保存 | 保存会削弱保护的导入策略；导入不能绕过服务端授权 |
+| 控制台偏好 | 修改界面语言、开启控制台登录后自动启动；关闭控制台只隐藏窗口，保护继续运行 | 关闭控制台登录后自动启动，防止通过重启使控制台不再运行 |
+| 软件更新 | 开启或关闭自动安装；立即检查并安装更新；在安装器中输入普通密码申请原地升级 | 不需要超级密码，但所有升级仍须通过开发者签名、文件哈希和严格更高版本校验 |
+| 卸载申请 | 再次输入普通密码提交申请；用管理员会话取消申请；等待 72 小时后，在随后的 24 小时内输入普通密码卸载 | 不等待申请生效、立即卸载需要超级密码 |
 
-The table describes authorization, not a guarantee that an operation can succeed regardless of state: updates and uninstall cannot execute concurrently, and session, validation, revision, and service-availability checks still apply. Policy changes take effect only after saving. The Service compares the **entire submitted policy** with the current one: if any part weakens protection, the whole save requires the super password, even when other parts strengthen it. Renaming or reorganizing rules is allowed without it only when the Service's comparison finds no weakening. Direct service requests are subject to the same checks.
+表格描述的是授权范围，不代表操作在任何状态下都一定成功：升级和卸载不能同时执行，会话、参数校验、策略版本和服务连接等检查仍然有效。策略修改需点击“保存设置”后生效；规则改名、整理等操作，也以服务比较后确认没有削弱为准。
 
-An uninstall request remains valid across reboots. Its administrator-only window is **72 hours after the request up to, but not including, 96 hours after the request**. Cancelling or expiry removes that authorization; a new request starts a new 72-hour wait. Requests, readiness, cancellation, expiry, and uninstall approval are audited. A forgotten super password uses this delayed uninstall route; there is no separate super-password reset or one-time recovery-code feature. The ordinary password alone cannot immediately disable protection or reset an existing super password.
+</details>
 
-Uninstall keeps local data by default, including the super-password hash; reinstalling with that data retained does not reset the super password. If recovery requires a fresh setup, use `Uninstall-Karma.ps1 -PurgeData` after uninstall is authorized, then reinstall and enroll again. Purging also permanently deletes the ordinary password, policy, audit records, bans, remembered titles, keys, and encrypted evidence.
+### 忘记超级密码
 
-**When no super password is configured**, the ordinary administrator session can also save weakening policies and forget remembered titles; early network restore and immediate uninstall recheck the ordinary password. The 72-hour uninstall wait is not required. Signed-update and version restrictions still apply.
+- 当前没有独立的超级密码重置或一次性恢复码功能，请使用**延时卸载**途径恢复：申请卸载 → 等待 72 小时 → 在随后 24 小时内用管理员密码卸载。申请跨重启保留，可随时取消；取消或过期后需重新申请。申请、生效、取消、过期和卸载授权均写入审计。
+- 卸载默认保留本地数据（包括超级密码哈希），保留数据后重装**不会**重置超级密码。如需完全重新初始化，应在卸载获得授权后执行 `Uninstall-Karma.ps1 -PurgeData`，再重新安装。清除数据会永久删除普通密码、策略、审计、封禁、已记住标题、密钥和加密证据。
 
-The current console does **not** expose a complete persisted audit-log reader. The service status interface provides the audit-record count. Deleting an evidence image does not remove a remembered title or relax the enforcement rules.
+### 隐私
 
-These are Karma application permissions. UAC/Windows administrator rights are still required where the installer or uninstaller requests elevation. A technical Windows administrator can bypass user-mode protection through ownership changes, safe mode, or offline edits; using a standard Windows account with a supervisor-held administrator account remains recommended.
+- 屏幕画面只在内存中处理，不上传、不保存原始画面；运行日志不输出识别原文、分数、标题、网址或画面。
+- 不安装根证书，不解密 HTTPS，不记录键盘输入和完整网址。
+- 以下内容会在本机加密保存（AES-256-GCM，密钥由 Windows DPAPI 保护）：开启“保存事件证据”时达到立即处置阈值的命中画面；默认开启的“记住窗口标题”所记录的窗口标题、域名和程序路径（最多 5,000 条）。删除证据图片不会删除已记住标题。
+- 审计日志只记录时间、应用、处置结果、原因码等结构化信息，不记录画面与窗口标题。
 
-## Design Principles
+### 合规使用
 
-- Local first: screen images are processed in memory by default and are neither uploaded nor saved in their original form.
-- Timely enforcement: continuous-frame detection replaces infrequent screenshots, with a target response time of 1–3 seconds after high-risk content appears.
-- Independent multi-display processing: each display is captured, inferred, and tracked independently.
-- Least privilege: the management UI holds no system privileges; privileged operations may be performed only by a signed service.
-- No HTTPS decryption: no self-signed root certificate is installed, and no global HTTPS man-in-the-middle proxy is used.
-- Layered protection: ordinary password protection, system-service self-recovery, and device management provide progressively stronger enforcement.
-- Auditable: every policy change and enforcement action produces a structured event, without recording sensitive screen content or complete browsing activity.
+Karma 只应由设备所有者、监护人或组织在合法授权范围内用于内容防护。请明确告知被保护者屏幕监控、应用处置、日志范围和卸载方式。本软件不会隐藏监控事实，不采集键盘输入，不将截图用于训练，也不绕过操作系统的隐私提示和设备所有者权限。
 
-## Overall Architecture
+## 更多文档
 
-```text
-Tauri + TypeScript management UI
-              │ authenticated local IPC
-              ▼
-          Shared Rust core
-  ┌─────────────────────────────┐
-  │ ONNX pornography detection  │
-  │ Time and app policy engine  │
-  │ Continuous-frame state      │
-  │ machine                     │
-  │ SQLite, encryption, audit   │
-  │ logs                        │
-  │ Configuration validation    │
-  │ and unified IPC protocol    │
-  └─────────────────────────────┘
-         │                 │
-         ▼                 ▼
- macOS session agent    Windows session agent
- ScreenCaptureKit       Windows.Graphics.Capture
- NSWorkspace            Win32 / WinRT
-         │                 │
-         ▼                 ▼
- macOS privileged       Windows privileged
- executor               service
- LaunchDaemon           Windows Service
- Endpoint Security      WFP / App Control
- Network Extension      Optional signed driver
-         │                 │
-         └──── MDM / device policy ────┘
-```
+- [技术说明](技术说明.md)：架构设计、进程拓扑、识别算法、数据加密、IPC 安全边界、开发构建与实施路线。
+- [Windows 安装与测试指南](docs/windows-installation-guide.md)
+- [模型资产说明](docs/model-assets.md)
+- 真机验收清单：[帧管线](docs/windows-frame-pipeline-acceptance.md) · [ONNX](docs/windows-onnx-acceptance.md) · [网络执行](docs/windows-network-enforcement-acceptance.md) · [升级](docs/windows-update-acceptance.md)
 
-The management UI, session agent, and privileged executor must run as separate processes. The system service runs in a privileged context, but screen capture can occur only in the user's graphical session. A Windows Session 0 service or macOS LaunchDaemon must not be treated as a screen-capture process.
+## 代码仓库与许可证
 
-## Process Topology
+项目主仓库为 [csbuddhist/Karma](https://github.com/csbuddhist/Karma)。
 
-### Windows
-
-```text
-KarmaService.exe                 LocalSystem, starts automatically at boot
-  ├─ Policy enforcement and watchdog
-  ├─ WFP/firewall rule management
-  ├─ Application enforcement and service recovery
-  └─ Starts and validates, for every signed-in session:
-       KarmaAgent.exe            Current user session
-         ├─ Multi-display capture
-         ├─ Foreground window/PID attribution
-         ├─ ONNX inference
-         └─ Communication with the UI and Service
-
-KarmaUI.exe                      Tauri management UI, started on demand
-```
-
-### macOS
-
-```text
-com.karma.daemon                 LaunchDaemon, root
-  ├─ Policy enforcement and watchdog
-  ├─ Network Extension management
-  ├─ System Extension coordination
-  └─ Validates the signed-in session agent
-
-KarmaAgent.app                   Current graphical user session
-  ├─ ScreenCaptureKit multi-display capture
-  ├─ Foreground application attribution
-  ├─ ONNX inference
-  └─ Management UI
-
-KarmaEndpointExtension           Endpoint Security System Extension
-```
-
-## Shared Core
-
-The shared core is written in Rust and produces native libraries for Windows and macOS. It can also be loaded by the session agent as a separate process.
-
-### Policy Engine
-
-The unified engine supports:
-
-- Allowed and blocked time ranges for all seven days of the week at 15-minute granularity.
-- Browser, media player, game, and custom application categories.
-- Rules based on application path, bundle ID, publisher signature, and file hash.
-- Blocklists, allowlists, and a default policy.
-- Browser-domain allowlists and blocklists. An allowlisted domain always wins; a blocklisted
-  domain closes immediately without waiting for an image-risk threshold.
-- Foreground-window title matching with a versioned explicit-content list of 2,543 terms in 26
-  languages (`assets/keyword-lists/`). Each term has a category (sexual activity or body parts),
-  a match mode (whole word, contains, or word prefix), and a confidence: the 1,592 strict terms are
-  always active, while the 951 terms that also appear in ordinary titles (such as “奶” or
-  “adult”) are off by default and can be turned on. Administrators can add their own terms to the
-  built-in list with a language, category, and match mode; added terms are always active. Console
-  custom high-risk and sensitive keywords also join matching, and exemption keywords suppress
-  matches. The console keyword page filters the built-in list by language, category, and
-  confidence, and supports adding, editing, enabling, deleting, and searching custom keywords.
-- Remembered window titles: when explicit image detection closes an application, the Service
-  remembers that window's title (the page title in browsers) and canonical host; the same
-  application showing the same title again is closed on sight. The console's Content
-  Recognition page lists remembered titles with why each was remembered (image risk score and the threshold at the time; titles from v0.2.6 or earlier show "not recorded"), deletes them, and can switch the behavior off. A misjudged title can be marked **Misjudged**: it is forgotten and never remembered again, though a window closed by a later misjudgment is still closed. Misjudged titles are listed separately, encrypted like remembered titles, and can be remembered again.
-- Temporary allowances, remaining usage time, and cooldown periods.
-- Corrections for screen locking, sleep, time-zone changes, and daylight saving time.
-- Policy priority and conflict explanations.
-
-Recommended priority:
-
-```text
-Device-enforced policy > Emergency-disable policy > Schedule block > App blocklist
-                       > Temporary allowance > App allowlist > Allow by default
-```
-
-For browser content enforcement, the more specific precedence is `website allowlist > website
-blocklist > application allow > title keyword > image threshold`. Domain rules include subdomains
-but not sibling domains. Console-managed application rules are enforced by the Service: an
-"allow" application (matched by executable name or full path tail) is never closed by image or
-title enforcement — except on a blocklisted site — and an "always block" application is closed
-whenever its foreground window is observed.
-
-Policy evaluation returns a structured result rather than directly performing system operations:
-
-```rust
-Decision {
-    action: Allow | Warn | CloseGracefully | Terminate | BlockNetwork,
-    reason: ReasonCode,
-    policy_id: String,
-    expires_at: Option<Timestamp>,
-}
-```
-
-### AI Detection
-
-- ONNX Runtime with local CPU/GPU inference.
-- The same model, labels, normalization parameters, and thresholds are used on both platforms.
-- Each display maintains an independent sliding window.
-- Bounded frame preparation is capped at 4 frames per second and image inference at 2 frames per second, avoiding unbounded capture-callback work while keeping preparation admission latency within 250 ms.
-- Before inference, images are resized and very small regions are blurred to reduce false positives from text and avatars.
-- Video and still images use the same continuous-frame state machine.
-
-Suggested decision rules:
-
-```text
-score >= 0.95                               → Enforce immediately
-At least 3 frames with score >= 0.82        → Enforce
-within the last 5 seconds
-At least 5 frames with score >= 0.70        → Warn or enforce
-within the last 8 seconds
-Below threshold continuously for 10 seconds → Clear risk state
-```
-
-Thresholds must be updatable through signed configuration. After a model match, first identify the foreground window on that display and its owning PID/Bundle ID, and then act on the source application to avoid terminating unrelated browsers or background processes.
-
-In the current Windows test build, saving the console risk threshold also updates the immediate-enforcement threshold, including migration of previously saved mismatched values. Disabling image recognition stops image classifier work and prevents image evidence or disposition events.
-
-### Data and Encryption
-
-- SQLite uses WAL mode.
-- Configuration, policies, and audit logs use versioned schemas.
-- Administrator passwords are stored only as Argon2id hashes and must never be stored reversibly.
-- Database keys are wrapped by Windows DPAPI or macOS Keychain.
-- IPC keys are generated during initial installation and stored in the system credential store.
-- Update packages, models, and policies are all verified with Ed25519 signatures.
-
-By default, only the following are recorded:
-
-- Time, device, user, and display number.
-- Application identifier, publisher, and enforcement result.
-- Model version, risk level, and normalized score.
-- Policy ID, reason code, and component health status.
-
-By default, screen captures, window contents, full URLs, user input, and dynamically generated site certificates are not recorded. The Windows Agent processes the active window title and browser address transiently in memory, sends only the canonical host plus a bounded title to the local Service for independent policy validation, and never persists either value in audit or evidence records. The one exception is the remembered-title feature (on by default): after explicit image detection successfully closes an application, the Service stores that window's title, canonical host, and executable path so it can close the same page again. They are encrypted with AES-256-GCM, under a key derived from the DPAPI-protected evidence key, inside the Service's ACL-protected SQLite database (`C:\ProgramData\Karma\service-state.db`). At most 5,000 titles are kept, oldest first out. The Agent receives only 128-bit digests, never the titles themselves. The administrator can search and review them in the console; deleting a title or disabling the feature requires the super password when configured. Titles never enter the audit log.
-
-## Screen Capture
-
-### Windows
-
-- Use `EnumDisplayMonitors` to enumerate all active displays.
-- Use `IGraphicsCaptureItemInterop::CreateForMonitor` to create a `Windows.Graphics.Capture` session for each `HMONITOR`.
-- Run one `KarmaAgent` per signed-in session and listen for display connection, disconnection, resolution, scaling, rotation, and HDR changes.
-- Use D3D11 textures for GPU scaling and avoid full-size GPU-to-CPU copies whenever possible.
-- If WGC is unavailable, fall back to DXGI Desktop Duplication, but record the fallback event.
-- Capture is not guaranteed on the lock screen, the UAC secure desktop, or DRM-protected content.
-
-The current repository implements Windows frame input, image-inference and OCR-inference slicing, foreground-window title observation, browser address-bar host discovery, as well as the Windows Service, authenticated IPC, policy persistence, Agent watchdog, health heartbeat, identity-bound enforcement executor, and a DPAPI + AES-GCM evidence store. The Agent polls the active window in a dedicated apartment, evaluates context locally, and sends a bounded matching observation to the Service; the Service independently reapplies allowlist, blocklist, and multilingual title policy before authorizing a process-identity-bound close. Image observations also carry only the canonical browser host so an allowlisted site cannot be closed by a high image score. When “Save event evidence” is enabled, only image-inference frames that reach the immediate-enforcement threshold are encoded by the Agent and submitted to the Service for encrypted storage; the Service revalidates both policy and threshold. The Agent loads image and OCR models from a verified local manifest and does not emit recognized text, scores, titles, URLs, or screen content to logs. Continuous-frame risk fusion is still not connected.
-
-Service state (administrator password hash, policy, up to 50,000 audit entries, evidence metadata, repeat-offender bans, and remembered titles) lives in a transactional SQLite database (WAL, `synchronous=FULL`, `secure_delete`). Every change commits atomically, so a crash or power loss cannot leave a half-written state file. Builds before v0.2.3 stored a JSON file; it is imported automatically on first start, in the same transaction that initializes the database, and kept as `service-state.json.migrated`. Downgrading to an earlier build is not supported: it would no longer find its JSON file and would start with first-time setup.
-
-Browser host discovery currently supports Chrome, Edge, Firefox, Brave, Opera/Opera GX,
-Vivaldi, and Arc on Windows through UI Automation. Rules are domain-level (including subdomains),
-not path-level. If a browser hides or does not expose its address bar to accessibility, Karma cannot
-identify an allowlisted or blocklisted host for that window; title and image rules continue to work.
-
-The management UI is located at [`apps/karma-ui/`](apps/karma-ui/). Windows builds connect to `KarmaService` through a native named pipe that supports concurrent clients. Administrator passwords, sessions, live Agent/display status, policy revisions, and evidence viewing are all controlled by the Service. The Event Evidence page shows each item's local capture date and time, newest first, and can be filtered by a start/end date-time range. System Settings can change the administrator password after re-verifying the current one, and can export the current policy to a JSON backup file or import a previously exported backup for review and restore; import validates the backup schema and policy before anything reaches the console. Service sessions are held in memory only: if `KarmaService` is stopped and started again, the console detects the invalid session and returns to the unlock screen, and unlocking once more restores the connection instead of leaving a permanent "service not connected" status. If the connection fails, the GUI shows an explicit Service connection error instead of presenting an unknown authentication state as a password-unlock screen. Non-Windows development builds continue to use an isolated local backend.
-
-Tests on a macOS development machine and cross-compilation for `x86_64-pc-windows-msvc` prove only that the portable algorithms, Rust type constraints, and Windows API signatures are correct. GPU driver behavior, actual frame colors, resource cleanup, and multi-display performance must be verified on Windows 10 22H2/Windows 11 according to the [Windows Frame Pipeline Hardware Acceptance Checklist](docs/windows-frame-pipeline-acceptance.md) and [Windows ONNX Hardware Acceptance Checklist](docs/windows-onnx-acceptance.md). Runtime acceptance is not considered complete until this evidence has been recorded.
-
-### macOS
-
-- Use `SCShareableContent` to enumerate `SCDisplay` instances.
-- Create an independent `SCStream` for each display, with output sent to a serial capture queue.
-- Listen for display-configuration changes and rebuild the corresponding stream.
-- Explicitly request Screen Recording permission on first launch. If the permission is revoked, enter a fail-safe state and notify the guardian.
-- Do not attempt to bypass TCC, system capture indicators, or protected-content restrictions.
-
-### Frame Attribution
-
-The capture agent keeps the following information synchronized:
-
-- Current foreground window and PID.
-- Intersection area between each window and display.
-- Full-screen applications and picture-in-picture windows.
-- Multi-window browser scenarios.
-
-A matched frame is attributed preferentially to the foreground window covering the largest area of that display. When reliable attribution is impossible, show a warning and apply a temporary overlay instead of directly terminating multiple candidate processes.
-
-## Application Control
-
-Application control borrows the idea of “continuous process monitoring, immediate termination, and service-driven restart” from Zhan Chi Niao, while using supported, signable, and auditable system interfaces.
-
-### Enforcement Escalation
-
-```text
-1. Block new network connections
-2. Send a graceful-close request to the window
-3. Wait 2 seconds and check again
-4. Terminate the confirmed target process
-5. Prevent the same application from restarting during the cooldown period
-6. Record the event and notify the management interface
-```
-
-After a browser match, the corresponding browser process group is closed by default. For browsers with multiple profiles, the implementation should identify the process owning the window whenever possible. Media players, image viewers, and games can be handled directly by their main processes.
-
-Repeat-offender cooldown (implemented on Windows): once the same executable is closed 5 times within 20 minutes (both configurable on the console's Application Control page: 1–1440 minutes and 2–20 closures), it is banned for one hour. Every successful closure counts, whether triggered by images, titles, URL rules, or remembered titles. During the ban, any foreground observation of that executable is terminated immediately with no grace period, superseding website allow rules and application allow rules. The Service publishes active bans and remembered titles to the Agent, which refreshes them right after each closure and with every heartbeat (about 10 seconds), so a relaunched program is closed even when its window shows nothing objectionable. Enforcement kills during a ban do not extend it. The ban is persisted in the service state, survives service restarts and reboots, is listed on the Application Control page, and is recorded in the audit log as `repeat_offender_banned`; turning protection off (`protectionEnabled`) suspends enforcement.
-
-### Windows Application Control
-
-Basic mode:
-
-- Monitor new processes using ETW/WMI/Win32 process events.
-- Verify the executable path, signing publisher, and parent process.
-- Use `WM_CLOSE` for graceful shutdown.
-- After a timeout, `KarmaService` uses a restricted handle to call `TerminateProcess`.
-- The service maintains a cooldown table and acts again if an application restarts.
-
-Hardened mode:
-
-- Use AppLocker or WDAC to enforce application-control policies during blocked periods.
-- Use the WFP ALE layer to block network connections by application identity.
-- If basic mode cannot meet self-protection goals, develop a minimal EV-signed driver. The driver is responsible only for process-handle protection and event notification; it must not contain AI, configuration, or UI logic.
-- Global DLL injection and unrestricted keyboard hooks are prohibited.
-
-### macOS Application Control
-
-Basic mode:
-
-- Use `NSWorkspace` to obtain running applications and launch/termination notifications.
-- Use `NSRunningApplication.terminate()` for graceful shutdown.
-- After a timeout, the privileged executor sends a controlled termination signal.
-
-Hardened mode:
-
-- Subscribe to Endpoint Security `AUTH_EXEC` events and allow or deny execution according to locally cached policies before the process actually runs.
-- Subscribe to relevant signal events and audit attempts to terminate Karma components.
-- Authorization callbacks must not access SQLite, the network, or ONNX. All evaluable policies are precompiled into read-only in-memory snapshots to ensure a response before the system deadline.
-- If Apple has not approved the Endpoint Security entitlement, the product must degrade gracefully and clearly display the capability difference.
-
-## Exit Prevention and Self-Protection
-
-### Level 1: Password Protection
-
-- The administrator session controls routine settings; weakening protection requires the configured super password. Uninstall uses super-password authorization or the delayed administrator window described above.
-- Closing the UI only hides the management interface; it does not stop the Agent or Service.
-- Consecutive failures trigger exponential backoff and an audit event.
-- A forgotten super password uses the audited 72-hour delayed uninstall route described above. Separate one-time recovery codes are not implemented.
-
-### Level 2: Service Protection and Automatic Recovery
-
-- Windows Service/LaunchDaemon starts automatically at boot.
-- Service and Agent exchange bidirectional heartbeats, and the system service recovers either component after an abnormal exit.
-- The service accepts commands only from signed clients over authenticated local IPC.
-- The installation directory is owned by `SYSTEM/root` and administrators, is read-only to ordinary users, and must not use permissions such as `Everyone: FullControl`.
-- The service-control ACL does not grant ordinary users permission to stop, modify, or delete the service.
-- Component signatures and hashes are verified at startup. On failure, the system enters a fail-safe state and notifies the management interface.
-- Native operating-system recovery mechanisms are used instead of having two user-space processes restart each other indefinitely.
-
-### Level 3: Device Management
-
-Windows:
-
-- Standard users do not possess administrator credentials.
-- MDM deploys the service, WFP, WDAC/AppLocker, and uninstall restrictions.
-- BitLocker, tamper-resistant boot policies, and Secure Boot remain enabled.
-
-macOS:
-
-- Standard users do not possess administrator credentials.
-- MDM deploys PPPC, System Extension, Network Extension, and non-removable application policies.
-- FileVault and System Integrity Protection remain enabled.
-
-### Explicit Boundaries
-
-The following situations can only be detected or reported afterward; prevention cannot be guaranteed:
-
-- An administrator/root user intentionally disables or removes components.
-- Safe Mode, recovery environments, or offline disk modification.
-- The user revokes macOS Screen Recording permission.
-- Secure Boot/SIP is disabled, the operating system is reinstalled, or the startup disk is replaced.
-- Physical obstruction, external capture devices, or content played on another device.
-
-## Network Schedule Control
-
-Network control governs only which applications may access the network and when. Pornographic-content detection remains the responsibility of the on-screen AI.
-
-Current status: the console's Network Schedules page configures any number of time blocks for each day from Monday to Sunday (blocks may cross midnight) and one of three targets per rule: browsers (common browsers plus applications categorized as browsers), selected applications, or all networked applications. Single-range rules saved by earlier builds are migrated automatically. `KarmaService` validates every schedule, evaluates it in the device's local time zone, reports whether a block is active and when it ends, and records the start and end of each restricted period in the audit log. During a block, network access can be restored early only from the console by entering the super password again (the administrator password if none is configured); the restore lasts until the current block ends, is persisted across Service restarts, and is audited. On Windows, the service now applies `ServiceCore::network_enforcement` through persistent WFP filters immediately on startup and every 60 seconds afterward. Schedule changes, policy changes, and early restore take effect at the next poll (up to about 60 seconds). Windows hardware acceptance is pending; see [the network enforcement checklist](docs/windows-network-enforcement-acceptance.md).
-
-### Windows
-
-- Persistent WFP filters cover IPv4/IPv6 ALE connect and receive/accept, without restricting the protocol. Browser and selected-application rules match executable names, trailing path components, or full application identities, including programs launched after the rules are installed. These rules apply across users.
-- Each update atomically replaces only Karma-owned filters. Failures retain the previous set, retry at the next 60-second poll, and record failure/recovery transitions in the audit log.
-- All-network blocking preserves exact Karma installation paths and core Windows network infrastructure (`System`, `ntoskrnl.exe`, `svchost.exe`, `lsass.exe`, `services.exe`, and `wininit.exe` under the system directory). It does not exempt arbitrary applications by name or the whole Windows directory.
-- A service crash retains the last committed rules. Startup reconciles them against the current schedule; normal stop and password-authorized uninstall remove them. An elevated `KarmaService.exe --clear-network-filters` command removes only Karma WFP objects for recovery. Do not run recovery while the service is enforcing a schedule.
-- New connections and existing ALE flows are subject to WFP authorization/reauthorization. Hardware testing must verify TCP, UDP/QUIC, IPv6, existing streams, and VPN/proxy coexistence; proxy/service-hosted traffic can inherit the intermediary process identity.
-
-### macOS
-
-- Use a Network Extension Content Filter or DNS Proxy.
-- Block connections by application and policy; DNS is used only for domain-level categorization.
-- Do not enforce control by editing `/etc/hosts` or repeatedly switching the system proxy.
-
-A browser extension can serve as an optional enhancement for full-URL categorization and friendly block pages, but it cannot be the only security boundary.
-
-## IPC and Privilege Boundaries
-
-The unified IPC protocol uses length-prefixed messages and a version field:
-
-```text
-UI       → Core/Service: Read status; submit authenticated policy changes
-Agent    → Core        : Frame-inference requests and window-attribution data
-Core     → Service     : Structured Decision; never an arbitrary command
-Service  → Agent       : Health checks, capture configuration, and policy snapshot version
-```
-
-Security requirements:
-
-- Windows uses named pipes with explicit DACLs.
-- macOS uses XPC and verifies the Team ID, Bundle ID, and code-signing requirement.
-- The server does not accept generic commands such as “execute an arbitrary path” or “terminate an arbitrary PID.”
-- Every PID operation must also verify the process start time, signature, and application identity to prevent PID-reuse attacks.
-- IPC includes a nonce, timestamp, and session key, and rejects replays.
-
-## Fail-Safe Behavior
-
-| Failure | Default behavior |
-|---|---|
-| AI model fails to load | Stop pornography detection, retain time and application policies, and continue alerting |
-| Capture fails on one display | Rebuild that display's stream without affecting other displays |
-| Agent crashes | Service restarts the Agent; repeated failures in a short period trigger rate-limited recovery |
-| Service crashes | Operating-system service recovery restarts it; the network retains the last policy |
-| Policy database is corrupted | Use the latest signed snapshot and enter read-only mode |
-| System time changes abruptly | Verify with a monotonic clock and recalculate time policies |
-| IPC authentication fails | Reject the request and record a security event |
-| Permission is revoked | Display a non-dismissible alert; notify the management interface on managed devices |
-
-## Installation, Signing, and Updates
-
-### Windows
-
-- Use MSI to install the Service, Agent, UI, and optional driver.
-- Sign every EXE, DLL, MSI, and driver with a trusted code-signing certificate.
-- Configure the service SID, directory ACLs, named-pipe DACLs, and recovery policy during installation.
-- Uninstallation requires UAC and super-password or delayed administrator authorization; in MDM mode, the device policy determines whether removal is permitted.
-
-### macOS
-
-- Distribute signed `.app`/`.pkg` packages and complete Apple notarization.
-- On first run, guide the user through Screen Recording, System Extension, and Network Extension permissions.
-- In MDM environments, preapprove allowed capabilities through PPPC and System Extension payloads.
-- The updater verifies the Team ID, designated requirement, and update-package signature.
-
-The update process uses A/B component directories: download, verify the signature, run preflight checks, switch versions, and confirm health. Automatically roll back on failure. Database migration must support forward recovery and must never erase configuration after a failed update.
-
-## Tradeoffs Compared with Zhan Chi Niao
-
-Ideas retained:
-
-- Separate the system service from the signed-in session agent.
-- Monitor processes in real time and act when a policy matches.
-- Let the service recover core components.
-- Run model inference locally instead of uploading screen content to the cloud.
-- Evaluate schedules and application allowlists/blocklists through one policy system.
-
-Explicitly not adopted:
-
-- Self-signed root certificates and a global HTTPS man-in-the-middle proxy.
-- Saving complete screens unencrypted to disk every few minutes.
-- Unsigned core programs and installation directories writable by ordinary users.
-- Global DLL injection, hidden files, and excessive keyboard hooks.
-- Coupling passwords, AI, networking, UI, and self-protection into a monolithic process.
-
-## Technology Stack
-
-| Layer | Technology |
-|---|---|
-| UI | Tauri + TypeScript |
-| Shared core | Rust |
-| AI | ONNX Runtime |
-| Data | SQLite + DPAPI/Keychain |
-| macOS integration | Swift, ScreenCaptureKit, XPC |
-| macOS hardening | Endpoint Security, Network Extension, MDM |
-| Windows integration | Rust/C++, Win32, WinRT, WGC |
-| Windows hardening | Windows Service, WFP, WDAC/AppLocker, optional WDK driver |
-
-C# can be used to quickly validate WGC or develop management tools, but the production Windows executor should prefer Rust/C++ to avoid an additional runtime and cross-language service boundaries. WFP callouts and kernel self-protection must also use native implementations supported by the WDK.
-
-## Implementation Phases
-
-### Phase 1: Verifiable MVP
-
-- Rust policy engine, SQLite, and IPC schema.
-- Windows/macOS single-display capture adapters.
-- ONNX inference and continuous-frame evaluation.
-- Foreground-application attribution and graceful shutdown.
-- Tauri settings interface and administrator password.
-
-### Phase 2: Multi-Display Support and Basic Persistence
-
-- Multi-display hot-plug handling and independent state machines.
-- Windows Service and macOS LaunchDaemon.
-- Agent heartbeat, self-recovery, and signature verification.
-- Application allowlists/blocklists, schedules, and cooldown policies.
-- In-memory inference and privacy auditing.
-
-### Phase 3: Network and Hardened Control
-
-- Windows WFP/ALE filtering.
-- macOS Network Extension.
-- Endpoint Security `AUTH_EXEC`.
-- WDAC/AppLocker and MDM configuration templates.
-- Tests for permission revocation, offline operation, and fail-safe behavior.
-
-### Phase 4: Production Release
-
-- Complete Windows/macOS signing, notarization, and installers.
-- Secure model and application updates with A/B rollback.
-- Performance, false-positive rate, battery, and multi-user session testing.
-- Accessibility, privacy notice, data export, and uninstall flow.
-
-## Acceptance Criteria
-
-- Every active display is captured independently, and monitoring resumes within 5 seconds after a display is connected or disconnected.
-- Typical pornographic video triggers enforcement within 3 seconds of appearing, and the continuous-frame false-positive rate meets the test-set target.
-- During blocked periods, an application is intercepted or handled within 500 milliseconds of launch.
-- Ordinary users cannot stop the system service, change policies, or uninstall components.
-- The Agent recovers within 5 seconds after an abnormal exit without entering an infinite restart storm.
-- Average idle CPU usage remains below 3%; tiered budgets for active AI processing are set according to the hardware.
-- Default operation for 30 days produces no raw screen files.
-- No root CA is installed, and complete webpage content and user input are not recorded.
-- Every management action and system enforcement event has a verifiable audit record.
-
-## Testing Priorities
-
-- Two and three displays, mixed DPI, rotation, HDR, sleep/wake, and Remote Desktop.
-- Browser video, image viewers, media players, games, and picture-in-picture.
-- Multiple signed-in users, fast user switching, screen locking, and session sign-out.
-- Repeated application restarts, process-tree changes, PID reuse, and path changes after updates.
-- Agent/Service termination, database corruption, model corruption, and insufficient disk space.
-- Revoked macOS TCC permissions, unapproved System Extensions, and Endpoint Security timeouts.
-- Coexistence of Windows WFP with VPNs, proxies, security software, and enterprise firewalls.
-- False positives, false negatives, skin-tone bias, animated content, and medical and artistic contexts.
-- Three threat levels: ordinary user, administrator, and MDM-managed device.
-
-## Compliance and Transparency
-
-Karma should be used only for content protection by device owners, guardians, or organizations acting within the scope of lawful authorization. Installation must clearly disclose screen monitoring, application enforcement, logging scope, and the uninstall process. The product must not conceal the fact that monitoring occurs, collect keyboard input, use screenshots for training, or use technical means to bypass operating-system privacy prompts or device-owner permissions.
-
-## Protection control
-
-The master switch at the top of Protection Overview stops or resumes protection. Toggle it, then click **Save settings** to apply the change; System Settings exposes the same switch. When a super password is configured, stopping protection requires it; resuming uses the administrator session.
-
-## Repository and License
-
-The canonical repository is [csbuddhist/Karma](https://github.com/csbuddhist/Karma). Use this repository for future pulls, pushes, and releases.
-
-Karma source code is licensed under the GNU General Public License version 3 only (`GPL-3.0-only`); see [LICENSE](LICENSE). Third-party dependencies and model assets retain their respective licenses.
+Karma 源代码采用 GNU 通用公共许可证第 3 版（仅限该版本，`GPL-3.0-only`），完整条款见 [LICENSE](LICENSE)。第三方依赖和模型资源保留各自的许可证。

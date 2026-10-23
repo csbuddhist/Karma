@@ -31,7 +31,7 @@ Follow the existing imperative Conventional Commit prefixes: `feat:`, `fix:`, `d
 
 ## Documentation & Release Language
 
-Keep all project-facing documentation bilingual. Maintain equivalent English and Simplified Chinese content in `README.md` and `README.zh-CN.md`, updating both whenever behavior, installation, downloads, or limitations change. Every GitHub Release description must include complete English and Simplified Chinese sections in the same release notes.
+Keep all project-facing documentation bilingual. `README.md` is the Simplified Chinese homepage (features, installation, notes) and `README.en.md` its English equivalent; architecture and implementation details live in `技术说明.md` with the English equivalent `TECHNICAL.md`. Update each pair together whenever behavior, installation, downloads, limitations, or design change. Every GitHub Release description must include complete English and Simplified Chinese sections in the same release notes.
 
 ## Security & Configuration Tips
 
