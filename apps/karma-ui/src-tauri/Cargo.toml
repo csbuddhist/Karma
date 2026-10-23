@@ -10,6 +10,10 @@ license.workspace = true
 name = "karma_ui_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+# Use the standalone development backend instead of KarmaService on macOS.
+local-backend = []
+
 [build-dependencies]
 tauri-build = { version = "=2.4.1", features = [] }
 
@@ -26,6 +30,10 @@ tauri-plugin-autostart = "=2.5.1"
 tauri-plugin-dialog = "2"
 thiserror.workspace = true
 zeroize = "1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+karma-macos-ipc = { path = "../../../crates/karma-macos-ipc" }
+plist = "1"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"

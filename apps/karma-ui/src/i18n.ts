@@ -1046,6 +1046,7 @@ const errorKeys = new Map<string, MessageKey>([
   ["该事件没有可用的加密原图", "error.evidenceUnavailable"],
   ["本地安全存储不可用", "error.secureStorageUnavailable"],
   ["KarmaService 尚未运行或命名管道不可用", "error.serviceUnavailable"],
+  ["KarmaService 尚未运行或本地套接字不可用", "error.serviceUnavailable"],
   ["设置已被另一个管理会话修改，请重新打开控制台", "error.settingsConflict"],
   ["保护服务拒绝了请求", "error.requestRejected"],
   ["保护服务返回了无效响应", "error.invalidResponse"],
@@ -1076,9 +1077,53 @@ export function persistLocale(locale: Locale): void {
   }
 }
 
-export function createTranslator(locale: Locale): Translate {
+export type Platform = "windows" | "macos";
+
+/** The operating system the console runs on; development previews follow the browser's host. */
+export function detectPlatform(): Platform {
+  return typeof navigator !== "undefined" && /Macintosh|Mac OS X/.test(navigator.userAgent) ? "macos" : "windows";
+}
+
+/** Wording that differs on macOS, where the Service is a LaunchDaemon and network blocking is not yet enforced. */
+const macosMessages: Record<Locale, Partial<Record<MessageKey, string>>> = {
+  "zh-CN": {
+    "authorization.serviceRequired": "请先连接 macOS 保护服务（KarmaService），再管理超级密码、卸载申请或软件更新。",
+    "uninstall.instructions": "现在可在“终端”中运行 sudo /Library/Karma/uninstall.sh，并输入管理员密码。",
+    "overview.serviceDisconnected": "macOS 保护服务尚未连接",
+    "monitors.emptyDescription": "连接 macOS Agent 后，此处会按显示器展示采集、模型和 OCR 健康信息。若长时间为空，请在“系统设置 → 隐私与安全性 → 屏幕与系统录音”中允许 KarmaAgent。",
+    "applications.executablePlaceholder": "Google Chrome 或完整路径",
+    "applications.batchDescription": "已扫描本机“应用程序”文件夹。勾选的应用将设为“允许使用”，不再被图像与标题识别关闭（网址黑名单除外）；浏览器类应用不能添加。添加后点击“保存设置”生效；已设置超级密码时需验证超级密码。",
+    "schedule.applicationPlaceholder": "Discord 或完整路径",
+    "settings.capability3": "macOS LaunchDaemon 与认证 IPC",
+    "settings.capabilityPending": "macOS 断网拦截、浏览器域名识别与真机验收待完成",
+    "settings.securityDescription": "控制台密码不能替代 macOS 账户隔离。若孩子拥有本机管理员权限，仍可能停止 LaunchDaemon、撤销屏幕录制权限，或通过恢复模式绕过用户态保护。",
+    "network.restrictedTitle": "断网时段已开始（macOS 版本尚未实际断网）",
+    "network.idleDescription": "macOS 版本目前只计算并记录断网时段，尚未拦截网络（需要 Network Extension，开发中）；时间段内提前恢复需要管理员密码。",
+    "network.idleSuperDescription": "macOS 版本目前只计算并记录断网时段，尚未拦截网络（需要 Network Extension，开发中）。提前恢复网络需要超级密码。",
+    "error.serviceUnavailable": "KarmaService 尚未运行或本地套接字不可用",
+  },
+  en: {
+    "authorization.serviceRequired": "Connect to the macOS protection service (KarmaService) to manage the super password, uninstall requests, or software updates.",
+    "uninstall.instructions": "Run sudo /Library/Karma/uninstall.sh in Terminal and enter the administrator password.",
+    "overview.serviceDisconnected": "macOS protection service is not connected",
+    "monitors.emptyDescription": "After the macOS Agent connects, capture, model, and OCR health will appear here for each monitor. If it stays empty, allow KarmaAgent in System Settings → Privacy & Security → Screen & System Audio Recording.",
+    "applications.executablePlaceholder": "Google Chrome or full path",
+    "applications.batchDescription": "Found in this computer's Applications folders. Checked applications are set to Allow, so image and title enforcement no longer closes them (blocklisted sites excepted); browsers cannot be added. Click Save settings to apply; the super password is required when one is set.",
+    "schedule.applicationPlaceholder": "Discord or full path",
+    "settings.capability3": "macOS LaunchDaemon and authenticated IPC",
+    "settings.capabilityPending": "macOS network blocking, browser host detection, and hardware acceptance pending",
+    "settings.securityDescription": "The console password does not replace macOS account isolation. A child with administrator access may still stop the LaunchDaemon, revoke Screen Recording permission, or bypass user-mode protection through Recovery.",
+    "network.restrictedTitle": "Network schedule active (not yet enforced on macOS)",
+    "network.idleDescription": "The macOS version currently evaluates and records network schedules but does not block traffic yet (this needs a Network Extension, in development). Restoring access early requires the administrator password.",
+    "network.idleSuperDescription": "The macOS version currently evaluates and records network schedules but does not block traffic yet (this needs a Network Extension, in development). Restoring access early requires the super password.",
+    "error.serviceUnavailable": "KarmaService is not running or its local socket is unavailable",
+  },
+};
+
+export function createTranslator(locale: Locale, platform: Platform = detectPlatform()): Translate {
+  const overrides = platform === "macos" ? macosMessages[locale] : {};
   return (key, values) => {
-    let message = messages[locale][key];
+    let message = overrides[key] ?? messages[locale][key];
     if (!values) return message;
     for (const [name, value] of Object.entries(values)) {
       message = message.replaceAll(`{${name}}`, String(value));

@@ -17,7 +17,8 @@ const MAX_RULE_NAME_CHARS: usize = 128;
 const MAX_EXECUTABLE_CHARS: usize = 2048;
 
 /// Browser executables that the `browsers` target always covers, in addition
-/// to console application rules categorized as `browser`.
+/// to console application rules categorized as `browser`. Entries are the
+/// lowercase final path component of the process image.
 pub const KNOWN_BROWSER_EXECUTABLES: &[&str] = &[
     "chrome.exe",
     "chromium.exe",
@@ -44,6 +45,30 @@ pub const KNOWN_BROWSER_EXECUTABLES: &[&str] = &[
     "liebao.exe",
     "ucbrowser.exe",
     "quark.exe",
+    // macOS application executables (`Contents/MacOS/<name>`); without an
+    // `.exe` suffix they never match a Windows process image.
+    "google chrome",
+    "google chrome beta",
+    "google chrome canary",
+    "chromium",
+    "microsoft edge",
+    "microsoft edge beta",
+    "microsoft edge dev",
+    "microsoft edge canary",
+    "safari",
+    "safari technology preview",
+    "firefox",
+    "brave browser",
+    "opera",
+    "vivaldi",
+    "arc",
+    "orion",
+    "duckduckgo",
+    "zen",
+    "waterfox",
+    "librewolf",
+    "thorium",
+    "yandex",
 ];
 
 /// Which applications lose network access while a schedule block is active.

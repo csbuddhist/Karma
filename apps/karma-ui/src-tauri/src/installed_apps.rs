@@ -1,10 +1,11 @@
 //! Programs installed on this computer, read from the Windows uninstall and
-//! App Paths registrations and from Start menu and desktop shortcuts, so an
+//! App Paths registrations and from Start menu and desktop shortcuts, or from
+//! the application bundles in the macOS Applications folders, so an
 //! administrator can pick application rules instead of typing executable
 //! paths. Only the console reads this; the Service still validates every
 //! rule it is sent.
 
-// Only Windows lists anything; elsewhere the helpers serve the unit tests.
+// The Windows helpers serve only the unit tests elsewhere.
 #![cfg_attr(not(windows), allow(dead_code))]
 
 use std::collections::HashSet;
@@ -368,9 +369,88 @@ mod shortcuts {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+pub use macos::list;
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn list() -> Vec<InstalledApplication> {
     Vec::new()
+}
+
+/// Application bundles in the Applications folders, offered with the
+/// executable macOS runs (`Contents/MacOS/<CFBundleExecutable>`), which is the
+/// path the agent reports for their windows.
+#[cfg(target_os = "macos")]
+mod macos {
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+    };
+
+    use super::{InstalledApplication, collect};
+
+    /// Vendors often group bundles in a folder, so look one folder deeper.
+    const NESTED_FOLDER_DEPTH: usize = 1;
+
+    pub fn list() -> Vec<InstalledApplication> {
+        let mut roots = [
+            "/Applications",
+            "/System/Applications",
+            "/System/Applications/Utilities",
+        ]
+        .map(PathBuf::from)
+        .to_vec();
+        if let Some(home) = std::env::var_os("HOME") {
+            roots.push(PathBuf::from(home).join("Applications"));
+        }
+        let mut entries = Vec::new();
+        for root in roots {
+            scan(&root, NESTED_FOLDER_DEPTH, &mut entries);
+        }
+        collect(entries)
+    }
+
+    pub(super) fn scan(folder: &Path, depth: usize, entries: &mut Vec<InstalledApplication>) {
+        let Ok(children) = fs::read_dir(folder) else {
+            return;
+        };
+        for child in children.flatten() {
+            let path = child.path();
+            if path.extension().is_some_and(|extension| extension == "app") {
+                entries.extend(bundle(&path));
+            } else if depth > 0 && child.file_type().is_ok_and(|kind| kind.is_dir()) {
+                scan(&path, depth - 1, entries);
+            }
+        }
+    }
+
+    fn bundle(path: &Path) -> Option<InstalledApplication> {
+        let info: plist::Dictionary = plist::from_file(path.join("Contents/Info.plist")).ok()?;
+        let text = |key: &str| {
+            info.get(key)
+                .and_then(plist::Value::as_string)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        };
+        let executable = text("CFBundleExecutable")?;
+        if executable.contains('/') {
+            return None;
+        }
+        let binary = path.join("Contents/MacOS").join(executable);
+        if !binary.is_file() {
+            return None;
+        }
+        let name = text("CFBundleDisplayName")
+            .or_else(|| text("CFBundleName"))
+            .map(str::to_owned)
+            .or_else(|| Some(path.file_stem()?.to_str()?.to_owned()))?;
+        Some(InstalledApplication {
+            name,
+            executable: binary.to_str()?.to_owned(),
+            publisher: text("CFBundleIdentifier").map(str::to_owned),
+            browser: false,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -466,5 +546,89 @@ mod tests {
                 .map(|index| app(&format!("App {index:04}"), &format!(r"C:\Apps\{index}.exe"))),
         );
         assert_eq!(many.len(), MAX_INSTALLED_APPLICATIONS);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mac_bundles_are_listed_with_their_running_executable() {
+        use std::fs;
+
+        fn bundle(folder: &std::path::Path, name: &str, info: &str, executable: Option<&str>) {
+            let contents = folder.join(name).join("Contents");
+            fs::create_dir_all(contents.join("MacOS")).unwrap();
+            fs::write(contents.join("Info.plist"), info).unwrap();
+            if let Some(executable) = executable {
+                fs::write(contents.join("MacOS").join(executable), b"").unwrap();
+            }
+        }
+        fn info(entries: &str) -> String {
+            format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>{entries}</dict></plist>"#
+            )
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        bundle(
+            root.path(),
+            "Player.app",
+            &info(
+                "<key>CFBundleExecutable</key><string>Player</string><key>CFBundleDisplayName</key><string>Media Player</string><key>CFBundleIdentifier</key><string>com.example.player</string>",
+            ),
+            Some("Player"),
+        );
+        bundle(
+            &root.path().join("Vendor Suite"),
+            "Editor.app",
+            &info("<key>CFBundleExecutable</key><string>editor</string>"),
+            Some("editor"),
+        );
+        bundle(
+            root.path(),
+            "Broken.app",
+            &info("<key>CFBundleExecutable</key><string>missing</string>"),
+            None,
+        );
+        bundle(
+            root.path(),
+            "Escape.app",
+            &info("<key>CFBundleExecutable</key><string>../../x</string>"),
+            None,
+        );
+
+        let mut entries = Vec::new();
+        macos::scan(root.path(), 1, &mut entries);
+        let applications = collect(entries);
+        let summary: Vec<_> = applications
+            .iter()
+            .map(|application| (application.name.as_str(), application.executable.as_str()))
+            .collect();
+        let player = root.path().join("Player.app/Contents/MacOS/Player");
+        let editor = root
+            .path()
+            .join("Vendor Suite/Editor.app/Contents/MacOS/editor");
+        assert_eq!(
+            summary,
+            [
+                ("Editor", editor.to_str().unwrap()),
+                ("Media Player", player.to_str().unwrap()),
+            ]
+        );
+        assert_eq!(
+            applications[1].publisher.as_deref(),
+            Some("com.example.player")
+        );
+    }
+
+    #[test]
+    fn mac_browsers_are_recognized_by_their_executable() {
+        let applications = collect([
+            app(
+                "Google Chrome",
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            ),
+            app("Pages", "/Applications/Pages.app/Contents/MacOS/Pages"),
+        ]);
+        assert!(applications[0].browser);
+        assert!(!applications[1].browser);
     }
 }

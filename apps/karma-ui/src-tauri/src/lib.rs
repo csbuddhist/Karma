@@ -269,7 +269,7 @@ fn desktop_builder() -> tauri::Builder<tauri::Wry> {
     builder
 }
 
-#[cfg(not(windows))]
+#[cfg(not(karma_service_backend))]
 mod local_backend {
     use std::{
         collections::HashMap,
@@ -1049,7 +1049,7 @@ mod local_backend {
     }
 }
 
-#[cfg(windows)]
+#[cfg(karma_service_backend)]
 mod service_backend {
     use std::{collections::HashMap, fmt::Write as _, sync::Mutex};
 
@@ -1057,6 +1057,9 @@ mod service_backend {
         BootstrapStatus, ComponentState, MAX_EVIDENCE_BATCH, RequestEnvelope, ServiceErrorCode,
         ServiceFailure, ServiceRequest, ServiceResult,
     };
+    #[cfg(target_os = "macos")]
+    use karma_macos_ipc::send_request;
+    #[cfg(windows)]
     use karma_windows_ipc::send_request;
     use rand::{RngCore, rngs::OsRng};
     use serde_json::{Value, json};
@@ -1065,7 +1068,8 @@ mod service_backend {
 
     #[derive(Debug, Error)]
     enum ConsoleError {
-        #[error("KarmaService 尚未运行或命名管道不可用")]
+        #[cfg_attr(windows, error("KarmaService 尚未运行或命名管道不可用"))]
+        #[cfg_attr(not(windows), error("KarmaService 尚未运行或本地套接字不可用"))]
         ServiceUnavailable,
         #[error("管理员密码至少需要 10 个字符")]
         PasswordTooShort,
@@ -1799,8 +1803,8 @@ mod service_backend {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    #[cfg(windows)]
+    #[cfg(karma_service_backend)]
     service_backend::run();
-    #[cfg(not(windows))]
+    #[cfg(not(karma_service_backend))]
     local_backend::run();
 }

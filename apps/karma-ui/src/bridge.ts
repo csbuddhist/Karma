@@ -313,13 +313,20 @@ function trailingMatch(observed: string[], rule: string[]): boolean {
   return rule.length > 0 && observed.length >= rule.length && rule.every((part, index) => observed[observed.length - rule.length + index] === part);
 }
 
-/** Mirrors `karma_policy::KNOWN_BROWSER_EXECUTABLES`; a console test keeps the two lists equal. */
+/**
+ * Mirrors `karma_policy::KNOWN_BROWSER_EXECUTABLES` (Windows `.exe` names, then macOS
+ * `Contents/MacOS` executable names); a console test keeps the two lists equal.
+ */
 export const knownBrowserExecutables: readonly string[] = [
   "chrome.exe", "chromium.exe", "msedge.exe", "iexplore.exe", "firefox.exe", "waterfox.exe",
   "librewolf.exe", "brave.exe", "opera.exe", "opera_gx.exe", "vivaldi.exe", "arc.exe",
   "thorium.exe", "yandex.exe", "whale.exe", "maxthon.exe", "360se.exe", "360chrome.exe",
   "360chromex.exe", "qqbrowser.exe", "sogouexplorer.exe", "2345explorer.exe", "liebao.exe",
   "ucbrowser.exe", "quark.exe",
+  "google chrome", "google chrome beta", "google chrome canary", "chromium", "microsoft edge",
+  "microsoft edge beta", "microsoft edge dev", "microsoft edge canary", "safari",
+  "safari technology preview", "firefox", "brave browser", "opera", "vivaldi", "arc", "orion",
+  "duckduckgo", "zen", "waterfox", "librewolf", "thorium", "yandex",
 ];
 
 /** Mirrors the Service: a known browser, or an enabled application rule categorized as a browser. */
