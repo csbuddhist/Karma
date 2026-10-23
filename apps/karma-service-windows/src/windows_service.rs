@@ -43,6 +43,7 @@ use windows_service::{
 use zeroize::Zeroizing;
 mod agent_watchdog;
 mod evidence_key;
+mod installed_processes;
 mod process_disposition;
 mod service_watchdog;
 mod updater;

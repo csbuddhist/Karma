@@ -41,17 +41,12 @@ use windows::{
             BY_HANDLE_FILE_INFORMATION, CreateDirectoryW, GetFileInformationByHandle,
             MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
         },
-        System::{
-            Registry::{
-                HKEY, HKEY_LOCAL_MACHINE, KEY_SET_VALUE, KEY_WOW64_64KEY, REG_SZ, RegCloseKey,
-                RegOpenKeyExW, RegSetValueExW,
-            },
-            RestartManager::{
-                RmEndSession, RmForceShutdown, RmRegisterResources, RmShutdown, RmStartSession,
-            },
+        System::Registry::{
+            HKEY, HKEY_LOCAL_MACHINE, KEY_SET_VALUE, KEY_WOW64_64KEY, REG_SZ, RegCloseKey,
+            RegOpenKeyExW, RegSetValueExW,
         },
     },
-    core::{BOOL, PCWSTR, PWSTR, w},
+    core::{BOOL, PCWSTR, w},
 };
 
 use crate::update_transaction::{self as transaction, Phase};
@@ -697,43 +692,18 @@ impl Drop for RestartServices {
 /// Close every installed client executable before replacement or rollback.
 /// Resources are fixed installed filenames, never caller-supplied PIDs or
 /// names. The console hides to the tray on WM_CLOSE, so a graceful-only close
-/// never succeeds; it holds no state (the service owns all data), so Restart
-/// Manager force-closes it once a signed update is being applied.
+/// never succeeds; it holds no state (the service owns all data), so clients
+/// are force-closed once a signed update is being applied. Restart Manager
+/// cannot do this: it refuses processes outside the worker's session 0.
 /// 控制台收到关闭消息只会隐藏到托盘，仅请求正常关闭永远失败；控制台不持有
-/// 数据，因此在应用已验签的升级时由 Restart Manager 强制关闭。
+/// 数据，因此在应用已验签的升级时强制关闭。Restart Manager 无法关闭会话 0
+/// 以外的进程，不能用于此处。
 fn close_clients(install: &Path) -> Result<(), UpdateError> {
-    struct Session(u32);
-    impl Drop for Session {
-        fn drop(&mut self) {
-            unsafe {
-                let _ = RmEndSession(self.0);
-            }
-        }
-    }
-    let mut paths = Vec::new();
     for name in CLIENT_EXECUTABLES {
-        let path = install.join(name);
-        reject_links(&path)?;
-        if path.is_file() {
-            paths.push(wide(&path));
-        }
+        reject_links(&install.join(name))?;
     }
-    if paths.is_empty() {
-        return Ok(());
-    }
-    let mut handle = 0;
-    let mut key = [0_u16; 33];
-    unsafe { RmStartSession(&mut handle, None, PWSTR(key.as_mut_ptr())) }
-        .ok()
-        .map_err(|error| UpdateError::Io(winerror(error)))?;
-    let session = Session(handle);
-    let resources: Vec<_> = paths.iter().map(|path| PCWSTR(path.as_ptr())).collect();
-    unsafe { RmRegisterResources(session.0, Some(&resources), None, None) }
-        .ok()
-        .map_err(|error| UpdateError::Io(winerror(error)))?;
-    unsafe { RmShutdown(session.0, RmForceShutdown.0 as u32, None) }
-        .ok()
-        .map_err(|error| UpdateError::Io(winerror(error)))
+    super::installed_processes::terminate_installed(install, &CLIENT_EXECUTABLES)?;
+    Ok(())
 }
 
 /// Restore the predecessor image. A client relaunched by the user can lock a

@@ -40,6 +40,14 @@ pub fn start(
 }
 
 fn run(install_directory: &Path, token: Zeroizing<String>, shutdown: &AtomicBool) {
+    // An Agent left by a previous Service instance holds a stale token and
+    // would run beside the new one; only this watchdog's child may run.
+    // 上一个服务实例遗留的 Agent 会与新 Agent 并行运行，启动前先关闭。
+    if let Err(error) =
+        super::installed_processes::terminate_installed(install_directory, &[AGENT_EXE])
+    {
+        eprintln!("Karma agent watchdog: {error}");
+    }
     let mut child: Option<OwnedProcess> = None;
     while !shutdown.load(Ordering::Acquire) {
         let active_session = unsafe { WTSGetActiveConsoleSessionId() };
