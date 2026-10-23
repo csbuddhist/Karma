@@ -559,7 +559,8 @@ mod agent {
         format!("显示器 {}", index.saturating_add(1))
     }
 
-    /// Development builds run outside KarmaAgent.app and never prompt.
+    /// Development builds run outside KarmaAgent.app and never request the
+    /// permission themselves.
     fn running_from_bundle() -> bool {
         install_directory().is_some()
     }
