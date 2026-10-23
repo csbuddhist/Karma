@@ -1,8 +1,8 @@
 # Karma
 
-[中文](README.md) · [Technical Overview](TECHNICAL.md) · [Windows Installation and Testing Guide (Chinese)](docs/windows-installation-guide.md)
+[中文](README.md) · [Technical Overview](TECHNICAL.md) · [Windows Installation and Testing Guide (Chinese)](docs/windows-installation-guide.md) · [macOS Installation and Testing Guide (Chinese)](docs/macos-installation-guide.md)
 
-Karma is a local pornography-protection and digital-wellbeing application for Windows (macOS is planned). It continuously monitors every display, closes the source application when it detects high-risk images or videos, and provides website and application allowlists/blocklists, network schedules, two-level passwords, audit logs, and protection against casual termination. All recognition runs on the device; screen content is never uploaded.
+Karma is a local pornography-protection and digital-wellbeing application for Windows and macOS (the macOS version is in development). It continuously monitors every display, closes the source application when it detects high-risk images or videos, and provides website and application allowlists/blocklists, network schedules, two-level passwords, audit logs, and protection against casual termination. All recognition runs on the device; screen content is never uploaded.
 
 ![Karma management console: Protection Overview](docs/images/console-overview-en.png)
 
@@ -76,11 +76,23 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 Uninstall keeps local data by default. See the [Windows installation and testing guide](docs/windows-installation-guide.md) for detailed steps, diagnostics, and troubleshooting.
 
+### macOS (in Development)
+
+The macOS version needs an Apple Silicon Mac with macOS 13 Ventura or later and can so far only be built from source as an unsigned test bundle:
+
+```bash
+bash tools/package-macos/package_bundle.sh      # creates target/macos-test/Karma-<version>-macos
+cd target/macos-test/Karma-*-macos && sudo ./install.sh
+```
+
+After installing, open Karma Family Protection from Applications to set the administrator password, and allow KarmaAgent in System Settings → Privacy & Security → Screen & System Audio Recording. Uninstall with `sudo /Library/Karma/uninstall.sh`; the authorization rules are the same as on Windows. See the [macOS installation and testing guide](docs/macos-installation-guide.md).
+
 ## Important Notes
 
 ### This Is a Test Build
 
-- Only an unsigned Windows test build is available; it is not yet a complete product for production home deployment. The macOS version is still in design.
+- Only an unsigned Windows test build is available; it is not yet a complete product for production home deployment.
+- The macOS version is in development and can only be built from source: network schedules are evaluated and audited but not yet blocked; browser address bars are not read yet, so website allowlists and blocklists do not apply (title and image recognition still work); there is no signed installer, automatic update, or Intel Mac support yet.
 - Continuous-frame risk fusion and schedule-based application launch blocking are not finished; Windows hardware acceptance for GPU capture, ONNX inference, network enforcement, and updates is still in progress.
 - Network schedules, policy changes, and early network restore take effect within about 60 seconds.
 - If a browser hides its address bar or does not expose it to accessibility, Karma cannot identify the site for that window, but title and image recognition still work. Website rules match domains, not paths.
@@ -149,9 +161,9 @@ Karma should be used only for content protection by device owners, guardians, or
 ## More Documentation
 
 - [Technical Overview](TECHNICAL.md): architecture, process topology, recognition, data encryption, IPC security boundaries, development builds, and the implementation roadmap.
-- [Windows installation and testing guide](docs/windows-installation-guide.md)
+- [Windows installation and testing guide](docs/windows-installation-guide.md) · [macOS installation and testing guide](docs/macos-installation-guide.md)
 - [Model assets](docs/model-assets.md)
-- Hardware acceptance checklists: [frame pipeline](docs/windows-frame-pipeline-acceptance.md) · [ONNX](docs/windows-onnx-acceptance.md) · [network enforcement](docs/windows-network-enforcement-acceptance.md) · [updates](docs/windows-update-acceptance.md)
+- Hardware acceptance checklists: [frame pipeline](docs/windows-frame-pipeline-acceptance.md) · [ONNX](docs/windows-onnx-acceptance.md) · [network enforcement](docs/windows-network-enforcement-acceptance.md) · [updates](docs/windows-update-acceptance.md) · [macOS](docs/macos-acceptance.md)
 
 ## Repository and License
 

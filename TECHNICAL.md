@@ -4,18 +4,21 @@
 
 This document covers Karma's architecture, process topology, module implementation details, security boundaries, and implementation roadmap. For features, installation, and usage notes, see the [README](README.en.md).
 
-Karma follows a “single product, shared core, two native executors” architecture. The UI, policies, AI, and data formats can be shared, while screen capture, process control, network filtering, background persistence, and device management must use native capabilities supported by each platform. The Windows executor is implemented today; the macOS parts describe the design.
+Karma follows a “single product, shared core, two native executors” architecture. The UI, policies, AI, and data formats can be shared, while screen capture, process control, network filtering, background persistence, and device management must use native capabilities supported by each platform. The Windows executor is implemented. The macOS executor is in development: the LaunchDaemon, session agent, capture, attribution, and enforcement described below are implemented in the macOS test build, and items marked as planned are not.
 
 ## Repository Layout
 
 | Path | Contents |
 | --- | --- |
 | `crates/karma-*` | Shared Rust libraries: domain model, policy, AI/ONNX, evidence encryption, IPC, enforcement, service core, updates, and Windows platform integration |
+| `crates/karma-agent-core` | Session-agent logic shared by both agents: inference scheduling, OCR selection, word pack, frame attribution, and the agent side of the service protocol |
+| `crates/karma-macos`, `crates/karma-macos-ipc` | macOS platform integration (libproc, audit tokens, CoreGraphics, ScreenCaptureKit) and the peer-verified Unix-socket transport |
 | `apps/karma-agent-windows` | Windows session agent: multi-display capture, foreground-window attribution, ONNX inference |
 | `apps/karma-service-windows` | Windows privileged service `KarmaService` and `KarmaControl` |
+| `apps/karma-agent-macos`, `apps/karma-service-macos` | macOS session agent (LaunchAgent) and root LaunchDaemon `KarmaService` with `KarmaControl` |
 | `apps/karma-ui` | Tauri + React management console (TypeScript in `src/`, Rust in `src-tauri/`) |
 | `assets/` | Model manifests and keyword lists |
-| `tools/` | OCR model export, keyword-list generation, and Windows test-bundle packaging |
+| `tools/` | OCR model export, keyword-list generation, and Windows and macOS test-bundle packaging |
 | `docs/` | Design documents, installation guide, and hardware acceptance checklists |
 | `release/windows-x64-test/` | Generated cloneable Windows test bundle |
 
@@ -37,7 +40,12 @@ cd apps/karma-ui && npm run tauri -- dev                  # run the desktop app
 python3 -m unittest discover -s tools/ocr-export/tests        # OCR exporter tests
 python3 tools/keyword-lists/build_title_keywords.py           # regenerate keyword JSON after editing the CSV
 bash tools/package-windows-test/test_bundle_contract.sh       # validate the Windows bundle contract
+bash tools/package-macos/test_bundle_contract.sh              # validate the macOS packaging contract
+bash tools/package-macos/package_bundle.sh                    # build the unsigned macOS test bundle
+cargo run -p karma-macos --features session-agent --example capture-probe   # check capture on this Mac
 ```
+
+Release builds compile `karma-service-macos` separately from `karma-agent-macos`: building them in one invocation unifies `karma-macos` features and would link the capture frameworks into the root daemon. On macOS the console uses the service backend; `--features local-backend` keeps the standalone development backend for interface work.
 
 Tests on a macOS development machine and cross-compilation prove only that algorithms and API signatures are correct; changes to Windows capture, GPU, or ONNX code require hardware evidence from the relevant `docs/*acceptance.md` checklist.
 
@@ -108,20 +116,23 @@ KarmaUI.exe                      Tauri management UI, started on demand
 ### macOS
 
 ```text
-com.karma.daemon                 LaunchDaemon, root
-  ├─ Policy enforcement and watchdog
-  ├─ Network Extension management
-  ├─ System Extension coordination
-  └─ Validates the signed-in session agent
+com.karma.service                LaunchDaemon, root (/Library/Karma/KarmaService)
+  ├─ Policy enforcement and agent watchdog
+  ├─ Peer-verified local socket /var/run/karma/service.sock
+  ├─ Identity-bound enforcement (SIGTERM, grace period, SIGKILL)
+  └─ Network Extension management (planned)
 
-KarmaAgent.app                   Current graphical user session
+com.karma.agent                  LaunchAgent in every graphical session (KarmaAgent.app)
   ├─ ScreenCaptureKit multi-display capture
   ├─ Foreground application attribution
-  ├─ ONNX inference
-  └─ Management UI
+  └─ ONNX inference
 
-KarmaEndpointExtension           Endpoint Security System Extension
+Karma Family Protection.app      Tauri management UI, started on demand
+
+KarmaEndpointExtension           Endpoint Security System Extension (planned)
 ```
+
+launchd restarts the daemon after any exit other than an authorized uninstall (`KeepAlive` with `SuccessfulExit` false) and restarts the agent whenever it exits. Because a user can unload the LaunchAgent from their own launchd domain, the daemon bootstraps it into the console user's domain again when that user's agent stops sending heartbeats, with exponential backoff.
 
 ## Shared Core
 
@@ -208,8 +219,8 @@ In the current Windows test build, saving the console risk threshold also update
 - SQLite uses WAL mode.
 - Configuration, policies, and audit logs use versioned schemas.
 - Administrator passwords are stored only as Argon2id hashes and must never be stored reversibly.
-- Database keys are wrapped by Windows DPAPI or macOS Keychain.
-- IPC keys are generated during initial installation and stored in the system credential store.
+- Database keys are wrapped by Windows DPAPI. The macOS test build keeps its evidence key in a root-only file (0600 inside the 0700 directory `/Library/Application Support/Karma`, protected at rest by FileVault) until it is wrapped by the system keychain.
+- IPC keys are generated during initial installation and stored in the system credential store. The macOS agent holds no key: the service identifies it by its kernel audit token.
 - Update packages, models, and policies are all verified with Ed25519 signatures.
 
 By default, only the following are recorded:
@@ -253,6 +264,8 @@ Tests on a macOS development machine and cross-compilation for `x86_64-pc-window
 - Explicitly request Screen Recording permission on first launch. If the permission is revoked, enter a fail-safe state and notify the guardian.
 - Do not attempt to bypass TCC, system capture indicators, or protected-content restrictions.
 
+Current status: the macOS agent keeps one `SCStream` per active display. ScreenCaptureKit scales each display on the GPU to the shared 640-pixel preparation size and delivers BGRA frames at most four times a second; only frames marked complete are copied, into zeroizing memory, and the newest replaces any frame not yet taken. The agent checks the display list every two seconds and rebuilds streams for displays that appear, disappear, or fail, with backoff. Without Screen Recording permission each display is reported as unavailable in the heartbeat and the console. Only the bundled agent shows the first-run consent prompt; development builds never raise system dialogs. Window titles come from `CGWindowListCopyWindowInfo`, which exposes them only with the same permission.
+
 ### Frame Attribution
 
 The capture agent keeps the following information synchronized:
@@ -263,6 +276,8 @@ The capture agent keeps the following information synchronized:
 - Multi-window browser scenarios.
 
 A matched frame is attributed preferentially to the foreground window covering the largest area of that display. When reliable attribution is impossible, show a warning and apply a temporary overlay instead of directly terminating multiple candidate processes.
+
+On macOS the frontmost ordinary window (layer 0, front-to-back order from CoreGraphics) names the foreground application, and a display's frame is attributed to that application's window covering most of the display, using the same `SourceAttributor` rule as Windows. Display and window bounds share CoreGraphics' global point space. Browser address bars are not read yet (this needs the Accessibility permission), so host rules do not apply on macOS for now.
 
 ## Application Control
 
@@ -302,11 +317,11 @@ Hardened mode:
 
 ### macOS Application Control
 
-Basic mode:
+Basic mode (implemented in the test build):
 
-- Use `NSWorkspace` to obtain running applications and launch/termination notifications.
-- Use `NSRunningApplication.terminate()` for graceful shutdown.
-- After a timeout, the privileged executor sends a controlled termination signal.
+- The daemon receives only dispositions the shared core authorized, for the pid, start time, and image path the agent reported.
+- It obtains the target's audit token (`task_name_for_pid` and `TASK_AUDIT_TOKEN`), confirms the start time, image path (`proc_pidpath_audittoken`), and owner, then sends `SIGTERM` and, after the grace period (at most 5 seconds), `SIGKILL` through `proc_signal_with_audittoken`. The kernel refuses both once that process instance has exited, even if its pid is reused.
+- Processes owned by root, system accounts (uid below 501), users other than the one at the console, pid 1, and Karma's own executables are never signalled; such dispositions are recorded as access denied.
 
 Hardened mode:
 
@@ -378,6 +393,8 @@ Current status: the console's Network Schedules page configures any number of ti
 - Block connections by application and policy; DNS is used only for domain-level categorization.
 - Do not enforce control by editing `/etc/hosts` or repeatedly switching the system proxy.
 
+Current status: the macOS service evaluates schedules every 60 seconds and keeps the same status, audit trail, and early restore as Windows, but no filter exists yet, so an active block is recorded as `network_enforcement` failure and the console states that macOS does not block traffic yet. The browser target also covers the macOS executables of common browsers (`KNOWN_BROWSER_EXECUTABLES`).
+
 A browser extension can serve as an optional enhancement for full-URL categorization and friendly block pages, but it cannot be the only security boundary.
 
 ## IPC and Privilege Boundaries
@@ -394,7 +411,7 @@ Service  → Agent       : Health checks, capture configuration, and policy snap
 Security requirements:
 
 - Windows uses named pipes with explicit DACLs.
-- macOS uses XPC and verifies the Team ID, Bundle ID, and code-signing requirement.
+- macOS uses a Unix domain socket in the root-owned directory `/var/run/karma` with the same length-prefixed frames. For every connection the service reads the kernel-recorded peer uid and audit token (`LOCAL_PEERCRED`, `LOCAL_PEERTOKEN`): agent requests are admitted only from the installed agent executable, resolved for exactly that process instance, run by the console user, and the service then supplies the core's agent token itself; installer requests must come from root; console requests rely on the administrator password as on Windows. Clients refuse a socket whose server is not root. Signed builds will additionally verify the Team ID, Bundle ID, and code-signing requirement (planned).
 - The server does not accept generic commands such as “execute an arbitrary path” or “terminate an arbitrary PID.”
 - Every PID operation must also verify the process start time, signature, and application identity to prevent PID-reuse attacks.
 - IPC includes a nonce, timestamp, and session key, and rejects replays.
@@ -423,6 +440,7 @@ Security requirements:
 
 ### macOS
 
+- Current test build: `tools/package-macos/package_bundle.sh` builds an ad-hoc-signed bundle; `sudo ./install.sh` installs it to `/Library/Karma` and `/Applications` owned by root, registers both launchd jobs, and refuses to overwrite an existing installation. `sudo /Library/Karma/uninstall.sh` uninstalls only after `KarmaControl` obtains the same super-password or delayed-administrator authorization as on Windows. Updates report `unsupported_platform`.
 - Distribute signed `.app`/`.pkg` packages and complete Apple notarization.
 - On first run, guide the user through Screen Recording, System Extension, and Network Extension permissions.
 - In MDM environments, preapprove allowed capabilities through PPPC and System Extension payloads.
@@ -456,7 +474,7 @@ Explicitly not adopted:
 | Shared core | Rust |
 | AI | ONNX Runtime |
 | Data | SQLite + DPAPI/Keychain |
-| macOS integration | Swift, ScreenCaptureKit, XPC |
+| macOS integration | Rust (objc2), ScreenCaptureKit, CoreGraphics, libproc, launchd |
 | macOS hardening | Endpoint Security, Network Extension, MDM |
 | Windows integration | Rust/C++, Win32, WinRT, WGC |
 | Windows hardening | Windows Service, WFP, WDAC/AppLocker, optional WDK driver |

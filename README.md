@@ -1,8 +1,8 @@
 # Karma
 
-[English](README.en.md) · [技术说明](技术说明.md) · [Windows 安装与测试指南](docs/windows-installation-guide.md)
+[English](README.en.md) · [技术说明](技术说明.md) · [Windows 安装与测试指南](docs/windows-installation-guide.md) · [macOS 安装与测试指南](docs/macos-installation-guide.md)
 
-Karma 是一款面向 Windows（macOS 规划中）的本地色情内容防护与数字健康软件。它持续监控所有显示器，识别到高风险图片或视频后关闭来源应用，并提供网址与应用黑白名单、断网时段、两级密码、审计日志和防随意退出能力。所有识别都在本机完成，屏幕画面不会上传。
+Karma 是一款面向 Windows 和 macOS（macOS 版开发中）的本地色情内容防护与数字健康软件。它持续监控所有显示器，识别到高风险图片或视频后关闭来源应用，并提供网址与应用黑白名单、断网时段、两级密码、审计日志和防随意退出能力。所有识别都在本机完成，屏幕画面不会上传。
 
 ![Karma 管理控制台：保护总览](docs/images/console-overview-zh-CN.png)
 
@@ -76,11 +76,23 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 卸载默认保留本地数据。详细步骤、诊断方法和故障排查见 [Windows 安装与测试指南](docs/windows-installation-guide.md)。
 
+### macOS（开发中）
+
+macOS 版本需要 macOS 13 Ventura 或更高版本的 Apple Silicon Mac，目前只能从源码构建未签名测试包：
+
+```bash
+bash tools/package-macos/package_bundle.sh      # 生成 target/macos-test/Karma-<版本>-macos
+cd target/macos-test/Karma-*-macos && sudo ./install.sh
+```
+
+安装后打开“应用程序”中的 Karma Family Protection 设置管理员密码，并在“系统设置 → 隐私与安全性 → 屏幕与系统录音”中允许 KarmaAgent。卸载使用 `sudo /Library/Karma/uninstall.sh`，授权规则与 Windows 相同。详见 [macOS 安装与测试指南](docs/macos-installation-guide.md)。
+
 ## 注意事项
 
 ### 当前为测试版
 
-- 目前仅提供 Windows 未签名测试版，尚不适合作为家庭正式部署的完整产品；macOS 版本仍处于设计阶段。
+- 目前仅提供 Windows 未签名测试版，尚不适合作为家庭正式部署的完整产品。
+- macOS 版本开发中，只能从源码构建：断网时段只计算和审计、尚未拦截网络；尚未读取浏览器地址栏，网址黑白名单暂不生效（标题与图像识别照常工作）；暂无签名安装包、自动更新和 Intel Mac 支持。
 - 连续帧风险融合、按时段阻止应用启动等功能尚未完成；GPU 采集、ONNX 推理、网络执行和升级流程的 Windows 真机验收仍在进行中。
 - 断网时段、策略修改和提前恢复网络最长约 60 秒后生效。
 - 如果浏览器隐藏地址栏或未向辅助功能公开地址栏，Karma 无法识别该窗口的网址，但标题与图像识别仍然有效。网址规则只匹配域名，不匹配路径。
@@ -149,9 +161,9 @@ Karma 只应由设备所有者、监护人或组织在合法授权范围内用�
 ## 更多文档
 
 - [技术说明](技术说明.md)：架构设计、进程拓扑、识别算法、数据加密、IPC 安全边界、开发构建与实施路线。
-- [Windows 安装与测试指南](docs/windows-installation-guide.md)
+- [Windows 安装与测试指南](docs/windows-installation-guide.md) · [macOS 安装与测试指南](docs/macos-installation-guide.md)
 - [模型资产说明](docs/model-assets.md)
-- 真机验收清单：[帧管线](docs/windows-frame-pipeline-acceptance.md) · [ONNX](docs/windows-onnx-acceptance.md) · [网络执行](docs/windows-network-enforcement-acceptance.md) · [升级](docs/windows-update-acceptance.md)
+- 真机验收清单：[帧管线](docs/windows-frame-pipeline-acceptance.md) · [ONNX](docs/windows-onnx-acceptance.md) · [网络执行](docs/windows-network-enforcement-acceptance.md) · [升级](docs/windows-update-acceptance.md) · [macOS](docs/macos-acceptance.md)
 
 ## 代码仓库与许可证
 

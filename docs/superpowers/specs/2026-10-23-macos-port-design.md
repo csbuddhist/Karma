@@ -1,7 +1,7 @@
 # Karma macOS 版本设计规格
 
 日期：2026-10-23  
-状态：开发中（分支 `feat/macos-port`）  
+状态：开发中（分支 `feat/macos-port`，进度见 6.1）  
 基线：Windows 测试版 v0.3.8 已实现的功能  
 目标平台：macOS 13 Ventura 及以上，Apple Silicon 与 Intel  
 
@@ -122,6 +122,16 @@ macOS 原生接口用 Rust + `objc2` 系列绑定实现（与 Tauri 依赖的 ob
 | **M3 打包与网络** | `tools/package-macos`：KarmaAgent.app、Karma.app、plist、安装 / 卸载脚本；验收清单 `docs/macos-acceptance.md`；Network Extension 内容过滤器（需要 Apple Developer 账号，可能拆到 M3b） | 开发安装需管理员授权，由用户在本机执行 |
 | **M4 浏览器域名** | 通过辅助功能读取 Chrome / Safari / Edge / Firefox / Arc 地址栏主机名 | 需要授予辅助功能权限 |
 | **M5 发布** | Developer ID 签名、hardened runtime、公证、`.pkg`、代码签名要求校验、钥匙串包装密钥、签名更新、Endpoint Security（视 entitlement 审批） | 需要 Apple Developer 账号 |
+
+### 6.1 当前进度（2026-10-23）
+
+| 阶段 | 状态 |
+| --- | --- |
+| M1 服务端基础 | 已完成：`karma-macos-ipc`、`karma-macos` 进程与会话、`karma-service-macos`、控制台 macOS 服务后端与已安装应用、macOS 浏览器名单、平台文案 |
+| M2 会话 Agent | 已完成：`karma-agent-core` 抽取（Windows Agent 已改用并通过 xwin 交叉检查）、ScreenCaptureKit 采集、CGWindowList 归属、`karma-agent-macos`；本机已验证 Agent 经对端校验接入服务、模型加载与无权限时的失效保护，真实帧路径待授予屏幕录制权限后验证 |
+| M3 打包 | 测试包已完成：`tools/package-macos`、安装 / 卸载脚本、约定测试、安装指南与验收清单；Network Extension 未开始（需要 Apple Developer 账号） |
+| M4 浏览器域名 | 未开始 |
+| M5 发布 | 未开始 |
 
 ## 7. 验收标准（macOS）
 
