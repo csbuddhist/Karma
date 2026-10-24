@@ -138,14 +138,34 @@ The unified engine supports:
 - Browser-domain allowlists and blocklists. An allowlisted domain always wins; a blocklisted
   domain closes immediately without waiting for an image-risk threshold.
 - Foreground-window title matching with a versioned explicit-content list of 2,543 terms in 26
-  languages (`assets/keyword-lists/`). Each term has a category (sexual activity or body parts),
-  a match mode (whole word, contains, or word prefix), and a confidence: the 1,592 strict terms are
-  always active, while the 951 terms that also appear in ordinary titles (such as “奶” or
-  “adult”) are off by default and can be turned on. Administrators can add their own terms to the
+  languages plus 1,809 adult video code prefixes (`assets/keyword-lists/`). Each term has a
+  category (sexual activity, body parts, or video code), a match mode (whole word, contains, word
+  prefix, or code pattern), and a confidence: strict terms are always active, while terms that
+  also appear in ordinary titles (such as “奶” or “adult”) are off by default and can be turned
+  on. Among the ordinary terms, 1,592 are strict and 951 are prone to false positives. Administrators can add their own terms to the
   built-in list with a language, category, and match mode; added terms are always active. Console
   custom high-risk and sensitive keywords also join matching, and exemption keywords suppress
   matches. The console keyword page filters the built-in list by language, category, and
   confidence, and supports adding, editing, enabling, deleting, and searching custom keywords.
+- The video-code category always uses code-pattern matching: the title must contain the prefix
+  (not directly preceded by an ASCII letter or digit), an optional hyphen (one space is allowed on
+  either side of it, or between prefix and digits when there is no hyphen), and exactly three or
+  four digits (not followed by another digit). `SSIS-123`, `SSIS 123`, `SSIS123`, `SSIS - 123`, and
+  `三上悠亚SSIS-123C` match; `SSIS-12`, `SSIS-12345`, and `XSSIS-123` do not. Titles are NFKC
+  normalized first, so full-width letters, digits, and hyphens match too. The bundled prefixes
+  come from MDCx's DMM series routing table and Chinese-subtitle code table, the OpenAver and
+  darkeye maker prefix tables, the webtor and dhtsearch adult-content filters, and the
+  popularity-ranked dan211 prefix list (only entries confirmed by the DMM series table or subtitle
+  table). The long tail of rarely released DMM series, out of about 11,000, and single-letter
+  prefixes are left out to limit collisions with ordinary abbreviations. The 167 prefixes most
+  likely to collide with ordinary titles are marked as prone to false positives: two-letter
+  prefixes (such as DV and BF), months and weekdays (such as NOV and WED), currencies and common
+  technical abbreviations (such as BTC, DPI, PMS, MFC, and SCP), and ordinary English words (such
+  as STAR, LOVE, and REAL). JUL, a major Madonna label, stays strict even though it is also a
+  month abbreviation. Strict prefixes can still collide with ordinary content, such as dates like
+  `Jul 2024` or `SSIS 2019` for SQL Server Integration Services; exemption keywords can suppress
+  such matches.
+  Sources and licenses are listed in `assets/keyword-lists/NOTICE.md`.
 - Remembered window titles: when explicit image detection closes an application, the Service
   remembers that window's title (the page title in browsers) and canonical host; the same
   application showing the same title again is closed on sight. The console's Content

@@ -145,8 +145,9 @@ export interface NetworkStatus {
   restoredUntilMs: number | null;
 }
 
-export type TitleKeywordCategory = "organ" | "sexual";
-export type TitleKeywordMatch = "word" | "substring" | "prefix";
+/** "code" holds product-code prefixes such as "SSIS", which always use "code" matching. */
+export type TitleKeywordCategory = "organ" | "sexual" | "code";
+export type TitleKeywordMatch = "word" | "substring" | "prefix" | "code";
 
 export interface TitleKeywordAddition {
   id: string;

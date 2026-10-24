@@ -20,9 +20,9 @@ export interface BundledKeywordGroup {
 export const maxTitleKeywordAdditions = 1024;
 export const maxTitleKeywordTermChars = 64;
 
-const categories: readonly string[] = ["organ", "sexual"];
+const categories: readonly string[] = ["organ", "sexual", "code"];
 const confidences: readonly string[] = ["strict", "ambiguous"];
-const matches: readonly string[] = ["word", "substring", "prefix"];
+const matches: readonly string[] = ["word", "substring", "prefix", "code"];
 
 function invalid(): never {
   throw new Error("内置关键词词库格式不正确");
@@ -39,7 +39,8 @@ function parseKeyword(value: unknown): BundledKeyword {
     typeof confidence !== "string" ||
     !confidences.includes(confidence) ||
     typeof match !== "string" ||
-    !matches.includes(match)
+    !matches.includes(match) ||
+    (category === "code") !== (match === "code")
   ) {
     invalid();
   }
@@ -68,6 +69,11 @@ export function isLanguageCode(value: string): boolean {
 /** The same normalization the policy engine applies before matching. */
 export function normalizeKeyword(value: string): string {
   return value.normalize("NFKC").toLowerCase().trim();
+}
+
+/** A product-code prefix such as "SSIS": 2-16 ASCII letters and digits with at least one letter. */
+export function isCodePrefix(value: string): boolean {
+  return /^(?=[0-9]*[a-z])[0-9a-z]{2,16}$/.test(normalizeKeyword(value));
 }
 
 /** Languages whose words are not separated by spaces match by substring. */

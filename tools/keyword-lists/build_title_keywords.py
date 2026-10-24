@@ -23,12 +23,14 @@ JSON_PATH = REPOSITORY / "assets/keyword-lists/window-title-explicit.json"
 
 FORMAT_VERSION = 2
 FIELDS = ["lang", "term", "category", "confidence", "match", "sources"]
-CATEGORIES = {"organ", "sexual"}
+CATEGORIES = {"organ", "sexual", "code"}
 CONFIDENCES = {"strict", "ambiguous"}
-MATCHES = {"word", "substring", "prefix"}
+MATCHES = {"word", "substring", "prefix", "code"}
 LANGUAGE = re.compile(r"^[a-z]{2,3}$")
 SOURCE = re.compile(r"^[A-Za-z0-9-]{1,32}$")
 MAX_TERM_CHARS = 64
+# A product-code prefix such as `SSIS`, which matches before three or four digits.
+CODE_PREFIX = re.compile(r"^(?=[0-9]*[a-z])[0-9a-z]{2,16}$")
 
 
 class KeywordListError(ValueError):
@@ -59,6 +61,10 @@ def read_rows(text: str) -> list[dict[str, str]]:
             raise KeywordListError(f"line {line}: invalid confidence {row['confidence']!r}")
         if row["match"] not in MATCHES:
             raise KeywordListError(f"line {line}: invalid match {row['match']!r}")
+        if (row["category"] == "code") != (row["match"] == "code"):
+            raise KeywordListError(f"line {line}: only the code category uses code matching")
+        if row["category"] == "code" and not CODE_PREFIX.match(normalized(term)):
+            raise KeywordListError(f"line {line}: code prefix must be 2-16 ASCII letters or digits")
         sources = row["sources"].split(";")
         if not all(SOURCE.match(source) for source in sources):
             raise KeywordListError(f"line {line}: invalid sources {row['sources']!r}")

@@ -106,6 +106,7 @@ import {
   bundledStrictCount,
   coveredByStrictKeyword,
   defaultMatchFor,
+  isCodePrefix,
   maxTitleKeywordAdditions,
   maxTitleKeywordTermChars,
   normalizeKeyword,
@@ -553,8 +554,8 @@ function BuiltInKeywordsCard({ state, update }: { state: ConsoleState; update: (
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const additions = state.titleKeywordAdditions;
   const ambiguousEnabled = state.recognition.ambiguousTitleKeywordsEnabled;
-  const categoryLabel = (value: TitleKeywordCategory) => t(value === "organ" ? "keywords.categoryOrgan" : "keywords.categorySexual");
-  const matchLabel = (value: TitleKeywordMatch) => t(value === "word" ? "keywords.matchWord" : value === "substring" ? "keywords.matchSubstring" : "keywords.matchPrefix");
+  const categoryLabel = (value: TitleKeywordCategory) => t(value === "organ" ? "keywords.categoryOrgan" : value === "code" ? "keywords.categoryCode" : "keywords.categorySexual");
+  const matchLabel = (value: TitleKeywordMatch) => t(value === "word" ? "keywords.matchWord" : value === "substring" ? "keywords.matchSubstring" : value === "prefix" ? "keywords.matchPrefix" : "keywords.matchCode");
   const confidenceLabel = (value: BuiltInEntry["confidence"]) => t(value === "strict" ? "keywords.confidenceStrict" : value === "ambiguous" ? "keywords.confidenceAmbiguous" : "keywords.confidenceAdded");
   const languages = useMemo(() => [...bundledLanguages, ...additions.map((item) => item.language).filter((code) => !bundledLanguages.includes(code))], [additions]);
   const groups = useMemo(() => {
@@ -571,11 +572,14 @@ function BuiltInKeywordsCard({ state, update }: { state: ConsoleState; update: (
       .filter((group) => group.entries.length > 0);
   }, [languages, additions, search, languageFilter, categoryFilter, confidenceFilter]);
   const filtering = Boolean(search.trim() || languageFilter || categoryFilter || confidenceFilter);
-  function chooseLanguage(code: string) { setLanguage(code); setMatch(defaultMatchFor(code)); setAddError(""); }
+  function chooseLanguage(code: string) { setLanguage(code); if (category !== "code") setMatch(defaultMatchFor(code)); setAddError(""); }
+  // Product codes, and only they, use code matching.
+  function chooseCategory(value: TitleKeywordCategory) { setCategory(value); setMatch(value === "code" ? "code" : defaultMatchFor(language)); setAddError(""); }
   function add() {
     const trimmed = term.trim();
     if (!trimmed) return;
     if ([...trimmed].length > maxTitleKeywordTermChars) return setAddError(t("keywords.additionTooLong", { count: maxTitleKeywordTermChars }));
+    if (category === "code" && !isCodePrefix(trimmed)) return setAddError(t("keywords.additionInvalidCode"));
     if (additions.length >= maxTitleKeywordAdditions) return setAddError(t("keywords.additionLimit", { count: maxTitleKeywordAdditions }));
     const normalized = normalizeKeyword(trimmed);
     if (coveredByStrictKeyword(trimmed, match) || additions.some((item) => normalizeKeyword(item.term) === normalized && item.match === match)) return setAddError(t("keywords.additionDuplicate"));
@@ -604,8 +608,8 @@ function BuiltInKeywordsCard({ state, update }: { state: ConsoleState; update: (
       <div className="toolbar">
         <div className="input-with-icon"><Plus size={17} /><input placeholder={t("keywords.additionPlaceholder")} value={term} maxLength={maxTitleKeywordTermChars * 2} onChange={(event) => { setTerm(event.target.value); setAddError(""); }} onKeyDown={(event) => event.key === "Enter" && add()} /></div>
         <select aria-label={t("keywords.language")} value={language} onChange={(event) => chooseLanguage(event.target.value)}>{bundledLanguages.map((code) => <option value={code} key={code}>{languageLabel(code)}</option>)}</select>
-        <select aria-label={t("keywords.category")} value={category} onChange={(event) => setCategory(event.target.value as TitleKeywordCategory)}><option value="sexual">{categoryLabel("sexual")}</option><option value="organ">{categoryLabel("organ")}</option></select>
-        <select aria-label={t("keywords.matchMode")} value={match} onChange={(event) => { setMatch(event.target.value as TitleKeywordMatch); setAddError(""); }}><option value="word">{matchLabel("word")}</option><option value="substring">{matchLabel("substring")}</option><option value="prefix">{matchLabel("prefix")}</option></select>
+        <select aria-label={t("keywords.category")} value={category} onChange={(event) => chooseCategory(event.target.value as TitleKeywordCategory)}><option value="sexual">{categoryLabel("sexual")}</option><option value="organ">{categoryLabel("organ")}</option><option value="code">{categoryLabel("code")}</option></select>
+        <select aria-label={t("keywords.matchMode")} value={match} disabled={category === "code"} onChange={(event) => { setMatch(event.target.value as TitleKeywordMatch); setAddError(""); }}>{category === "code" ? <option value="code">{matchLabel("code")}</option> : <><option value="word">{matchLabel("word")}</option><option value="substring">{matchLabel("substring")}</option><option value="prefix">{matchLabel("prefix")}</option></>}</select>
         <button className="primary-button" onClick={add}><Plus size={17} />{t("keywords.additionAdd")}</button>
       </div>
       {addError && <div className="form-error keyword-error"><CircleAlert size={16} />{addError}</div>}
@@ -614,7 +618,7 @@ function BuiltInKeywordsCard({ state, update }: { state: ConsoleState; update: (
     <div className="toolbar keyword-filters">
       <div className="input-with-icon"><Search size={16} /><input placeholder={t("keywords.searchPlaceholder")} value={search} onChange={(event) => setSearch(event.target.value)} /></div>
       <select aria-label={t("keywords.language")} value={languageFilter} onChange={(event) => setLanguageFilter(event.target.value)}><option value="">{t("keywords.allLanguages")}</option>{languages.map((code) => <option value={code} key={code}>{languageLabel(code)}</option>)}</select>
-      <select aria-label={t("keywords.category")} value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value as "" | TitleKeywordCategory)}><option value="">{t("keywords.allCategories")}</option><option value="sexual">{categoryLabel("sexual")}</option><option value="organ">{categoryLabel("organ")}</option></select>
+      <select aria-label={t("keywords.category")} value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value as "" | TitleKeywordCategory)}><option value="">{t("keywords.allCategories")}</option><option value="sexual">{categoryLabel("sexual")}</option><option value="organ">{categoryLabel("organ")}</option><option value="code">{categoryLabel("code")}</option></select>
       <select aria-label={t("keywords.confidence")} value={confidenceFilter} onChange={(event) => setConfidenceFilter(event.target.value as "" | BuiltInEntry["confidence"])}><option value="">{t("keywords.allConfidences")}</option><option value="strict">{confidenceLabel("strict")}</option><option value="ambiguous">{confidenceLabel("ambiguous")}</option><option value="added">{confidenceLabel("added")}</option></select>
     </div>
     {groups.length ? (
@@ -633,6 +637,7 @@ function BuiltInKeywordsCard({ state, update }: { state: ConsoleState; update: (
               return <span className={`keyword-chip ${entry.confidence}${inactive ? " inactive" : ""}`} key={entry.addition?.id ?? `${entry.match}:${entry.term}`} title={detail}>
                 {entry.term}
                 {entry.match === "prefix" && <i>…</i>}
+                {entry.match === "code" && <i>-123</i>}
                 {entry.addition && <button type="button" aria-label={t("keywords.delete", { name: entry.term })} onClick={() => remove(entry.addition!.id)}><X size={12} /></button>}
               </span>;
             })}</div>}
