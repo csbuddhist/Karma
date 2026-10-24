@@ -440,10 +440,10 @@ export async function revealEvidence(sessionToken: string, evidenceId: string, p
   throw new Error("开发模式中没有已加密的证据原图");
 }
 
-/** Deletes evidence items; an ordinary administrator session is enough. */
-export async function deleteEvidence(sessionToken: string, evidenceIds: string[]): Promise<void> {
+/** Deletes evidence items. Once a super password is configured, critical evidence requires it. */
+export async function deleteEvidence(sessionToken: string, evidenceIds: string[], superPassword?: string): Promise<void> {
   if (!evidenceIds.length) return;
-  if (isTauri()) return invoke("delete_evidence", { sessionToken, evidenceIds });
+  if (isTauri()) return invoke("delete_evidence", { sessionToken, evidenceIds, superPassword });
   throw new Error("开发模式中没有已加密的证据原图");
 }
 

@@ -1384,16 +1384,20 @@ function Evidence({ state, update, sessionToken, onDeleted, onApplicationAllowed
   }
   async function confirmDelete() {
     if (!pendingDelete) return;
+    // Critical items go first, so a request that needs the super password is
+    // refused before any item of a later batch is deleted.
+    const critical = new Set(state.evidence.filter((item) => item.risk === "critical").map((item) => item.id));
+    const ids = [...pendingDelete].sort((left, right) => Number(critical.has(right)) - Number(critical.has(left)));
     setDeleting(true);
     setDeleteError("");
     try {
-      await deleteEvidence(sessionToken, pendingDelete);
+      await authorize((superPassword) => deleteEvidence(sessionToken, ids, superPassword));
       onDeleted(pendingDelete);
       setChecked((current) => new Set([...current].filter((id) => !pendingDelete.includes(id))));
       if (selected && pendingDelete.includes(selected.id)) setSelected(null);
       setPendingDelete(null);
     } catch (reason) {
-      setDeleteError(localizeError(reason, t));
+      if (!isAuthorizationCancelled(reason)) setDeleteError(localizeError(reason, t));
     } finally {
       setDeleting(false);
     }
@@ -1422,8 +1426,10 @@ function Evidence({ state, update, sessionToken, onDeleted, onApplicationAllowed
       </div>
     </div>
   </div>)}</div>;
+  const pendingCritical = pendingDelete ? state.evidence.filter((item) => item.risk === "critical" && pendingDelete.includes(item.id)).length : 0;
   const deleteModal = pendingDelete && <Modal title={t("evidence.deleteTitle")} onClose={() => !deleting && setPendingDelete(null)}>
     <p className="modal-description">{t("evidence.deleteConfirm", { count: pendingDelete.length })}</p>
+    {pendingCritical > 0 && state.superPasswordSet && <p className="modal-description">{t("evidence.deleteCriticalNeedsSuper", { count: pendingCritical })}</p>}
     {deleteError && <div className="form-error"><CircleAlert size={16} />{deleteError}</div>}
     <div className="modal-actions">
       <button className="secondary-button" disabled={deleting} onClick={() => setPendingDelete(null)}>{t("evidence.deleteCancel")}</button>

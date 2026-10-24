@@ -16,10 +16,10 @@ use argon2::{
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use karma_evidence::EvidenceVault;
 use karma_ipc::{
-    ActiveBan, AgentEnforcement, BootstrapStatus, EnforcementSummary, EvidenceMetadata,
-    NetworkStatus, RememberedTitleMetadata, RequestEnvelope, ResponseEnvelope, ServiceErrorCode,
-    ServiceFailure, ServiceRequest, ServiceResult, ServiceStatus, TitleReasonMetadata,
-    UninstallStatus, UpdatePhase, UpdateStatus,
+    ActiveBan, AgentEnforcement, BootstrapStatus, CRITICAL_EVIDENCE_RISK_MILLIS,
+    EnforcementSummary, EvidenceMetadata, NetworkStatus, RememberedTitleMetadata, RequestEnvelope,
+    ResponseEnvelope, ServiceErrorCode, ServiceFailure, ServiceRequest, ServiceResult,
+    ServiceStatus, TitleReasonMetadata, UninstallStatus, UpdatePhase, UpdateStatus,
 };
 use karma_policy::{
     ApplicationCategories, ApplicationEffect, ApplicationPolicy, ContextPolicy, ContextVerdict,
@@ -1014,16 +1014,18 @@ impl ServiceCore {
             ServiceRequest::DeleteEvidence {
                 session_token,
                 evidence_id,
+                super_password,
             } => {
                 authorize(runtime, &session_token, now_ms)?;
-                self.delete_evidence(runtime, &[evidence_id], now_ms)
+                self.delete_evidence(runtime, &[evidence_id], super_password, now_ms)
             }
             ServiceRequest::DeleteEvidenceBatch {
                 session_token,
                 evidence_ids,
+                super_password,
             } => {
                 authorize(runtime, &session_token, now_ms)?;
-                self.delete_evidence(runtime, &evidence_ids, now_ms)
+                self.delete_evidence(runtime, &evidence_ids, super_password, now_ms)
             }
             ServiceRequest::ListEnforcement {
                 session_token,
@@ -1331,12 +1333,24 @@ impl ServiceCore {
 
     /// Deletes the named evidence items, skipping ids that no longer exist. An
     /// item whose encrypted original is already gone still loses its record.
+    /// Once a super password is configured, only it can delete critical
+    /// evidence; without it nothing in the request is deleted.
     fn delete_evidence(
         &self,
         runtime: &mut RuntimeState,
         evidence_ids: &[String],
+        super_password: Option<String>,
         now_ms: i64,
     ) -> Result<ServiceResult, ServiceErrorCode> {
+        let critical = runtime.stored.evidence.iter().any(|item| {
+            item.risk_millis >= CRITICAL_EVIDENCE_RISK_MILLIS && evidence_ids.contains(&item.id)
+        });
+        if critical && runtime.stored.super_password_hash.is_some() {
+            if let Err(error) = self.authenticate_super(runtime, super_password, now_ms) {
+                audit(runtime, now_ms, "evidence_deleted", "denied");
+                return Err(error);
+            }
+        }
         let mut deleted = false;
         for evidence_id in evidence_ids {
             let Some(index) = runtime
@@ -2273,6 +2287,15 @@ mod tests {
     }
 
     fn submit_test_evidence(core: &ServiceCore, evidence_id: &str, application_name: &str) {
+        submit_test_evidence_at_risk(core, evidence_id, application_name, 980);
+    }
+
+    fn submit_test_evidence_at_risk(
+        core: &ServiceCore,
+        evidence_id: &str,
+        application_name: &str,
+        risk_millis: u16,
+    ) {
         let image = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3];
         assert!(matches!(
             success(core.handle(
@@ -2288,7 +2311,7 @@ mod tests {
                             monitor_name: "显示器 1".into(),
                             application_name: application_name.into(),
                             reason_code: "image_immediate".into(),
-                            risk_millis: 980,
+                            risk_millis,
                             media_type: "image/png".into(),
                             bytes_base64: BASE64.encode(image),
                         },
@@ -2298,6 +2321,129 @@ mod tests {
             )),
             ServiceResult::Acknowledged
         ));
+    }
+
+    fn delete_evidence_items(
+        core: &ServiceCore,
+        session: &str,
+        nonce: &str,
+        evidence_ids: &[&str],
+        super_password: Option<&str>,
+    ) -> Result<ServiceResult, ServiceErrorCode> {
+        let super_password = super_password.map(str::to_owned);
+        let request_body = match evidence_ids {
+            [evidence_id] => ServiceRequest::DeleteEvidence {
+                session_token: session.into(),
+                evidence_id: (*evidence_id).into(),
+                super_password,
+            },
+            _ => ServiceRequest::DeleteEvidenceBatch {
+                session_token: session.into(),
+                evidence_ids: evidence_ids.iter().map(|id| (*id).to_owned()).collect(),
+                super_password,
+            },
+        };
+        core.handle(request(nonce, nonce, request_body), 20_010)
+            .result
+            .map_err(|failure| failure.code)
+    }
+
+    fn listed_evidence_ids(core: &ServiceCore, session: &str, nonce: &str) -> Vec<String> {
+        match success(core.handle(
+            request(
+                nonce,
+                nonce,
+                ServiceRequest::ListEvidence {
+                    session_token: session.into(),
+                },
+            ),
+            20_020,
+        )) {
+            ServiceResult::EvidenceList { items } => {
+                let mut ids = items.into_iter().map(|item| item.id).collect::<Vec<_>>();
+                ids.sort();
+                ids
+            }
+            _ => panic!("unexpected response"),
+        }
+    }
+
+    #[test]
+    fn critical_evidence_deletion_requires_super_password_once_configured() {
+        let directory = tempfile::tempdir().unwrap();
+        let core = open_core(directory.path(), 0);
+        configure_policy(
+            &core,
+            json!({
+                "protectionEnabled": true,
+                "recognition": {"evidenceEnabled": true, "immediateThreshold": 82}
+            }),
+        );
+        for (evidence_id, risk_millis) in [
+            ("evidence-a-before-super", 990),
+            ("evidence-b-high", 949),
+            ("evidence-c-high", 900),
+            ("evidence-d-critical", 950),
+            ("evidence-e-critical", 990),
+        ] {
+            submit_test_evidence_at_risk(&core, evidence_id, "game.exe", risk_millis);
+        }
+        let session = authenticate_ui(&core, "auth-delete-critical", 20_000);
+        let delete = |nonce: &str, ids: &[&str], super_password: Option<&str>| {
+            delete_evidence_items(&core, &session, nonce, ids, super_password)
+        };
+
+        // Without a super password the administrator is the only role.
+        assert!(matches!(
+            delete("before-super", &["evidence-a-before-super"], None),
+            Ok(ServiceResult::Acknowledged)
+        ));
+        set_super(&core, &session, 20_001);
+        assert!(matches!(
+            delete("high", &["evidence-b-high"], None),
+            Ok(ServiceResult::Acknowledged)
+        ));
+        for (nonce, ids) in [
+            ("critical-one", &["evidence-d-critical"][..]),
+            ("mixed", &["evidence-c-high", "evidence-d-critical"][..]),
+        ] {
+            assert_eq!(
+                delete(nonce, ids, None).err(),
+                Some(ServiceErrorCode::SuperPasswordRequired)
+            );
+        }
+        assert_eq!(
+            delete(
+                "wrong-super",
+                &["evidence-e-critical"],
+                Some("long-test-password")
+            )
+            .err(),
+            Some(ServiceErrorCode::AuthenticationFailed)
+        );
+        // A refused request deletes nothing, not even its high-risk items.
+        assert_eq!(
+            listed_evidence_ids(&core, &session, "list-refused"),
+            [
+                "evidence-c-high",
+                "evidence-d-critical",
+                "evidence-e-critical"
+            ]
+        );
+
+        assert!(matches!(
+            delete(
+                "with-super",
+                &[
+                    "evidence-c-high",
+                    "evidence-d-critical",
+                    "evidence-e-critical"
+                ],
+                Some("distinct-super-password")
+            ),
+            Ok(ServiceResult::Acknowledged)
+        ));
+        assert!(listed_evidence_ids(&core, &session, "list-deleted").is_empty());
     }
 
     fn allow_evidence(
@@ -4493,6 +4639,7 @@ mod tests {
                     ServiceRequest::DeleteEvidenceBatch {
                         session_token: session.clone(),
                         evidence_ids: ids.iter().map(|id| (*id).to_owned()).collect(),
+                        super_password: None,
                     },
                 ),
                 3,

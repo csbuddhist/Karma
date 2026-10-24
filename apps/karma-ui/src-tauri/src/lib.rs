@@ -701,9 +701,10 @@ mod local_backend {
         runtime: State<'_, ConsoleRuntime>,
         session_token: String,
         evidence_ids: Vec<String>,
+        super_password: Option<String>,
     ) -> Result<(), ConsoleError> {
         authorize(&runtime, &session_token)?;
-        let _ = evidence_ids;
+        let _ = (evidence_ids, super_password.map(Zeroizing::new));
         Err(ConsoleError::EvidenceUnavailable)
     }
 
@@ -1060,8 +1061,8 @@ mod service_backend {
     use std::{collections::HashMap, fmt::Write as _, sync::Mutex};
 
     use karma_ipc::{
-        BootstrapStatus, ComponentState, MAX_EVIDENCE_BATCH, RequestEnvelope, ServiceErrorCode,
-        ServiceFailure, ServiceRequest, ServiceResult,
+        BootstrapStatus, CRITICAL_EVIDENCE_RISK_MILLIS, ComponentState, MAX_EVIDENCE_BATCH,
+        RequestEnvelope, ServiceErrorCode, ServiceFailure, ServiceRequest, ServiceResult,
     };
     use karma_windows_ipc::send_request;
     use rand::{RngCore, rngs::OsRng};
@@ -1424,7 +1425,7 @@ mod service_backend {
                             "monitorName": item.monitor_name,
                             "applicationName": item.application_name,
                             "reason": item.reason_code,
-                            "risk": if item.risk_millis >= 950 { "critical" } else { "high" },
+                            "risk": if item.risk_millis >= CRITICAL_EVIDENCE_RISK_MILLIS { "critical" } else { "high" },
                             "riskMillis": item.risk_millis,
                             "originalAvailable": item.original_available
                         })
@@ -1541,11 +1542,13 @@ mod service_backend {
     }
 
     /// Deletes evidence items in Service-sized batches. The Service skips items
-    /// that are already gone.
+    /// that are already gone, and refuses a batch with critical evidence unless
+    /// the super password is configured and given.
     #[tauri::command]
     fn delete_evidence(
         session_token: String,
         evidence_ids: Vec<String>,
+        super_password: Option<String>,
     ) -> Result<(), ConsoleError> {
         if evidence_ids.is_empty() {
             return Ok(());
@@ -1554,6 +1557,7 @@ mod service_backend {
             match request(ServiceRequest::DeleteEvidenceBatch {
                 session_token: session_token.clone(),
                 evidence_ids: chunk.to_vec(),
+                super_password: super_password.clone(),
             })? {
                 ServiceResult::Acknowledged => {}
                 _ => return Err(ConsoleError::InvalidResponse),

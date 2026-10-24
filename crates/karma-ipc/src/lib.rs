@@ -20,6 +20,9 @@ pub const MAX_TITLE_QUERY_CHARS: usize = 128;
 pub const MAX_EXECUTABLE_CHARS: usize = 260;
 /// Most evidence items one `DeleteEvidenceBatch` request may name.
 pub const MAX_EVIDENCE_BATCH: usize = 200;
+/// Evidence at or above this risk is critical: once a super password is
+/// configured, only it can delete such evidence.
+pub const CRITICAL_EVIDENCE_RISK_MILLIS: u16 = 950;
 /// The product version this build reports and updates from. Kept equal to the
 /// console's `tauri.conf.json` version by the installer contract test.
 pub const PRODUCT_VERSION: &str = "0.3.16";
@@ -115,15 +118,22 @@ pub enum ServiceRequest {
         password: String,
         evidence_id: String,
     },
+    /// Delete one evidence item. Critical evidence requires the super
+    /// password once one is configured.
     DeleteEvidence {
         session_token: String,
         evidence_id: String,
+        #[serde(default)]
+        super_password: Option<String>,
     },
     /// Delete several evidence items at once. Items that no longer exist are
-    /// skipped; the request fails only when none of them exists.
+    /// skipped; the request fails only when none of them exists. Naming any
+    /// critical evidence requires the super password once one is configured.
     DeleteEvidenceBatch {
         session_token: String,
         evidence_ids: Vec<String>,
+        #[serde(default)]
+        super_password: Option<String>,
     },
     /// One page of remembered window titles, newest first, optionally
     /// filtered by a case-insensitive query, plus active repeat-offender bans.
@@ -331,6 +341,14 @@ impl ServiceRequest {
                 ..
             }
             | Self::AllowEvidenceApplication {
+                super_password: Some(password),
+                ..
+            }
+            | Self::DeleteEvidence {
+                super_password: Some(password),
+                ..
+            }
+            | Self::DeleteEvidenceBatch {
                 super_password: Some(password),
                 ..
             }
@@ -1032,6 +1050,7 @@ mod tests {
                 ServiceRequest::DeleteEvidenceBatch {
                     session_token: "session-1".into(),
                     evidence_ids: ids,
+                    super_password: None,
                 },
                 client,
             )
@@ -1061,6 +1080,39 @@ mod tests {
                 Err(ProtocolError::InvalidField)
             );
         }
+    }
+
+    #[test]
+    fn evidence_delete_accepts_an_optional_bounded_super_password() {
+        let delete = |super_password: Option<String>| {
+            request(
+                ServiceRequest::DeleteEvidence {
+                    session_token: "session-1".into(),
+                    evidence_id: "evidence-1".into(),
+                    super_password,
+                },
+                ClientKind::Ui,
+            )
+            .validate()
+        };
+        assert!(delete(Some("distinct-super-password".into())).is_ok());
+        assert_eq!(
+            delete(Some(String::new())),
+            Err(ProtocolError::InvalidField)
+        );
+        // Consoles from before the super password was accepted omit the field.
+        let legacy: ServiceRequest = serde_json::from_value(serde_json::json!({
+            "type": "delete_evidence_batch",
+            "payload": {"session_token": "session-1", "evidence_ids": ["evidence-1"]}
+        }))
+        .unwrap();
+        assert!(matches!(
+            legacy,
+            ServiceRequest::DeleteEvidenceBatch {
+                super_password: None,
+                ..
+            }
+        ));
     }
 
     #[test]
