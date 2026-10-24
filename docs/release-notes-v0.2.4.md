@@ -9,7 +9,7 @@ Karma v0.2.4 is a Windows x64 **prerelease for testing**. Windows hardware accep
 
 Download `Karma-windows-x64-test-v0.2.4-setup.exe` for installation, or the ZIP for diagnostics. Setup embeds the official Microsoft Visual C++ x64 Redistributable and checks its Microsoft signature before installing it when needed. Existing local policy and evidence data are retained by default.
 
-The Ed25519 signature authenticates upgrade contents; it does not replace Windows Authenticode. Karma remains user-mode protection: a technical Windows administrator can take ownership, use safe mode, or alter the system offline. Have the supervisor keep the Windows administrator account and use a standard account daily.
+The Ed25519 signature authenticates upgrade contents; it does not replace Windows Authenticode. Have the supervisor keep the Windows administrator account and use a standard account daily.
 
 Portable Rust tests, formatting, Clippy, Windows-target cross-checks, frontend build, installer/bundle contracts, and manifest verification are the development gates. Real Windows testing must still cover two-level authorization, uninstall time boundaries, live in-place upgrades, locked files, interruption/rollback, WFP persistence, service/guardian/Agent recovery, and post-upgrade uninstall. See [the acceptance checklist](https://github.com/csbuddhist/Karma/blob/v0.2.4/docs/windows-update-acceptance.md).
 
@@ -24,6 +24,6 @@ Karma v0.2.4 是 Windows x64 **测试预发布版**。Windows 真机验收仍待
 
 安装请下载 `Karma-windows-x64-test-v0.2.4-setup.exe`，诊断可使用 ZIP。安装器内置微软官方 VC++ x64 运行库，仅在需要时校验微软签名后安装。默认保留现有本地策略和证据数据。
 
-Ed25519 签名验证升级内容，不能替代 Windows Authenticode。Karma 仍是用户态保护：懂技术的 Windows 管理员可夺取所有权、进入安全模式或离线修改系统。建议监督人保管 Windows 管理员账户，日常使用标准账户。
+Ed25519 签名验证升级内容，不能替代 Windows Authenticode。建议监督人保管 Windows 管理员账户，日常使用标准账户。
 
 开发门禁包括 Rust 便携测试、格式、Clippy、Windows 目标交叉检查、前端构建、安装器/测试包契约及签名验证。Windows 真机仍需验证两级授权、卸载时间边界、运行中原地升级、文件锁定、中断/回滚、WFP 持续限制、服务/守护服务/Agent 恢复及升级后卸载。详见[验收清单](https://github.com/csbuddhist/Karma/blob/v0.2.4/docs/windows-update-acceptance.md)。

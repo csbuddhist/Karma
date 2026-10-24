@@ -14,7 +14,7 @@ Karma v0.3.1 is a Windows x64 **prerelease for testing** that fixes in-place upg
 - Use `Karma-windows-x64-test-v0.3.1-setup.exe` and enter the administrator password. Existing local policy and evidence data are retained.
 - Automatic updates on v0.2.4–v0.3.0 still run the old updater. If the console is open when the update starts, the old updater can still fail. If KarmaService keeps stopping right after it starts, end `karma-ui.exe` in Task Manager and start KarmaService again; the pending recovery then finishes and the previous version keeps running. Then upgrade with the setup program.
 
-The Ed25519 signature authenticates upgrade contents; it does not replace Windows Authenticode. Karma remains user-mode protection: a technical Windows administrator can take ownership, use safe mode, or alter the system offline. Have the supervisor keep the Windows administrator account and use a standard account daily.
+The Ed25519 signature authenticates upgrade contents; it does not replace Windows Authenticode. Have the supervisor keep the Windows administrator account and use a standard account daily.
 
 Real Windows testing must still cover the items in [the acceptance checklist](https://github.com/csbuddhist/Karma/blob/v0.3.1/docs/windows-update-acceptance.md), including a live in-place upgrade with the console open.
 
@@ -34,6 +34,6 @@ Karma v0.3.1 是修复原地升级问题的 Windows x64 **测试预发布版**�
 - 请使用 `Karma-windows-x64-test-v0.3.1-setup.exe` 并输入管理员密码。默认保留现有本地策略和证据数据。
 - v0.2.4–v0.3.0 的自动更新仍运行旧的升级器，若更新开始时控制台处于打开状态，仍可能失败。如果 KarmaService 每次启动后立即停止，请在任务管理器中结束 `karma-ui.exe`，再启动 KarmaService：未完成的恢复会随之完成，并继续运行原版本。之后再用安装器升级。
 
-Ed25519 签名验证升级内容，不能替代 Windows Authenticode。Karma 仍是用户态保护：懂技术的 Windows 管理员可夺取所有权、进入安全模式或离线修改系统。建议监督人保管 Windows 管理员账户，日常使用标准账户。
+Ed25519 签名验证升级内容，不能替代 Windows Authenticode。建议监督人保管 Windows 管理员账户，日常使用标准账户。
 
 Windows 真机仍需完成[验收清单](https://github.com/csbuddhist/Karma/blob/v0.3.1/docs/windows-update-acceptance.md)中的项目，包括控制台打开时的运行中原地升级。

@@ -19,7 +19,7 @@ Karma v0.3.13 is a Windows x64 **prerelease for testing** that adds application 
 
 - v0.3.12 can update to this version from the console or automatically. v0.3.11 and earlier must run `Karma-windows-x64-test-v0.3.13-setup.exe` once and enter the administrator password. Existing local policy, evidence, and audit data are retained.
 
-The Ed25519 signature authenticates upgrade contents; it does not replace Windows Authenticode. Karma remains user-mode protection: a technical Windows administrator can take ownership, use safe mode, or alter the system offline. Have the supervisor keep the Windows administrator account and use a standard account daily.
+The Ed25519 signature authenticates upgrade contents; it does not replace Windows Authenticode. Have the supervisor keep the Windows administrator account and use a standard account daily.
 
 Real Windows testing must still cover the items in [the network enforcement acceptance checklist](https://github.com/csbuddhist/Karma/blob/v0.3.13/docs/windows-network-enforcement-acceptance.md), including the new custom-category, block-running, exemption, and lift cases.
 
@@ -44,6 +44,6 @@ Karma v0.3.13 是 Windows x64 **测试预发布版**，新增应用类型管理�
 
 - v0.3.12 可通过控制台或自动更新升级到此版本。v0.3.11 及更早版本需先运行一次 `Karma-windows-x64-test-v0.3.13-setup.exe` 并输入管理员密码。默认保留现有本地策略、证据和审计数据。
 
-Ed25519 签名验证升级内容，不能替代 Windows Authenticode。Karma 仍是用户态保护：懂技术的 Windows 管理员可夺取所有权、进入安全模式或离线修改系统。建议监督人保管 Windows 管理员账户，日常使用标准账户。
+Ed25519 签名验证升级内容，不能替代 Windows Authenticode。建议监督人保管 Windows 管理员账户，日常使用标准账户。
 
 Windows 真机仍需完成[网络执行验收清单](https://github.com/csbuddhist/Karma/blob/v0.3.13/docs/windows-network-enforcement-acceptance.md)中的项目，包括新增的自定义类别、禁止启动、豁免和解除场景。

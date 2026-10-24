@@ -88,11 +88,9 @@ Uninstall keeps local data by default. See the [Windows installation and testing
 - The console does not yet expose a complete audit-log reader.
 - Focused recognition covers only continuously changing areas: a small still image in a web page is still judged as part of the whole screen and can be missed when it covers too little of it.
 
-### Limits of Tamper Resistance
+### Recommended Setup
 
-Karma hardens its two Windows services (KarmaService and a companion watchdog): stopping them in services.msc or Task Manager, setting “Startup type” to Disabled, and editing their registry keys in Registry Editor are refused even to administrators; the two services restart each other every few seconds; and an End-task kill is recovered automatically by the Service Control Manager. This defeats a non-technical administrator who only uses graphical tools.
-
-**Most effective setup**: the protected person uses a standard Windows account daily, while the supervisor holds the Windows administrator account and the Karma super password.
+The protected person uses a standard Windows account daily, while the supervisor holds the Windows administrator account and the Karma super password.
 
 ### Passwords and Permissions
 

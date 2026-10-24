@@ -376,16 +376,6 @@ macOS:
 - MDM deploys PPPC, System Extension, Network Extension, and non-removable application policies.
 - FileVault and System Integrity Protection remain enabled.
 
-### Explicit Boundaries
-
-The following situations can only be detected or reported afterward; prevention cannot be guaranteed:
-
-- An administrator/root user intentionally disables or removes components.
-- Safe Mode, recovery environments, or offline disk modification.
-- The user revokes macOS Screen Recording permission.
-- Secure Boot/SIP is disabled, the operating system is reinstalled, or the startup disk is replaced.
-- Physical obstruction, external capture devices, or content played on another device.
-
 ## Network Schedule Control
 
 Network control governs only which applications may access the network and when. Pornographic-content detection remains the responsibility of the on-screen AI.

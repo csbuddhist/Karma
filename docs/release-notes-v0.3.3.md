@@ -17,7 +17,7 @@ Karma v0.3.3 is a Windows x64 **prerelease for testing** that adds two applicati
 
 - Use `Karma-windows-x64-test-v0.3.3-setup.exe` and enter the administrator password. The console is closed during the upgrade; reopen it afterwards. Existing local policy and evidence data are retained. Installations on v0.3.2 can also update automatically.
 
-The Ed25519 signature authenticates upgrade contents; it does not replace Windows Authenticode. Karma remains user-mode protection: a technical Windows administrator can take ownership, use safe mode, or alter the system offline. Have the supervisor keep the Windows administrator account and use a standard account daily.
+The Ed25519 signature authenticates upgrade contents; it does not replace Windows Authenticode. Have the supervisor keep the Windows administrator account and use a standard account daily.
 
 Real Windows testing must still cover the items in [the acceptance checklist](https://github.com/csbuddhist/Karma/blob/v0.3.3/docs/windows-update-acceptance.md).
 
@@ -40,6 +40,6 @@ Karma v0.3.3 是 Windows x64 **测试预发布版**，为应用管控新增两�
 
 - 请使用 `Karma-windows-x64-test-v0.3.3-setup.exe` 并输入管理员密码。升级期间会关闭控制台，完成后重新打开即可。默认保留现有本地策略和证据数据。v0.3.2 也可通过自动更新升级。
 
-Ed25519 签名验证升级内容，不能替代 Windows Authenticode。Karma 仍是用户态保护：懂技术的 Windows 管理员可夺取所有权、进入安全模式或离线修改系统。建议监督人保管 Windows 管理员账户，日常使用标准账户。
+Ed25519 签名验证升级内容，不能替代 Windows Authenticode。建议监督人保管 Windows 管理员账户，日常使用标准账户。
 
 Windows 真机仍需完成[验收清单](https://github.com/csbuddhist/Karma/blob/v0.3.3/docs/windows-update-acceptance.md)中的项目。

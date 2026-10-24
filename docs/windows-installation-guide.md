@@ -270,7 +270,7 @@ Get-Process karma-agent-windows -ErrorAction SilentlyContinue
 Stop-Process -Name karma-agent-windows
 ```
 
-该命令只适合独立诊断。安装模式下 Service 会重新拉起活动会话 Agent；拥有 Windows 管理员权限的用户仍可通过更高权限手段绕过用户态保护。
+该命令只适合独立诊断。安装模式下 Service 会重新拉起活动会话 Agent。
 
 ## 7. 正常日志与状态判断
 

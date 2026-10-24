@@ -12,7 +12,7 @@ Karma v0.3.6 is a Windows x64 **prerelease for testing** that keeps browsers out
 
 - Use `Karma-windows-x64-test-v0.3.6-setup.exe` and enter the administrator password. The console is closed during the upgrade; reopen it afterwards. Existing local policy and evidence data are retained. Installations on v0.3.2 or later can also update automatically.
 
-The Ed25519 signature authenticates upgrade contents; it does not replace Windows Authenticode. Karma remains user-mode protection: a technical Windows administrator can take ownership, use safe mode, or alter the system offline. Have the supervisor keep the Windows administrator account and use a standard account daily.
+The Ed25519 signature authenticates upgrade contents; it does not replace Windows Authenticode. Have the supervisor keep the Windows administrator account and use a standard account daily.
 
 Real Windows testing must still cover the items in [the acceptance checklist](https://github.com/csbuddhist/Karma/blob/v0.3.6/docs/windows-update-acceptance.md), including that browser evidence shows a grayed-out Add to allowlist button.
 
@@ -30,6 +30,6 @@ Karma v0.3.6 是 Windows x64 **测试预发布版**，禁止从事件证据把�
 
 - 请使用 `Karma-windows-x64-test-v0.3.6-setup.exe` 并输入管理员密码。升级期间会关闭控制台，完成后重新打开即可。默认保留现有本地策略和证据数据。v0.3.2 及以上版本也可通过自动更新升级。
 
-Ed25519 签名验证升级内容，不能替代 Windows Authenticode。Karma 仍是用户态保护：懂技术的 Windows 管理员可夺取所有权、进入安全模式或离线修改系统。建议监督人保管 Windows 管理员账户，日常使用标准账户。
+Ed25519 签名验证升级内容，不能替代 Windows Authenticode。建议监督人保管 Windows 管理员账户，日常使用标准账户。
 
 Windows 真机仍需完成[验收清单](https://github.com/csbuddhist/Karma/blob/v0.3.6/docs/windows-update-acceptance.md)中的项目，包括确认浏览器证据的“加入白名单”按钮显示为灰色。
