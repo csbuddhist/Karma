@@ -403,9 +403,6 @@ select, .field input, .toolbar input { height: 39px; padding: 0 11px; color: var
 .capability-list svg { width: 15px; color: var(--green); }
 .capability-list .pending { color: var(--muted); }
 .capability-list .pending svg { color: var(--amber); }
-.security-note { display: flex; align-items: flex-start; gap: 12px; padding: 14px; color: #695220; background: var(--amber-soft); border-radius: 11px; }
-.security-note svg { flex: 0 0 auto; width: 18px; }
-.security-note p { margin: 0; font-size: 10px; line-height: 1.7; }
 
 .modal-backdrop { z-index: 20; position: fixed; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(23,26,22,.58); backdrop-filter: blur(7px); }
 .modal { width: min(100%, 430px); max-height: calc(100vh - 40px); overflow: auto; padding: 23px; background: white; border-radius: 18px; box-shadow: 0 28px 90px rgba(0,0,0,.25); }
