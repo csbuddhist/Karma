@@ -48,17 +48,9 @@ impl FilterPlan {
                 BTreeSet::new()
             } else {
                 restriction
-                    .executables
+                    .network_executables
                     .iter()
-                    .cloned()
-                    .chain(
-                        restriction
-                            .block_browsers
-                            .then(|| restriction.browser_executables())
-                            .into_iter()
-                            .flatten(),
-                    )
-                    .map(|path| ApplicationMatcher::new(&path))
+                    .map(|path| ApplicationMatcher::new(path))
                     .collect()
             },
         }
@@ -169,6 +161,19 @@ mod tests {
             ApplicationMatcher::new("CHROME.EXE"),
             ApplicationMatcher::Suffix("\\chrome.exe".into())
         );
+    }
+
+    #[test]
+    fn launch_blocking_rules_add_no_network_filters() {
+        let policy = NetworkSchedulePolicy::from_value(&json!({"schedules":[
+            {"id":"games", "name":"Games", "action":"block_launch", "target":"applications",
+                "applications":["game.exe"], "enabled":true,
+                "blocks":[{"day":0,"start":"08:00","end":"10:00"}]}
+        ]}))
+        .unwrap();
+        let restriction = policy.restriction_at(9 * 60);
+        assert!(restriction.is_restricted());
+        assert!(FilterPlan::from_restriction(&restriction).is_empty());
     }
 
     #[test]

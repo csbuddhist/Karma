@@ -201,6 +201,11 @@ fn serve(
         Arc::clone(&shutdown),
         Arc::clone(&updating),
     )?;
+    let launch_worker = crate::launch_enforcement::windows::start(
+        Arc::clone(&core),
+        &install_directory,
+        Arc::clone(&shutdown),
+    )?;
     let watchdog = agent_watchdog::start(
         install_directory.clone(),
         agent_secret.to_string(),
@@ -253,6 +258,7 @@ fn serve(
     })();
     shutdown.store(true, Ordering::Release);
     let _ = watchdog.join();
+    let _ = launch_worker.join();
     let _ = guardian_watchdog.join();
     // HTTP operations have hard timeouts. Do not block SCM shutdown waiting for
     // a periodic network request; the worker never touches protection state.

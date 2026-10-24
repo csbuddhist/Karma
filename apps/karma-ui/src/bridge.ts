@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { disable, enable } from "@tauri-apps/plugin-autostart";
-import type { ApplicationRule, AuthorizationStatus, InstalledApplication, ConsoleState, NetworkStatus, NetworkTarget, RememberedTitle, RememberedTitlePage, ScheduleBlock, ScheduleRule } from "./types";
+import type { ApplicationRule, AuthorizationStatus, InstalledApplication, ConsoleState, NetworkStatus, NetworkTarget, RememberedTitle, RememberedTitlePage, ScheduleAction, ScheduleBlock, ScheduleRule } from "./types";
 
 const browserFallbackKey = "karma-ui-browser-state";
 const browserPasswordKey = "karma-ui-browser-password";
@@ -33,6 +33,7 @@ export const defaultConsoleState: ConsoleState = {
   keywords: [],
   titleKeywordAdditions: [],
   websites: [],
+  applicationCategories: [],
   applications: [
     { id: "browser", name: "浏览器", executable: "受支持浏览器", category: "browser", action: "content_only", enabled: true },
     { id: "player", name: "播放器", executable: "受支持播放器", category: "player", action: "content_only", enabled: true },
@@ -198,6 +199,7 @@ function hydrateConsoleState(value: Partial<ConsoleState>): ConsoleState {
     update: { ...defaultConsoleState.update, ...(value.update ?? {}) },
     titleKeywordAdditions: value.titleKeywordAdditions ?? [],
     websites: value.websites ?? [],
+    applicationCategories: value.applicationCategories ?? [],
     schedules: (value.schedules ?? []).map(normalizeSchedule),
     network: { ...defaultConsoleState.network, ...(value.network ?? {}) },
     rememberedTitleTotal: isTauri() ? value.rememberedTitleTotal ?? 0 : browserTitles().length,
@@ -206,20 +208,31 @@ function hydrateConsoleState(value: Partial<ConsoleState>): ConsoleState {
   };
 }
 
-const legacyTargets: Record<string, NetworkTarget> = { browser_player: "browsers", internet: "all_network", all_restricted: "all_network" };
+const legacyTargets: Record<string, NetworkTarget> = { internet: "all_network", all_restricted: "all_network" };
 
-/** Converts single-range rules saved by earlier consoles into weekly blocks. */
+/**
+ * Converts rules saved by earlier consoles: single-range rules become weekly
+ * blocks, and the browser target becomes the browser category, which the
+ * Service enforces identically.
+ */
 export function normalizeSchedule(rule: ScheduleRule | Record<string, unknown>): ScheduleRule {
   const value = rule as Record<string, unknown>;
+  const strings = (field: unknown) => Array.isArray(field) ? (field as string[]) : [];
+  const action: ScheduleAction = value.action === "block_launch" ? "block_launch" : "block_network";
+  const legacyTarget = String(value.target);
+  const target: NetworkTarget = legacyTarget === "applications" || legacyTarget === "all_network" || legacyTarget === "categories" ? legacyTarget : legacyTargets[legacyTarget] ?? "categories";
+  const categories = target === "categories" ? (legacyTarget === "categories" ? strings(value.categories) : ["browser"]) : [];
   if (Array.isArray(value.blocks)) {
-    return { ...(rule as ScheduleRule), applications: Array.isArray(value.applications) ? (value.applications as string[]) : [] };
+    return { ...(rule as ScheduleRule), action, target, categories, applications: target === "applications" ? strings(value.applications) : [] };
   }
   const days = Array.isArray(value.days) ? (value.days as number[]) : [];
   const blocks: ScheduleBlock[] = days.map((day) => ({ day, start: String(value.start ?? "21:00"), end: String(value.end ?? "07:00") }));
   return {
     id: String(value.id ?? crypto.randomUUID()),
     name: String(value.name ?? ""),
-    target: legacyTargets[String(value.target)] ?? "browsers",
+    action,
+    target,
+    categories,
     applications: [],
     blocks,
     enabled: value.enabled !== false,
@@ -367,6 +380,38 @@ export function allowApplications(rules: ApplicationRule[], applications: Instal
     if (!exact) next = [...next, { id: crypto.randomUUID(), name: application.name, executable: application.executable, category: application.browser ? "browser" : "custom", action: "allow", enabled: true }];
   }
   return next;
+}
+
+/** Whether a rule names no program file, like the built-in "Supported browsers" entry; the Service gives it no category members. */
+export function isPlaceholderApplication(rule: ApplicationRule): boolean {
+  return !(pathComponents(rule.executable).at(-1) ?? "").endsWith(".exe");
+}
+
+/**
+ * Puts each application in `category`: a rule for exactly that executable
+ * moves to it, keeping its action; otherwise a "Content only" rule is
+ * appended, which changes nothing but the category.
+ */
+export function assignApplicationsToCategory(rules: ApplicationRule[], applications: Array<Pick<InstalledApplication, "name" | "executable">>, category: string): ApplicationRule[] {
+  let next = rules;
+  for (const application of applications) {
+    const target = pathComponents(application.executable);
+    if (!target.length) continue;
+    let exact = false;
+    next = next.map((rule) => {
+      const components = pathComponents(rule.executable);
+      if (components.length !== target.length || !trailingMatch(target, components)) return rule;
+      exact = true;
+      return { ...rule, category };
+    });
+    if (!exact) next = [...next, { id: crypto.randomUUID(), name: application.name.trim() || application.executable, executable: application.executable.trim(), category, action: "content_only", enabled: true }];
+  }
+  return next;
+}
+
+/** Takes a rule out of its category: a "Content only" rule has no other effect and is removed; any other rule moves to `custom`. */
+export function removeFromCategory(rules: ApplicationRule[], ruleId: string): ApplicationRule[] {
+  return rules.flatMap((rule) => rule.id !== ruleId ? [rule] : rule.action === "content_only" ? [] : [{ ...rule, category: "custom" }]);
 }
 
 /** Forgets a remembered title and keeps it from being remembered again. */

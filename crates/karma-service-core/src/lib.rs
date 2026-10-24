@@ -22,11 +22,12 @@ use karma_ipc::{
     UninstallStatus, UpdatePhase, UpdateStatus,
 };
 use karma_policy::{
-    ApplicationEffect, ApplicationPolicy, ContextPolicy, ContextVerdict, MAX_MISJUDGED_TITLES,
-    MINUTES_PER_DAY, MINUTES_PER_WEEK, NetworkRestriction, NetworkSchedulePolicy, RememberedTitle,
-    RepeatOffenderRule, TitleReason, active_bans, allow_application, is_banned,
-    is_browser_executable, normalize_executable, policy_weakenings, record_closure, remember_title,
-    remember_titles_enabled, rememberable_title_key, title_digest, title_key,
+    ApplicationCategories, ApplicationEffect, ApplicationPolicy, ContextPolicy, ContextVerdict,
+    MAX_MISJUDGED_TITLES, MINUTES_PER_DAY, MINUTES_PER_WEEK, NetworkRestriction,
+    NetworkSchedulePolicy, RememberedTitle, RepeatOffenderRule, TitleReason, active_bans,
+    allow_application, is_banned, is_browser_executable, normalize_executable, policy_weakenings,
+    record_closure, remember_title, remember_titles_enabled, rememberable_title_key, title_digest,
+    title_key,
 };
 use rand::{RngCore, rngs::OsRng};
 use serde_json::{Value, json};
@@ -127,6 +128,9 @@ struct RuntimeState {
     pending_dispositions: HashMap<String, PendingDisposition>,
     network_restricted: Option<bool>,
     network_enforcement_succeeded: Option<bool>,
+    /// Normalized executables whose blocked launch was audited during the
+    /// current restricted period.
+    launch_blocks_audited: HashSet<String>,
     pending_update: Option<UpdateAction>,
     update_status: UpdateStatus,
     shutdown_authorized: bool,
@@ -260,6 +264,7 @@ impl ServiceCore {
             pending_dispositions: HashMap::new(),
             network_restricted: None,
             network_enforcement_succeeded: None,
+            launch_blocks_audited: HashSet::new(),
             pending_update: None,
             update_status: UpdateStatus::default(),
             shutdown_authorized: false,
@@ -343,6 +348,7 @@ impl ServiceCore {
         refresh_uninstall_request(&mut runtime, now_ms);
         let (status, restriction) = self.evaluate_network(&mut runtime, now_ms);
         if runtime.network_restricted != Some(status.restricted) {
+            runtime.launch_blocks_audited.clear();
             let previous = runtime.network_restricted.replace(status.restricted);
             if previous.is_some() || status.restricted {
                 let kind = if status.restricted {
@@ -387,6 +393,35 @@ impl ServiceCore {
             );
             persist(&mut runtime).map_err(|_| CoreError::StorageUnavailable)?;
             runtime.network_enforcement_succeeded = Some(succeeded);
+        }
+        Ok(())
+    }
+
+    /// Records that the host terminated (or failed to terminate) a process a
+    /// schedule blocks from running. Each executable is audited once per
+    /// restricted period so a relaunching program cannot flood the log; the
+    /// detail holds only the image path.
+    pub fn record_launch_blocked(
+        &self,
+        executable_path: &str,
+        terminated: bool,
+        now_ms: i64,
+    ) -> Result<(), CoreError> {
+        let mut runtime = self
+            .runtime
+            .lock()
+            .map_err(|_| CoreError::LockUnavailable)?;
+        let executable = normalize_executable(executable_path);
+        let key = format!("{terminated}:{executable}");
+        if runtime.launch_blocks_audited.insert(key) {
+            audit_detail(
+                &mut runtime,
+                now_ms,
+                "schedule_launch_blocked",
+                if terminated { "terminated" } else { "failed" },
+                &json!({ "executable": executable }),
+            );
+            persist(&mut runtime).map_err(|_| CoreError::StorageUnavailable)?;
         }
         Ok(())
     }
@@ -645,6 +680,8 @@ impl ServiceCore {
                     return Err(ServiceErrorCode::RevisionConflict);
                 }
                 ContextPolicy::from_value(&policy).map_err(|_| ServiceErrorCode::InvalidRequest)?;
+                ApplicationCategories::from_value(&policy)
+                    .map_err(|_| ServiceErrorCode::InvalidRequest)?;
                 ApplicationPolicy::from_value(&policy)
                     .map_err(|_| ServiceErrorCode::InvalidRequest)?;
                 NetworkSchedulePolicy::from_value(&policy)
@@ -4598,16 +4635,15 @@ mod tests {
         assert!(inside.status.restricted);
         assert_eq!(inside.status.active_rule_ids, vec!["homework"]);
         assert_eq!(inside.status.restricted_until_ms, Some(local_ms(0, 21, 0)));
-        assert!(inside.restriction.block_browsers);
         assert!(
             inside
                 .restriction
-                .blocks_executable(r"C:\Program Files\Mozilla Firefox\firefox.exe")
+                .blocks_network(r"C:\Program Files\Mozilla Firefox\firefox.exe")
         );
         assert!(
             !inside
                 .restriction
-                .blocks_executable(r"C:\Windows\System32\svchost.exe")
+                .blocks_network(r"C:\Windows\System32\svchost.exe")
         );
 
         assert!(
@@ -4769,6 +4805,96 @@ mod tests {
             response.result.unwrap_err().code,
             ServiceErrorCode::InvalidRequest
         );
+    }
+
+    #[test]
+    fn launch_blocking_schedules_reach_the_host_and_audit_once_per_period() {
+        let directory = tempfile::tempdir().unwrap();
+        let policy = json!({
+            "applicationCategories": [{"id": "cat-games", "name": "游戏平台"}],
+            "applications": [
+                {"id":"s","name":"Steam","executable":"steam.exe","category":"cat-games","action":"content_only","enabled":true}
+            ],
+            "schedules": [{
+                "id": "games", "name": "游戏", "action": "block_launch",
+                "target": "categories", "categories": ["cat-games"],
+                "blocks": [{"day": 0, "start": "19:00", "end": "21:00"}],
+                "enabled": true
+            }]
+        });
+        let start = local_ms(0, 19, 30);
+        let (core, _) = network_core(directory.path(), policy, start);
+        let enforcement = core.network_enforcement(start).unwrap();
+        assert!(enforcement.status.restricted);
+        assert!(enforcement.restriction.blocks_launch(r"C:\Steam\Steam.exe"));
+        assert!(
+            !enforcement
+                .restriction
+                .blocks_network(r"C:\Steam\Steam.exe")
+        );
+
+        for offset in 0..3 {
+            core.record_launch_blocked(r"C:\Steam\Steam.exe", true, start + offset)
+                .unwrap();
+        }
+        // A later period audits the executable again.
+        core.network_enforcement(local_ms(0, 21, 30)).unwrap();
+        core.network_enforcement(local_ms(1, 19, 30)).unwrap();
+        let next_week = local_ms(0, 19, 30) + 7 * 24 * 60 * MS_PER_MINUTE;
+        core.network_enforcement(next_week).unwrap();
+        core.record_launch_blocked(r"C:\Steam\Steam.exe", true, next_week)
+            .unwrap();
+
+        let blocked: Vec<_> = disk_state(directory.path())
+            .audit
+            .into_iter()
+            .filter(|record| record.kind == "schedule_launch_blocked")
+            .collect();
+        assert_eq!(blocked.len(), 2);
+        assert_eq!(blocked[0].outcome, "terminated");
+        assert_eq!(
+            serde_json::from_str::<Value>(blocked[0].detail.as_deref().unwrap()).unwrap(),
+            json!({"executable": r"c:\steam\steam.exe"})
+        );
+    }
+
+    #[test]
+    fn unknown_application_categories_are_rejected() {
+        let directory = tempfile::tempdir().unwrap();
+        let start = local_ms(0, 12, 0);
+        let (core, session) = network_core(directory.path(), json!({}), start);
+        for (nonce, policy) in [
+            (
+                "dup-category",
+                json!({"applicationCategories": [{"id": "game", "name": "Game"}]}),
+            ),
+            (
+                "missing-category",
+                json!({"schedules": [{
+                    "id": "x", "name": "x", "target": "categories", "categories": ["cat-gone"],
+                    "blocks": [{"day": 0, "start": "08:00", "end": "09:00"}], "enabled": true
+                }]}),
+            ),
+        ] {
+            let response = core.handle(
+                request(
+                    nonce,
+                    nonce,
+                    ServiceRequest::PutPolicy {
+                        super_password: None,
+                        session_token: session.clone(),
+                        expected_revision: 1,
+                        policy,
+                    },
+                ),
+                start,
+            );
+            assert_eq!(
+                response.result.unwrap_err().code,
+                ServiceErrorCode::InvalidRequest,
+                "{nonce}"
+            );
+        }
     }
 
     #[test]

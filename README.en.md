@@ -2,7 +2,7 @@
 
 [中文](README.md) · [Technical Overview](TECHNICAL.md) · [Windows Installation and Testing Guide (Chinese)](docs/windows-installation-guide.md)
 
-Karma is a local pornography-protection and digital-wellbeing application for Windows (macOS is planned). It continuously monitors every display, closes the source application when it detects high-risk images or videos, and provides website and application allowlists/blocklists, network schedules, two-level passwords, audit logs, and protection against casual termination. All recognition runs on the device; screen content is never uploaded.
+Karma is a local pornography-protection and digital-wellbeing application for Windows (macOS is planned). It continuously monitors every display, closes the source application when it detects high-risk images or videos, and provides website and application allowlists/blocklists, blocking schedules, two-level passwords, audit logs, and protection against casual termination. All recognition runs on the device; screen content is never uploaded.
 
 ![Karma management console: Protection Overview](docs/images/console-overview-en.png)
 
@@ -22,7 +22,8 @@ Karma is a local pornography-protection and digital-wellbeing application for Wi
 
 - **Application allowlists and blocklists**: an “Allow” application is never closed by image or title recognition (website blocklists still apply); an “Always block” application is closed whenever it reaches the foreground. Applications can be chosen from those installed on the computer or bulk-added.
 - **Repeat-closure limits**: a program closed 5 times within 20 minutes is banned for one hour (window and count are configurable); bans survive reboots.
-- **Network schedules**: any number of restricted periods per weekday (including across midnight), targeting browsers, selected applications, or all networked applications, enforced by Windows WFP filters.
+- **Application types**: besides the built-in Browser, Media player, Game, and Other categories, you can define new categories (such as “Chat apps”) and choose which programs belong to each, from the applications installed on the computer or by entering an executable.
+- **Blocking schedules**: any number of blocked periods per weekday (including across midnight), targeting one or more application categories, selected applications, or all networked applications. Each rule either **blocks network access** (enforced by Windows WFP filters) or **blocks running** (during the period, the protection Service ends a blocked application as soon as it runs; Windows components and Karma itself are exempt).
 
 ### Administration and Self-Protection
 
@@ -81,8 +82,8 @@ Uninstall keeps local data by default. See the [Windows installation and testing
 ### This Is a Test Build
 
 - Only an unsigned Windows test build is available; it is not yet a complete product for production home deployment. The macOS version is still in design.
-- Continuous-frame risk fusion and schedule-based application launch blocking are not finished; Windows hardware acceptance for GPU capture, ONNX inference, network enforcement, and updates is still in progress.
-- Network schedules, policy changes, and early network restore take effect within about 60 seconds.
+- Continuous-frame risk fusion is not finished; Windows hardware acceptance for GPU capture, ONNX inference, network enforcement, launch blocking, and updates is still in progress.
+- Network blocking, policy changes, and lifting a block early take effect within about 60 seconds; launch blocking ends a blocked application within about 2 seconds, losing its unsaved work.
 - If a browser hides its address bar or does not expose it to accessibility, Karma cannot identify the site for that window, but title and image recognition still work. Website rules match domains, not paths.
 - The console does not yet expose a complete audit-log reader.
 
@@ -95,7 +96,7 @@ Karma hardens its two Windows services (KarmaService and a companion watchdog): 
 ### Passwords and Permissions
 
 - Both the ordinary administrator password and the super password need at least 10 characters and must differ.
-- Once a super password is set, **any change that weakens protection** requires it, including: disabling protection, recognition, or launching the console at sign-in; raising the image risk threshold; relaxing website/application/keyword/schedule/repeat-closure rules; forgetting a remembered title; restoring the network early; and immediate uninstall. Tightening protection needs only the ordinary administrator session.
+- Once a super password is set, **any change that weakens protection** requires it, including: disabling protection, recognition, or launching the console at sign-in; raising the image risk threshold; relaxing website/application/keyword/blocking-schedule/repeat-closure rules; forgetting a remembered title; lifting a block early; and immediate uninstall. Tightening protection needs only the ordinary administrator session.
 - The service compares the **entire submitted policy**: if any part weakens protection, the whole save requires the super password. Direct service requests that bypass the console face the same checks.
 - Changing the super password requires the current super password; the ordinary password cannot overwrite or clear it.
 - Without a super password, the ordinary administrator session can perform all of the above.
@@ -115,7 +116,7 @@ Entering the ordinary administrator password unlocks the console and creates an 
 | Application rules | Add or enable “Always block” rules; remove or disable “Allow” rules. When adding an application, type its executable or choose one from the applications installed on this computer (read from the Windows installed-program and App Paths registrations and from Start menu and desktop shortcuts) | Add or enable “Allow” rules; remove, disable, or narrow “Always block” rules |
 | Bulk add applications | Search the applications installed on this computer and check several at once; browsers (known browsers or application rules categorized as browsers) are marked and cannot be checked | Checked applications become “Allow” rules (an “Always block” rule matching one also becomes “Allow”). Like other application edits, they apply after **Save settings**, which needs the super password |
 | Keywords | Add or enable enforced keywords; add keywords to the built-in list; turn on the built-in terms prone to false positives; remove or disable exemptions | Remove, disable, or replace enforced custom keywords; remove a keyword added to the built-in list; turn off the terms prone to false positives; add or enable exemptions |
-| Network schedules | Add, enable, or extend restricted periods; expand restricted targets while preserving all existing coverage | Remove, disable, shorten, move, or retarget periods in a way that reduces existing restricted coverage; restore network access before a block ends |
+| Blocking schedules | Add, enable, or extend blocked periods; expand blocked targets or add applications to a blocked category while preserving all existing coverage | Remove, disable, shorten, or move periods, change a rule's targets or its action (such as from blocking running to blocking network access), or move applications out of a blocked category in a way that reduces existing coverage; lift a block before it ends |
 | Repeat-closure limits | Lengthen the counting window or reduce the number of closures needed to trigger a ban | Shorten the counting window or increase the number of closures needed |
 | Currently restricted applications | View each restricted application and when its restriction ends | **Always allow**: one click sets that application to “Allow” in the application list (an “Always block” rule matching it also becomes “Allow”) and lifts its current restriction immediately. Browsers (known browsers or application rules categorized as browsers) cannot be allowed: the button is grayed out, the Service refuses the request, and the restriction ends when it expires. It is saved at once, separately from other unsaved edits, and audited |
 | Event evidence | View and filter the evidence list, with the reason each item was saved; enter the ordinary password again to view each original; delete one item or several selected items after confirming; enable or disable evidence saving; turn **Skip allowlisted applications** on or off (when on, the Service discards new evidence attributed to an application with an enabled “Allow” rule instead of saving it; saved evidence is kept) | These evidence operations do not require the super password; forgetting a remembered title is a separate protected operation. **Add to allowlist**: after confirming, the application an evidence item was attributed to is added to Application control as “Allow” (an “Always block” rule matching it also becomes “Allow”) and any repeat-closure restriction on it is lifted. The Service takes the executable path from its own evidence record; evidence whose source application could not be attributed, or whose source is a browser (a known browser or an application rule categorized as a browser), cannot be allowlisted, and its button is grayed out. It is saved at once and audited |

@@ -41,6 +41,7 @@ import {
   Plus,
   Save,
   Search,
+  Tags,
   Settings,
   ShieldCheck,
   RotateCcw,
@@ -70,6 +71,9 @@ import {
   isBrowserExecutable,
   allowApplications,
   applicationEffect,
+  assignApplicationsToCategory,
+  isPlaceholderApplication,
+  removeFromCategory,
   listInstalledApplications,
   getAppVersion,
   importSettings,
@@ -119,6 +123,7 @@ import type {
   ActiveBan,
   ApplicationRule,
   AuditDetail,
+  BuiltInApplicationCategory,
   AuditItem,
   AuthMode,
   ConsoleState,
@@ -133,6 +138,7 @@ import type {
   PageKey,
   RememberedTitlePage,
   TitleReason,
+  ScheduleAction,
   ScheduleBlock,
   ScheduleRule,
   WebsiteRule,
@@ -869,6 +875,163 @@ function BatchAllowApplications({ state, update, sessionToken, onClose }: { stat
   </Modal>;
 }
 
+const builtInCategories: Array<{ id: BuiltInApplicationCategory; label: MessageKey }> = [
+  { id: "browser", label: "applications.browser" },
+  { id: "player", label: "applications.player" },
+  { id: "game", label: "applications.game" },
+  { id: "custom", label: "applications.custom" },
+];
+
+/** Mirror the Service's application category limits. */
+const maxApplicationCategories = 64;
+const maxCategoryNameChars = 64;
+
+type CategoryOption = { id: string; name: string; builtIn: boolean };
+
+function categoryOptions(state: ConsoleState, t: Translate): CategoryOption[] {
+  return [
+    ...builtInCategories.map((category) => ({ id: category.id, name: t(category.label), builtIn: true })),
+    ...state.applicationCategories.map((category) => ({ ...category, builtIn: false })),
+  ];
+}
+
+function categoryName(state: ConsoleState, id: string, t: Translate): string {
+  return categoryOptions(state, t).find((category) => category.id === id)?.name ?? id;
+}
+
+function CategorySelect({ state, value, onChange, disabled = false, label }: { state: ConsoleState; value: string; onChange: (value: string) => void; disabled?: boolean; label?: string }) {
+  const { t } = useI18n();
+  const options = categoryOptions(state, t);
+  return <select value={value} disabled={disabled} aria-label={label} onChange={(event) => onChange(event.target.value)}>
+    {options.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
+    {!options.some((category) => category.id === value) && <option value={value}>{value}</option>}
+  </select>;
+}
+
+/** Lists and edits the programs in one category; changes join the unsaved draft. */
+function CategoryMembersModal({ state, update, sessionToken, categoryId, onClose }: { state: ConsoleState; update: (state: ConsoleState) => void; sessionToken: string; categoryId: string; onClose: () => void }) {
+  const { t } = useI18n();
+  const [source, setSource] = useState<"installed" | "manual">("installed");
+  const [installed, setInstalled] = useState<InstalledApplication[]>();
+  const [installedError, setInstalledError] = useState("");
+  const [draft, setDraft] = useState({ name: "", executable: "" });
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let current = true;
+    listInstalledApplications(sessionToken)
+      .then((applications) => { if (current) setInstalled(applications); })
+      .catch((reason) => { if (current) { setInstalled([]); setInstalledError(localizeError(reason, t)); } });
+    return () => { current = false; };
+  }, [sessionToken]);
+  const name = categoryName(state, categoryId, t);
+  const members = state.applications.filter((rule) => rule.category === categoryId);
+  const memberExecutables = new Set(members.map((rule) => normalizeExecutable(rule.executable)));
+  const candidates = installed?.filter((application) => !memberExecutables.has(normalizeExecutable(application.executable)));
+  function add(applications: Array<{ name: string; executable: string }>) {
+    const next = assignApplicationsToCategory(state.applications, applications, categoryId);
+    if (next.length > maxApplicationRules) { setError(t("applications.batchTooMany", { max: maxApplicationRules })); return; }
+    update({ ...state, applications: next });
+    setError("");
+  }
+  function addManual() {
+    if (!draft.executable.trim()) { setError(t("categories.errorExecutable")); return; }
+    add([{ name: draft.name.trim() || executableFileName(draft.executable.trim()), executable: draft.executable.trim() }]);
+    setDraft({ name: "", executable: "" });
+  }
+  return <Modal title={t("categories.membersTitle", { name })} onClose={onClose} wide>
+    <p className="modal-description">{t(categoryId === "browser" ? "categories.membersBrowserDescription" : "categories.membersDescription")}</p>
+    <div className="learned-list">
+      <span className="learned-heading">{t("categories.members", { count: members.filter((rule) => !isPlaceholderApplication(rule)).length })}</span>
+      {members.length ? members.map((rule) => {
+        const ruleName = localizedApplicationName(rule, t);
+        return <div className="app-rule" key={rule.id}>
+          <div className="app-avatar"><AppWindow /></div>
+          <div className="app-main"><strong>{ruleName}</strong><small>{localizedExecutable(rule, t)}</small></div>
+          {!rule.enabled && <StatusPill tone="muted">{t("categories.disabledRule")}</StatusPill>}
+          {!isPlaceholderApplication(rule) && <button className="icon-button danger" aria-label={t("categories.removeMember", { name: ruleName })} title={t("categories.removeMember", { name: ruleName })} onClick={() => update({ ...state, applications: removeFromCategory(state.applications, rule.id) })}><X size={16} /></button>}
+        </div>;
+      }) : <p className="learned-empty">{t("categories.noMembers")}</p>}
+    </div>
+    <div className="learned-tabs source-toggle" role="group" aria-label={t("categories.addMembers")}>
+      <button type="button" className={source === "installed" ? "active" : ""} aria-pressed={source === "installed"} onClick={() => setSource("installed")}><Search size={14} />{t("applications.sourceInstalled")}</button>
+      <button type="button" className={source === "manual" ? "active" : ""} aria-pressed={source === "manual"} onClick={() => setSource("manual")}><Pencil size={14} />{t("applications.sourceManual")}</button>
+    </div>
+    {source === "installed" ? <InstalledApplicationPicker applications={candidates} error={installedError} onPick={(application) => add([application])} /> : <>
+      <label className="field"><span>{t("applications.displayName")}</span><input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder={t("applications.namePlaceholder")} /></label>
+      <label className="field"><span>{t("applications.executable")}</span><input value={draft.executable} onChange={(event) => { setDraft({ ...draft, executable: event.target.value }); setError(""); }} onKeyDown={(event) => event.key === "Enter" && addManual()} placeholder={t("applications.executablePlaceholder")} /></label>
+      <button className="secondary-button" onClick={addManual}><Plus size={16} />{t("categories.addMember")}</button>
+    </>}
+    {error && <div className="form-error"><CircleAlert size={16} />{error}</div>}
+    <small className="field-hint">{t("categories.pendingSave")}</small>
+    <div className="modal-actions"><button className="primary-button" onClick={onClose}><Check size={16} />{t("categories.done")}</button></div>
+  </Modal>;
+}
+
+function ApplicationCategoriesCard({ state, update, sessionToken }: { state: ConsoleState; update: (state: ConsoleState) => void; sessionToken: string }) {
+  const { t } = useI18n();
+  const [name, setName] = useState("");
+  const [error, setError] = useState("");
+  const [managing, setManaging] = useState<string>();
+  const [renaming, setRenaming] = useState<{ id: string; name: string }>();
+  const [renameError, setRenameError] = useState("");
+  const categories = categoryOptions(state, t);
+  const memberCount = (id: string) => state.applications.filter((rule) => rule.category === id && !isPlaceholderApplication(rule)).length;
+  const usedBy = (id: string) => state.schedules.filter((rule) => rule.target === "categories" && rule.categories.includes(id));
+  function nameError(value: string, ignoreId?: string): string | undefined {
+    const trimmed = value.trim();
+    if (!trimmed) return t("categories.errorName");
+    if (trimmed.length > maxCategoryNameChars) return t("categories.errorNameLength", { max: maxCategoryNameChars });
+    if (categories.some((category) => category.id !== ignoreId && category.name.toLowerCase() === trimmed.toLowerCase())) return t("categories.errorDuplicate");
+    return undefined;
+  }
+  function add() {
+    const problem = nameError(name) ?? (state.applicationCategories.length >= maxApplicationCategories ? t("categories.errorTooMany", { max: maxApplicationCategories }) : undefined);
+    if (problem) { setError(problem); return; }
+    update({ ...state, applicationCategories: [...state.applicationCategories, { id: `cat-${crypto.randomUUID()}`, name: name.trim() }] });
+    setName("");
+    setError("");
+  }
+  function saveRename() {
+    if (!renaming) return;
+    const problem = nameError(renaming.name, renaming.id);
+    if (problem) { setRenameError(problem); return; }
+    update({ ...state, applicationCategories: state.applicationCategories.map((category) => category.id === renaming.id ? { ...category, name: renaming.name.trim() } : category) });
+    setRenaming(undefined);
+  }
+  // Members of a deleted category stay as rules and move to "Other".
+  function remove(id: string) {
+    update({ ...state, applicationCategories: state.applicationCategories.filter((category) => category.id !== id), applications: state.applications.map((rule) => rule.category === id ? { ...rule, category: "custom" } : rule) });
+  }
+  return <Card>
+    <div className="card-heading"><div><h2>{t("categories.title")}</h2><p>{t("categories.description")}</p></div></div>
+    <div className="toolbar">
+      <div className="input-with-icon"><Tags size={17} /><input value={name} placeholder={t("categories.namePlaceholder")} onChange={(event) => { setName(event.target.value); setError(""); }} onKeyDown={(event) => event.key === "Enter" && add()} /></div>
+      <button className="primary-button" onClick={add}><Plus size={17} />{t("categories.add")}</button>
+    </div>
+    {error && <div className="form-error"><CircleAlert size={16} />{error}</div>}
+    {categories.map((category) => {
+      const used = usedBy(category.id);
+      const details = [t(category.builtIn ? "categories.builtIn" : "categories.userDefined"), t("categories.memberCount", { count: memberCount(category.id) })];
+      if (used.length) details.push(t("categories.usedBy", { names: used.map((rule) => rule.name).join("、") }));
+      return <div className="app-rule" key={category.id}>
+        <div className="app-avatar"><Tags /></div>
+        <div className="app-main"><strong>{category.name}</strong><small>{details.join(" · ")}</small></div>
+        <button className="secondary-button" onClick={() => setManaging(category.id)}><ListChecks size={16} />{t("categories.manage")}</button>
+        {!category.builtIn && <>
+          <button className="icon-button" aria-label={t("categories.rename", { name: category.name })} title={t("categories.rename", { name: category.name })} onClick={() => { setRenaming({ id: category.id, name: category.name }); setRenameError(""); }}><Pencil size={16} /></button>
+          <button className="icon-button danger" disabled={used.length > 0} aria-label={t("categories.delete", { name: category.name })} title={t(used.length ? "categories.deleteInUse" : "categories.delete", { name: category.name })} onClick={() => remove(category.id)}><Trash2 size={16} /></button>
+        </>}
+      </div>;
+    })}
+    {managing && <CategoryMembersModal state={state} update={update} sessionToken={sessionToken} categoryId={managing} onClose={() => setManaging(undefined)} />}
+    {renaming && <Modal title={t("categories.renameTitle")} onClose={() => setRenaming(undefined)}>
+      <label className="field"><span>{t("categories.name")}</span><input value={renaming.name} autoFocus onChange={(event) => { setRenaming({ ...renaming, name: event.target.value }); setRenameError(""); }} onKeyDown={(event) => event.key === "Enter" && saveRename()} /></label>
+      {renameError && <div className="form-error"><CircleAlert size={16} />{renameError}</div>}
+      <button className="primary-button modal-submit" onClick={saveRename}><Check size={17} />{t("categories.renameSave")}</button>
+    </Modal>}
+  </Card>;
+}
+
 function Applications({ state, update, sessionToken, onBannedAllowed }: { state: ConsoleState; update: (state: ConsoleState) => void; sessionToken: string; onBannedAllowed: ApplicationAllowedHandler }) {
   const { t } = useI18n();
   const [showAdd, setShowAdd] = useState(false);
@@ -877,7 +1040,7 @@ function Applications({ state, update, sessionToken, onBannedAllowed }: { state:
   const [installed, setInstalled] = useState<InstalledApplication[]>();
   const [installedError, setInstalledError] = useState("");
   const loadingInstalled = useRef(false);
-  const [draft, setDraft] = useState({ name: "", executable: "", category: "custom" as ApplicationRule["category"] });
+  const [draft, setDraft] = useState({ name: "", executable: "", category: "custom" });
   function closeAdd() { setShowAdd(false); setSource("manual"); }
   function add() { if (!draft.name.trim() || !draft.executable.trim()) return; update({ ...state, applications: [...state.applications, { id: crypto.randomUUID(), ...draft, action: "content_only", enabled: true }] }); closeAdd(); setDraft({ name: "", executable: "", category: "custom" }); }
   function chooseInstalled() {
@@ -891,25 +1054,30 @@ function Applications({ state, update, sessionToken, onBannedAllowed }: { state:
   }
   // Picking fills the form; the administrator still reviews the category and saves.
   function pick(application: InstalledApplication) { setDraft({ ...draft, name: application.name, executable: application.executable }); setSource("manual"); }
+  function patchRule(id: string, next: Partial<ApplicationRule>) { update({ ...state, applications: state.applications.map((item) => item.id === id ? { ...item, ...next } : item) }); }
   const sourceToggle = <div className="learned-tabs source-toggle" role="group" aria-label={t("applications.executable")}>
     <button type="button" className={source === "manual" ? "active" : ""} aria-pressed={source === "manual"} onClick={() => setSource("manual")}><Pencil size={14} />{t("applications.sourceManual")}</button>
     <button type="button" className={source === "installed" ? "active" : ""} aria-pressed={source === "installed"} onClick={chooseInstalled}><Search size={14} />{t("applications.sourceInstalled")}</button>
   </div>;
-  return <div className="page-stack"><div className="privacy-banner"><AppWindow size={18} /><span><strong>{t("applications.bannerTitle")}</strong> {t("applications.bannerDescription")}</span></div><RepeatOffenderCard state={state} update={update} sessionToken={sessionToken} onBannedAllowed={onBannedAllowed} /><div className="page-actions"><button className="secondary-button" onClick={() => setShowBatch(true)}><ListChecks size={17} />{t("applications.batchAdd")}</button><button className="primary-button" onClick={() => setShowAdd(true)}><Plus size={17} />{t("applications.add")}</button></div><Card>{state.applications.map((rule) => { const name = localizedApplicationName(rule, t); return <div className="app-rule" key={rule.id}><div className="app-avatar"><AppWindow /></div><div className="app-main"><strong>{name}</strong><small>{localizedExecutable(rule, t)}</small></div><select value={rule.action} onChange={(event) => update({ ...state, applications: state.applications.map((item) => item.id === rule.id ? { ...item, action: event.target.value as ApplicationRule["action"] } : item) })}><option value="content_only">{t("applications.contentOnly")}</option><option value="block">{t("applications.block")}</option><option value="allow">{t("applications.allow")}</option></select><Toggle checked={rule.enabled} onChange={(enabled) => update({ ...state, applications: state.applications.map((item) => item.id === rule.id ? { ...item, enabled } : item) })} label={t("applications.enable", { name })} /></div>; })}</Card>{showAdd && <Modal title={t("applications.modalTitle")} onClose={closeAdd}>{sourceToggle}{source === "installed" ? <InstalledApplicationPicker applications={installed} error={installedError} onPick={pick} /> : <><label className="field"><span>{t("applications.displayName")}</span><input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder={t("applications.namePlaceholder")} /></label><label className="field"><span>{t("applications.executable")}</span><input value={draft.executable} onChange={(event) => setDraft({ ...draft, executable: event.target.value })} placeholder={t("applications.executablePlaceholder")} /></label><label className="field"><span>{t("applications.category")}</span><select value={draft.category} onChange={(event) => setDraft({ ...draft, category: event.target.value as ApplicationRule["category"] })}><option value="browser">{t("applications.browser")}</option><option value="player">{t("applications.player")}</option><option value="game">{t("applications.game")}</option><option value="custom">{t("applications.custom")}</option></select></label><button className="primary-button modal-submit" onClick={add}>{t("applications.save")}</button></>}</Modal>}{showBatch && <BatchAllowApplications state={state} update={update} sessionToken={sessionToken} onClose={() => setShowBatch(false)} />}</div>;
+  return <div className="page-stack"><div className="privacy-banner"><AppWindow size={18} /><span><strong>{t("applications.bannerTitle")}</strong> {t("applications.bannerDescription")}</span></div><RepeatOffenderCard state={state} update={update} sessionToken={sessionToken} onBannedAllowed={onBannedAllowed} /><div className="page-actions"><button className="secondary-button" onClick={() => setShowBatch(true)}><ListChecks size={17} />{t("applications.batchAdd")}</button><button className="primary-button" onClick={() => setShowAdd(true)}><Plus size={17} />{t("applications.add")}</button></div><Card>{state.applications.map((rule) => { const name = localizedApplicationName(rule, t); return <div className="app-rule" key={rule.id}><div className="app-avatar"><AppWindow /></div><div className="app-main"><strong>{name}</strong><small>{localizedExecutable(rule, t)}</small></div><CategorySelect state={state} value={rule.category} disabled={isPlaceholderApplication(rule)} label={t("applications.categoryOf", { name })} onChange={(category) => patchRule(rule.id, { category })} /><select value={rule.action} aria-label={t("applications.actionOf", { name })} onChange={(event) => patchRule(rule.id, { action: event.target.value as ApplicationRule["action"] })}><option value="content_only">{t("applications.contentOnly")}</option><option value="block">{t("applications.block")}</option><option value="allow">{t("applications.allow")}</option></select><Toggle checked={rule.enabled} onChange={(enabled) => patchRule(rule.id, { enabled })} label={t("applications.enable", { name })} /></div>; })}</Card><ApplicationCategoriesCard state={state} update={update} sessionToken={sessionToken} />{showAdd && <Modal title={t("applications.modalTitle")} onClose={closeAdd}>{sourceToggle}{source === "installed" ? <InstalledApplicationPicker applications={installed} error={installedError} onPick={pick} /> : <><label className="field"><span>{t("applications.displayName")}</span><input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder={t("applications.namePlaceholder")} /></label><label className="field"><span>{t("applications.executable")}</span><input value={draft.executable} onChange={(event) => setDraft({ ...draft, executable: event.target.value })} placeholder={t("applications.executablePlaceholder")} /></label><label className="field"><span>{t("applications.category")}</span><CategorySelect state={state} value={draft.category} onChange={(category) => setDraft({ ...draft, category })} /></label><button className="primary-button modal-submit" onClick={add}>{t("applications.save")}</button></>}</Modal>}{showBatch && <BatchAllowApplications state={state} update={update} sessionToken={sessionToken} onClose={() => setShowBatch(false)} />}</div>;
 }
 
 const dayKeys: MessageKey[] = ["schedule.dayMon", "schedule.dayTue", "schedule.dayWed", "schedule.dayThu", "schedule.dayFri", "schedule.daySat", "schedule.daySun"];
 const dayNameKeys: MessageKey[] = ["schedule.dayNameMon", "schedule.dayNameTue", "schedule.dayNameWed", "schedule.dayNameThu", "schedule.dayNameFri", "schedule.dayNameSat", "schedule.dayNameSun"];
 const networkTargets: Array<{ value: NetworkTarget; label: MessageKey; hint: MessageKey }> = [
-  { value: "browsers", label: "schedule.targetBrowsers", hint: "schedule.targetBrowsersHint" },
+  { value: "categories", label: "schedule.targetCategories", hint: "schedule.targetCategoriesHint" },
   { value: "applications", label: "schedule.targetApplications", hint: "schedule.targetApplicationsHint" },
   { value: "all_network", label: "schedule.targetAllNetwork", hint: "schedule.targetAllNetworkHint" },
+];
+const scheduleActions: Array<{ value: ScheduleAction; label: MessageKey; hint: MessageKey }> = [
+  { value: "block_network", label: "schedule.actionBlockNetwork", hint: "schedule.actionBlockNetworkHint" },
+  { value: "block_launch", label: "schedule.actionBlockLaunch", hint: "schedule.actionBlockLaunchHint" },
 ];
 
 type ScheduleDraft = Omit<ScheduleRule, "id">;
 
 function newScheduleDraft(name: string): ScheduleDraft {
-  return { name, target: "browsers", applications: [], blocks: [0, 1, 2, 3, 4].map((day) => ({ day, start: "21:00", end: "07:00" })), enabled: true };
+  return { name, action: "block_network", target: "categories", categories: ["browser"], applications: [], blocks: [0, 1, 2, 3, 4].map((day) => ({ day, start: "21:00", end: "07:00" })), enabled: true };
 }
 
 function sortBlocks(blocks: ScheduleBlock[]): ScheduleBlock[] {
@@ -921,6 +1089,8 @@ function scheduleDraftError(draft: ScheduleDraft): MessageKey | undefined {
   if (!draft.blocks.length) return "schedule.errorNoBlocks";
   if (draft.blocks.some((block) => !block.start || !block.end || block.start === block.end)) return "schedule.errorEmptyBlock";
   if (draft.target === "applications" && !draft.applications.length) return "schedule.errorNoApplications";
+  if (draft.target === "categories" && !draft.categories.length) return "schedule.errorNoCategories";
+  if (draft.target === "all_network" && draft.action === "block_launch") return "schedule.errorLaunchAllNetwork";
   return undefined;
 }
 
@@ -994,8 +1164,15 @@ function Schedule({ state, update, sessionToken, onNetworkChange }: { state: Con
   const [application, setApplication] = useState("");
   const [error, setError] = useState("");
   const knownExecutables = useMemo(() => Array.from(new Set(state.applications.map((rule) => rule.executable).filter((value) => /\.exe$/i.test(value)))), [state.applications]);
-  const targetHint = networkTargets.find((target) => target.value === draft.target)?.hint ?? "schedule.targetBrowsersHint";
+  const targetHint = networkTargets.find((target) => target.value === draft.target)?.hint ?? "schedule.targetCategoriesHint";
+  const actionHint = scheduleActions.find((action) => action.value === draft.action)?.hint ?? "schedule.actionBlockNetworkHint";
+  // "Other" groups programs without a category, so it is not offered as a target.
+  const schedulableCategories = categoryOptions(state, t).filter((category) => category.id !== "custom");
+  const memberCount = (id: string) => state.applications.filter((rule) => rule.enabled && rule.category === id && !isPlaceholderApplication(rule)).length;
   function patch(next: Partial<ScheduleDraft>) { setDraft({ ...draft, ...next }); setError(""); }
+  // Terminating every non-system program is not supported.
+  function chooseAction(action: ScheduleAction) { patch(action === "block_launch" && draft.target === "all_network" ? { action, target: "categories" } : { action }); }
+  function toggleCategory(id: string, checked: boolean) { patch({ categories: checked ? [...draft.categories, id] : draft.categories.filter((value) => value !== id) }); }
   function patchBlock(index: number, next: Partial<ScheduleBlock>) { patch({ blocks: draft.blocks.map((block, position) => position === index ? { ...block, ...next } : block) }); }
   function addBlock(day: number) {
     // Start a new block where the day's latest same-day block ends; an
@@ -1019,12 +1196,16 @@ function Schedule({ state, update, sessionToken, onNetworkChange }: { state: Con
   function submit() {
     const problem = scheduleDraftError(draft);
     if (problem) { setError(t(problem)); return; }
-    const rule: ScheduleRule = { ...draft, name: draft.name.trim(), applications: draft.target === "applications" ? draft.applications : [], blocks: sortBlocks(draft.blocks), id: editingId ?? crypto.randomUUID() };
+    const rule: ScheduleRule = { ...draft, name: draft.name.trim(), categories: draft.target === "categories" ? draft.categories : [], applications: draft.target === "applications" ? draft.applications : [], blocks: sortBlocks(draft.blocks), id: editingId ?? crypto.randomUUID() };
     update({ ...state, schedules: editingId ? state.schedules.map((item) => item.id === editingId ? rule : item) : [...state.schedules, rule] });
     resetDraft();
   }
   function edit(rule: ScheduleRule) { const { id, ...rest } = rule; setDraft({ ...rest, blocks: sortBlocks(rest.blocks) }); setEditingId(id); setApplication(""); setError(""); }
-  function targetLabel(target: NetworkTarget) { return t(networkTargets.find((item) => item.value === target)?.label ?? "schedule.targetBrowsers"); }
+  function targetLabel(rule: ScheduleRule) {
+    if (rule.target === "categories") return rule.categories.map((id) => categoryName(state, id, t)).join("、");
+    return t(networkTargets.find((item) => item.value === rule.target)?.label ?? "schedule.targetApplications");
+  }
+  function actionLabel(action: ScheduleAction) { return t(scheduleActions.find((item) => item.value === action)?.label ?? "schedule.actionBlockNetwork"); }
   function blockLabel(block: ScheduleBlock) { return `${block.start}–${block.end}${block.end <= block.start ? ` (${t("schedule.nextDay")})` : ""}`; }
   return (
     <div className="page-stack">
@@ -1033,7 +1214,16 @@ function Schedule({ state, update, sessionToken, onNetworkChange }: { state: Con
         <Card>
           <div className="card-heading"><div><h2>{t(editingId ? "schedule.editTitle" : "schedule.newTitle")}</h2><p>{t("schedule.description")}</p></div></div>
           <label className="field"><span>{t("schedule.name")}</span><input value={draft.name} onChange={(event) => patch({ name: event.target.value })} /></label>
-          <label className="field"><span>{t("schedule.target")}</span><select value={draft.target} onChange={(event) => patch({ target: event.target.value as NetworkTarget })}>{networkTargets.map((target) => <option key={target.value} value={target.value}>{t(target.label)}</option>)}</select><small className="field-hint">{t(targetHint)}</small></label>
+          <label className="field"><span>{t("schedule.action")}</span><select value={draft.action} onChange={(event) => chooseAction(event.target.value as ScheduleAction)}>{scheduleActions.map((action) => <option key={action.value} value={action.value}>{t(action.label)}</option>)}</select><small className="field-hint">{t(actionHint)}</small></label>
+          <label className="field"><span>{t("schedule.target")}</span><select value={draft.target} onChange={(event) => patch({ target: event.target.value as NetworkTarget })}>{networkTargets.filter((target) => draft.action === "block_network" || target.value !== "all_network").map((target) => <option key={target.value} value={target.value}>{t(target.label)}</option>)}</select><small className="field-hint">{t(targetHint)}</small></label>
+          {draft.target === "categories" && (
+            <div className="field">
+              <span>{t("schedule.categories")}</span>
+              <div className="schedule-categories">
+                {schedulableCategories.map((category) => <label key={category.id} className={`schedule-category${draft.categories.includes(category.id) ? " checked" : ""}`}><input type="checkbox" checked={draft.categories.includes(category.id)} onChange={(event) => toggleCategory(category.id, event.target.checked)} /><span>{category.name}</span><small>{category.id === "browser" ? t("schedule.categoryBrowserCount", { count: memberCount(category.id) }) : t("categories.memberCount", { count: memberCount(category.id) })}</small></label>)}
+              </div>
+            </div>
+          )}
           {draft.target === "applications" && (
             <div className="field">
               <span>{t("schedule.applications")}</span>
@@ -1085,7 +1275,8 @@ function Schedule({ state, update, sessionToken, onNetworkChange }: { state: Con
                 <div key={rule.id} className={editingId === rule.id ? "editing" : ""}>
                   <div className="schedule-info">
                     <strong>{rule.name}</strong>
-                    <span className={`tag ${rule.target === "all_network" ? "block" : "sensitive"}`}>{targetLabel(rule.target)}</span>
+                    <span className={`tag ${rule.action === "block_launch" || rule.target === "all_network" ? "block" : "sensitive"}`}>{actionLabel(rule.action)}</span>
+                    <span className="tag">{targetLabel(rule)}</span>
                     {rule.target === "applications" && <small>{rule.applications.join(" · ")}</small>}
                     {dayKeys.map((key, day) => {
                       const blocks = rule.blocks.filter((block) => block.day === day);
@@ -1291,6 +1482,7 @@ function auditText(item: AuditItem, t: Translate): { title: string; detail: stri
     };
   }
   if (item.kind === "repeat_offender_banned") return { title: t("audit.banned", { app }), detail: executable ?? "" };
+  if (item.kind === "schedule_launch_blocked") return { title: t(item.outcome === "terminated" ? "audit.launchBlocked" : "audit.launchBlockFailed", { app }), detail: executable ?? "" };
   const kindKey = `auditKind.${item.kind}`;
   return { title: isMessageKey(kindKey) ? t(kindKey) : item.kind, detail: item.kind };
 }

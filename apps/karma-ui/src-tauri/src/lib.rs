@@ -95,6 +95,7 @@ fn parse_import_document(bytes: &[u8]) -> Option<serde_json::Value> {
     strip_runtime_state(&mut policy);
     // Reject backups whose policy cannot be enforced before the webview sees them.
     karma_policy::ContextPolicy::from_value(&policy).ok()?;
+    karma_policy::ApplicationCategories::from_value(&policy).ok()?;
     karma_policy::NetworkSchedulePolicy::from_value(&policy).ok()?;
     karma_policy::RepeatOffenderRule::from_value(&policy).ok()?;
     Some(policy)
@@ -185,6 +186,10 @@ mod tests {
         let invalid_schedule = br#"{"schema":"karma-policy-export","version":1,"exported_at_ms":1,
             "policy":{"schedules":[{"id":"s","name":"s","target":"browsers","blocks":[{"day":9,"start":"08:00","end":"09:00"}],"enabled":true}]}}"#;
         assert!(parse_import_document(invalid_schedule).is_none());
+        let duplicate_category =
+            br#"{"schema":"karma-policy-export","version":1,"exported_at_ms":1,
+            "policy":{"applicationCategories":[{"id":"browser","name":"Browsers again"}]}}"#;
+        assert!(parse_import_document(duplicate_category).is_none());
         let invalid_repeat_offender =
             br#"{"schema":"karma-policy-export","version":1,"exported_at_ms":1,
             "policy":{"repeatOffender":{"windowMinutes":20,"strikeLimit":100}}}"#;
@@ -376,6 +381,7 @@ mod local_backend {
             "keywords": [],
             "titleKeywordAdditions": [],
             "websites": [],
+            "applicationCategories": [],
             "applications": [
                 {
                     "id": "browser",
@@ -1133,6 +1139,7 @@ mod service_backend {
             "keywords": [],
             "titleKeywordAdditions": [],
             "websites": [],
+            "applicationCategories": [],
             "applications": [
                 {"id":"browser","name":"浏览器","executable":"受支持浏览器","category":"browser","action":"content_only","enabled":true},
                 {"id":"player","name":"播放器","executable":"受支持播放器","category":"player","action":"content_only","enabled":true}

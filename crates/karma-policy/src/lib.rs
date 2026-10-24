@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 mod application;
+mod application_category;
 mod application_policy;
 mod context;
 mod engine;
@@ -14,6 +15,10 @@ mod weakening;
 pub use application::{
     ApplicationFacts, ApplicationMatcher, ApplicationRule, RuleEffect, resolve_application,
 };
+pub use application_category::{
+    ApplicationCategories, ApplicationCategoryError, BROWSER_CATEGORY,
+    BUILT_IN_APPLICATION_CATEGORIES,
+};
 pub use application_policy::{
     ApplicationEffect, ApplicationPolicy, ApplicationPolicyError, allow_application,
     context_enforcement,
@@ -25,7 +30,8 @@ pub use context::{
 pub use engine::{DecisionEngine, EvaluationInput, EvaluationResult};
 pub use network_schedule::{
     KNOWN_BROWSER_EXECUTABLES, MINUTES_PER_DAY, MINUTES_PER_WEEK, NetworkRestriction,
-    NetworkScheduleError, NetworkSchedulePolicy, NetworkTarget, is_browser_executable,
+    NetworkScheduleError, NetworkSchedulePolicy, NetworkTarget, ScheduleAction,
+    is_browser_executable,
 };
 pub use remembered_title::{
     MAX_MISJUDGED_TITLES, MAX_REMEMBERED_TITLES, RememberedTitle, TitleReason, remember_title,

@@ -128,11 +128,12 @@ fn risk_threshold(policy: &Value) -> u64 {
 }
 
 /// Whether some minute of the week that `old` restricted is restricted less,
-/// or not at all, under `new`. Browser categories come from the application
+/// or not at all, under `new`. Category members come from the application
 /// rules, so those take part in the comparison as well.
 fn schedules_relaxed(old: &Value, new: &Value) -> bool {
     if old.get("schedules") == new.get("schedules")
         && old.get("applications") == new.get("applications")
+        && old.get("applicationCategories") == new.get("applicationCategories")
     {
         return false;
     }
@@ -149,25 +150,17 @@ fn schedules_relaxed(old: &Value, new: &Value) -> bool {
 
 /// Whether `after` blocks at least everything `before` blocks.
 fn covers(after: &NetworkRestriction, before: &NetworkRestriction) -> bool {
-    if after.block_all {
-        return true;
-    }
-    if before.block_all {
-        return false;
-    }
-    if before.block_browsers
-        && !(after.block_browsers
+    let network = after.block_all
+        || (!before.block_all
             && before
-                .browser_executables()
+                .network_executables
                 .iter()
-                .all(|browser| after.blocks_executable(browser)))
-    {
-        return false;
-    }
-    before
-        .executables
-        .iter()
-        .all(|executable| after.blocks_executable(executable))
+                .all(|executable| after.blocks_network(executable)));
+    network
+        && before
+            .launch_executables
+            .iter()
+            .all(|executable| after.blocks_launch(executable))
 }
 
 #[cfg(test)]
@@ -366,6 +359,55 @@ mod tests {
         assert_eq!(
             weakenings(|policy| policy["schedules"][0]["blocks"][0]["day"] = json!(1)),
             vec![Weakening::ScheduleRelaxed]
+        );
+    }
+
+    #[test]
+    fn category_schedules_compare_by_their_members() {
+        // The legacy browser target and the browser category are equivalent.
+        assert!(
+            weakenings(|policy| {
+                policy["schedules"][0]["target"] = json!("categories");
+                policy["schedules"][0]["categories"] = json!(["browser"]);
+            })
+            .is_empty()
+        );
+        let launch = |policy: &mut Value| {
+            policy["applicationCategories"] = json!([{"id": "cat-chat", "name": "聊天"}]);
+            policy["applications"].as_array_mut().unwrap().push(json!(
+                {"id":"w","name":"WeChat","executable":"wechat.exe","category":"cat-chat","action":"content_only","enabled":true}
+            ));
+            policy["schedules"].as_array_mut().unwrap().push(json!({
+                "id": "chat", "name": "chat", "action": "block_launch",
+                "target": "categories", "categories": ["cat-chat"],
+                "blocks": [{"day": 2, "start": "08:00", "end": "12:00"}],
+                "enabled": true
+            }));
+        };
+        assert!(weakenings(launch).is_empty());
+        let mut old = base();
+        launch(&mut old);
+        let relaxed = |change: fn(&mut Value)| {
+            let mut new = old.clone();
+            change(&mut new);
+            policy_weakenings(&old, &new)
+        };
+        // Moving a member out of a blocked category stops blocking it.
+        assert_eq!(
+            relaxed(|policy| policy["applications"][1]["category"] = json!("custom")),
+            vec![Weakening::ScheduleRelaxed]
+        );
+        // Network blocking does not cover terminating the application.
+        assert_eq!(
+            relaxed(|policy| policy["schedules"][1]["action"] = json!("block_network")),
+            vec![Weakening::ScheduleRelaxed]
+        );
+        // A new member blocks more.
+        assert!(
+            relaxed(|policy| policy["applications"].as_array_mut().unwrap().push(json!(
+                {"id":"q","name":"QQ","executable":"qq.exe","category":"cat-chat","action":"content_only","enabled":true}
+            )))
+            .is_empty()
         );
     }
 
