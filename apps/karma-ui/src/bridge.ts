@@ -409,6 +409,16 @@ export function assignApplicationsToCategory(rules: ApplicationRule[], applicati
   return next;
 }
 
+/** The category an observed executable is in: known browsers are always browsers; otherwise the rule for exactly that executable, or `custom`. */
+export function applicationCategoryOf(rules: ApplicationRule[], executable: string): string {
+  const target = pathComponents(executable);
+  if (knownBrowserExecutables.includes(target[target.length - 1] ?? "")) return "browser";
+  return rules.find((rule) => {
+    const components = pathComponents(rule.executable);
+    return components.length === target.length && trailingMatch(target, components);
+  })?.category ?? "custom";
+}
+
 /** Takes a rule out of its category: a "Content only" rule has no other effect and is removed; any other rule moves to `custom`. */
 export function removeFromCategory(rules: ApplicationRule[], ruleId: string): ApplicationRule[] {
   return rules.flatMap((rule) => rule.id !== ruleId ? [rule] : rule.action === "content_only" ? [] : [{ ...rule, category: "custom" }]);

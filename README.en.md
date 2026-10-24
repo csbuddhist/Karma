@@ -22,7 +22,7 @@ Karma is a local pornography-protection and digital-wellbeing application for Wi
 
 - **Application allowlists and blocklists**: an “Allow” application is never closed by image or title recognition (website blocklists still apply); an “Always block” application is closed whenever it reaches the foreground. Applications can be chosen from those installed on the computer or bulk-added.
 - **Repeat-closure limits**: a program closed 5 times within 20 minutes is banned for one hour (window and count are configurable); bans survive reboots.
-- **Application types**: besides the built-in Browser, Media player, Game, and Other categories, you can define new categories (such as “Chat apps”) and choose which programs belong to each, from the applications installed on the computer or by entering an executable.
+- **Application types**: besides the built-in Browser, Media player, Game, and Other categories, you can define new categories (such as “Chat apps”) and choose which programs belong to each, from the applications installed on the computer or by entering an executable. A closed application can also be put in a category directly from Audit Log → App closures.
 - **Blocking schedules**: any number of blocked periods per weekday (including across midnight), targeting one or more application categories, selected applications, or all networked applications. Each rule either **blocks network access** (enforced by Windows WFP filters) or **blocks running** (during the period, the protection Service ends a blocked application as soon as it runs; Windows components and Karma itself are exempt).
 
 ### Administration and Self-Protection

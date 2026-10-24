@@ -34,7 +34,6 @@ import {
   ListChecks,
   Lock,
   LockKeyhole,
-  LogOut,
   Monitor,
   Pencil,
   Power,
@@ -72,6 +71,8 @@ import {
   allowApplications,
   applicationEffect,
   assignApplicationsToCategory,
+  applicationCategoryOf,
+  knownBrowserExecutables,
   isPlaceholderApplication,
   removeFromCategory,
   listInstalledApplications,
@@ -1059,7 +1060,7 @@ function Applications({ state, update, sessionToken, onBannedAllowed }: { state:
     <button type="button" className={source === "manual" ? "active" : ""} aria-pressed={source === "manual"} onClick={() => setSource("manual")}><Pencil size={14} />{t("applications.sourceManual")}</button>
     <button type="button" className={source === "installed" ? "active" : ""} aria-pressed={source === "installed"} onClick={chooseInstalled}><Search size={14} />{t("applications.sourceInstalled")}</button>
   </div>;
-  return <div className="page-stack"><div className="privacy-banner"><AppWindow size={18} /><span><strong>{t("applications.bannerTitle")}</strong> {t("applications.bannerDescription")}</span></div><RepeatOffenderCard state={state} update={update} sessionToken={sessionToken} onBannedAllowed={onBannedAllowed} /><div className="page-actions"><button className="secondary-button" onClick={() => setShowBatch(true)}><ListChecks size={17} />{t("applications.batchAdd")}</button><button className="primary-button" onClick={() => setShowAdd(true)}><Plus size={17} />{t("applications.add")}</button></div><Card>{state.applications.map((rule) => { const name = localizedApplicationName(rule, t); return <div className="app-rule" key={rule.id}><div className="app-avatar"><AppWindow /></div><div className="app-main"><strong>{name}</strong><small>{localizedExecutable(rule, t)}</small></div><CategorySelect state={state} value={rule.category} disabled={isPlaceholderApplication(rule)} label={t("applications.categoryOf", { name })} onChange={(category) => patchRule(rule.id, { category })} /><select value={rule.action} aria-label={t("applications.actionOf", { name })} onChange={(event) => patchRule(rule.id, { action: event.target.value as ApplicationRule["action"] })}><option value="content_only">{t("applications.contentOnly")}</option><option value="block">{t("applications.block")}</option><option value="allow">{t("applications.allow")}</option></select><Toggle checked={rule.enabled} onChange={(enabled) => patchRule(rule.id, { enabled })} label={t("applications.enable", { name })} /></div>; })}</Card><ApplicationCategoriesCard state={state} update={update} sessionToken={sessionToken} />{showAdd && <Modal title={t("applications.modalTitle")} onClose={closeAdd}>{sourceToggle}{source === "installed" ? <InstalledApplicationPicker applications={installed} error={installedError} onPick={pick} /> : <><label className="field"><span>{t("applications.displayName")}</span><input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder={t("applications.namePlaceholder")} /></label><label className="field"><span>{t("applications.executable")}</span><input value={draft.executable} onChange={(event) => setDraft({ ...draft, executable: event.target.value })} placeholder={t("applications.executablePlaceholder")} /></label><label className="field"><span>{t("applications.category")}</span><CategorySelect state={state} value={draft.category} onChange={(category) => setDraft({ ...draft, category })} /></label><button className="primary-button modal-submit" onClick={add}>{t("applications.save")}</button></>}</Modal>}{showBatch && <BatchAllowApplications state={state} update={update} sessionToken={sessionToken} onClose={() => setShowBatch(false)} />}</div>;
+  return <div className="page-stack"><div className="privacy-banner"><AppWindow size={18} /><span><strong>{t("applications.bannerTitle")}</strong> {t("applications.bannerDescription")}</span></div><RepeatOffenderCard state={state} update={update} sessionToken={sessionToken} onBannedAllowed={onBannedAllowed} /><ApplicationCategoriesCard state={state} update={update} sessionToken={sessionToken} /><div className="page-actions"><button className="secondary-button" onClick={() => setShowBatch(true)}><ListChecks size={17} />{t("applications.batchAdd")}</button><button className="primary-button" onClick={() => setShowAdd(true)}><Plus size={17} />{t("applications.add")}</button></div><Card>{state.applications.map((rule) => { const name = localizedApplicationName(rule, t); return <div className="app-rule" key={rule.id}><div className="app-avatar"><AppWindow /></div><div className="app-main"><strong>{name}</strong><small>{localizedExecutable(rule, t)}</small></div><CategorySelect state={state} value={rule.category} disabled={isPlaceholderApplication(rule)} label={t("applications.categoryOf", { name })} onChange={(category) => patchRule(rule.id, { category })} /><select value={rule.action} aria-label={t("applications.actionOf", { name })} onChange={(event) => patchRule(rule.id, { action: event.target.value as ApplicationRule["action"] })}><option value="content_only">{t("applications.contentOnly")}</option><option value="block">{t("applications.block")}</option><option value="allow">{t("applications.allow")}</option></select><Toggle checked={rule.enabled} onChange={(enabled) => patchRule(rule.id, { enabled })} label={t("applications.enable", { name })} /></div>; })}</Card>{showAdd && <Modal title={t("applications.modalTitle")} onClose={closeAdd}>{sourceToggle}{source === "installed" ? <InstalledApplicationPicker applications={installed} error={installedError} onPick={pick} /> : <><label className="field"><span>{t("applications.displayName")}</span><input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder={t("applications.namePlaceholder")} /></label><label className="field"><span>{t("applications.executable")}</span><input value={draft.executable} onChange={(event) => setDraft({ ...draft, executable: event.target.value })} placeholder={t("applications.executablePlaceholder")} /></label><label className="field"><span>{t("applications.category")}</span><CategorySelect state={state} value={draft.category} onChange={(category) => setDraft({ ...draft, category })} /></label><button className="primary-button modal-submit" onClick={add}>{t("applications.save")}</button></>}</Modal>}{showBatch && <BatchAllowApplications state={state} update={update} sessionToken={sessionToken} onClose={() => setShowBatch(false)} />}</div>;
 }
 
 const dayKeys: MessageKey[] = ["schedule.dayMon", "schedule.dayTue", "schedule.dayWed", "schedule.dayThu", "schedule.dayFri", "schedule.daySat", "schedule.daySun"];
@@ -1510,20 +1511,36 @@ function useAuditDateTime(): Intl.DateTimeFormat {
   return useMemo(() => new Intl.DateTimeFormat(locale, { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }), [locale]);
 }
 
-function Audit({ state }: { state: ConsoleState }) {
+function Audit({ state, update }: { state: ConsoleState; update: (state: ConsoleState) => void }) {
   const { t } = useI18n();
   const dateTime = useAuditDateTime();
   const [closuresOnly, setClosuresOnly] = useState(false);
+  const [categoryNotice, setCategoryNotice] = useState<{ error: boolean; text: string }>();
+  // Puts a closed application in a category so a Blocking Schedule can block it with the rest.
+  function assignCategory(executable: string, category: string) {
+    const next = assignApplicationsToCategory(state.applications, [{ name: executableFileName(executable), executable }], category);
+    if (next.length > maxApplicationRules) { setCategoryNotice({ error: true, text: t("applications.batchTooMany", { max: maxApplicationRules }) }); return; }
+    update({ ...state, applications: next });
+    setCategoryNotice({ error: false, text: t("categories.pendingSave") });
+  }
+  function categoryControl(item: AuditItem) {
+    const executable = isClosure(item) ? auditExecutable(item) : undefined;
+    if (!executable || !executableFileName(executable).toLowerCase().endsWith(".exe")) return null;
+    const app = executableFileName(executable);
+    const knownBrowser = knownBrowserExecutables.includes(app.toLowerCase());
+    return <CategorySelect state={state} value={applicationCategoryOf(state.applications, executable)} disabled={knownBrowser} label={t("audit.categoryOf", { app })} onChange={(category) => assignCategory(executable, category)} />;
+  }
   const items = closuresOnly ? state.audit.filter(isClosure) : state.audit;
   const filter = <div className="toolbar audit-filter">
     <button className={closuresOnly ? "secondary-button" : "primary-button"} onClick={() => setClosuresOnly(false)}>{t("audit.filterAll")}</button>
     <button className={closuresOnly ? "primary-button" : "secondary-button"} onClick={() => setClosuresOnly(true)}><Ban size={16} />{t("audit.filterClosures")}</button>
   </div>;
+  const notice = categoryNotice && (categoryNotice.error ? <div className="form-error"><CircleAlert size={16} />{categoryNotice.text}</div> : <small className="field-hint">{categoryNotice.text}</small>);
   if (!state.audit.length) return <Card><EmptyState icon={<FileClock />} title={t("audit.emptyTitle")} text={t("audit.emptyDescription")} /></Card>;
-  return <Card>{filter}{items.length ? <div className="audit-list">{items.map((item) => {
+  return <Card>{filter}{notice}{items.length ? <div className="audit-list">{items.map((item) => {
     const level = auditLevel(item);
     const text = auditText(item, t);
-    return <div key={item.id}><span className={`audit-icon ${level}`}>{isClosure(item) ? <Ban /> : level === "success" ? <Check /> : <CircleAlert />}</span><div><strong>{text.title}</strong><small>{text.detail} · {dateTime.format(item.occurredAtMs)}</small></div><StatusPill tone={level === "success" ? "good" : level === "warning" ? "warn" : "danger"}>{t(level === "success" ? "audit.success" : level === "warning" ? "audit.warning" : "audit.denied")}</StatusPill></div>;
+    return <div key={item.id}><span className={`audit-icon ${level}`}>{isClosure(item) ? <Ban /> : level === "success" ? <Check /> : <CircleAlert />}</span><div><strong>{text.title}</strong><small>{text.detail} · {dateTime.format(item.occurredAtMs)}</small></div>{categoryControl(item)}<StatusPill tone={level === "success" ? "good" : level === "warning" ? "warn" : "danger"}>{t(level === "success" ? "audit.success" : level === "warning" ? "audit.warning" : "audit.denied")}</StatusPill></div>;
   })}</div> : <p className="learned-empty">{t("audit.closuresEmpty")}</p>}</Card>;
 }
 
@@ -1965,7 +1982,7 @@ function AppContent() {
     if (page === "applications") return <Applications state={state} update={update} sessionToken={sessionToken} onBannedAllowed={applicationAllowed} />;
     if (page === "schedule") return <Schedule state={state} update={update} sessionToken={sessionToken} onNetworkChange={updateNetwork} />;
     if (page === "evidence") return <Evidence state={state} update={update} sessionToken={sessionToken} onDeleted={evidenceDeleted} onApplicationAllowed={applicationAllowed} />;
-    if (page === "audit") return <Audit state={state} />;
+    if (page === "audit") return <Audit state={state} update={update} />;
     return <SettingsPage state={state} update={update} sessionToken={sessionToken} onRefresh={refreshAuthorization} />;
   }, [page, state, sessionToken, locale]);
 
@@ -1973,7 +1990,10 @@ function AppContent() {
   if (startupError) return <ServiceConnectionError detail={localizeError(startupError, t)} onRetry={() => void refreshAuthStatus()} />;
   if (authMode !== "unlocked") return <PasswordGate mode={authMode} onAuthenticated={authenticated} />;
   const meta = pageMeta[page];
-  return <div className="app-shell"><aside className="sidebar"><div className="brand-lockup sidebar-brand"><div className="brand-mark"><KarmaShieldIcon /></div><div><strong>KARMA</strong><span>{t("brand.short")}</span></div></div><nav>{navItems.map((item) => { const Icon = item.icon; return <button className={page === item.key ? "active" : ""} key={item.key} onClick={() => setPage(item.key)}><Icon size={19} /><span>{t(item.label)}</span>{item.key === "evidence" && state.evidence.length > 0 && <b>{state.evidence.length}</b>}</button>; })}</nav><div className="sidebar-foot"><div className="mini-health"><span className={state.serviceConnected ? "online" : "offline"} /><div><strong>{t(state.serviceConnected ? "sidebar.serviceOnline" : "sidebar.serviceOffline")}</strong><small>{t(state.agentConnected ? "sidebar.agentOnline" : "sidebar.consoleOnly")}</small></div></div><button onClick={signOut}><LogOut size={18} /><span>{t("common.lockConsole")}</span></button>{appVersion && <div className="sidebar-version">{t("sidebar.version", { version: appVersion })}</div>}</div></aside><main className="main"><header><div><span className="eyebrow">KARMA CONTROL</span><h1>{t(meta.title)}</h1><p>{t(meta.subtitle)}</p></div><div className="header-actions">{saveMessage && <span className="saved-message"><Check size={15} />{saveMessage}</span>}{saveError && <span className="save-error-message"><CircleAlert size={15} />{saveError}</span>}<button className="secondary-button" onClick={signOut}><Lock size={16} />{t("common.lock")}</button><button className="primary-button" disabled={!dirty || saving} onClick={save}><Save size={17} />{t(saving ? "common.saving" : "common.saveSettings")}</button></div></header><div className="page-content">{content}</div></main></div>;
+  const saveStatus = saveError ? <span className="sidebar-status error"><CircleAlert size={14} /><span>{saveError}</span></span>
+    : dirty && !saving ? <span className="sidebar-status unsaved"><CircleAlert size={14} /><span>{t("common.unsavedChanges")}</span></span>
+    : saveMessage ? <span className="sidebar-status saved"><Check size={14} /><span>{saveMessage}</span></span> : null;
+  return <div className="app-shell"><aside className="sidebar"><div className="brand-lockup sidebar-brand"><div className="brand-mark"><KarmaShieldIcon /></div><div><strong>KARMA</strong><span>{t("brand.short")}</span></div></div><nav>{navItems.map((item) => { const Icon = item.icon; return <button className={page === item.key ? "active" : ""} key={item.key} onClick={() => setPage(item.key)}><Icon size={19} /><span>{t(item.label)}</span>{item.key === "evidence" && state.evidence.length > 0 && <b>{state.evidence.length}</b>}</button>; })}<div className="sidebar-actions">{saveStatus}<button className={`primary-button sidebar-save${dirty ? " unsaved" : ""}`} disabled={!dirty || saving} title={dirty ? t("common.unsavedChanges") : undefined} onClick={save}><Save size={17} /><span>{t(saving ? "common.saving" : "common.saveSettings")}</span></button><button className="sidebar-lock" onClick={signOut}><Lock size={18} /><span>{t("common.lockConsole")}</span></button></div></nav><div className="sidebar-foot"><div className="mini-health"><span className={state.serviceConnected ? "online" : "offline"} /><div><strong>{t(state.serviceConnected ? "sidebar.serviceOnline" : "sidebar.serviceOffline")}</strong><small>{t(state.agentConnected ? "sidebar.agentOnline" : "sidebar.consoleOnly")}</small></div></div>{appVersion && <div className="sidebar-version">{t("sidebar.version", { version: appVersion })}</div>}</div></aside><main className="main"><header><div><span className="eyebrow">KARMA CONTROL</span><h1>{t(meta.title)}</h1><p>{t(meta.subtitle)}</p></div></header><div className="page-content">{content}</div></main></div>;
 }
 
 export function App() {
