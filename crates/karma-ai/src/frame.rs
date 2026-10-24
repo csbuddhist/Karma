@@ -4,6 +4,8 @@ use karma_domain::MonitorId;
 use thiserror::Error;
 use zeroize::Zeroizing;
 
+use crate::preparation::difference_hash;
+
 const BYTES_PER_PIXEL: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +56,38 @@ pub enum FrameError {
     BufferLengthMismatch { expected: usize, actual: usize },
     #[error("maximum frame edge must be non-zero")]
     InvalidMaximumEdge,
+    #[error("frame region lies outside the frame")]
+    RegionOutOfBounds,
+}
+
+/// A rectangle inside a prepared frame, in prepared-frame pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameRegion {
+    x: u32,
+    y: u32,
+    dimensions: FrameDimensions,
+}
+
+impl FrameRegion {
+    pub fn new(x: u32, y: u32, width: u32, height: u32) -> Result<Self, FrameError> {
+        Ok(Self {
+            x,
+            y,
+            dimensions: FrameDimensions::new(width, height)?,
+        })
+    }
+
+    pub fn x(self) -> u32 {
+        self.x
+    }
+
+    pub fn y(self) -> u32 {
+        self.y
+    }
+
+    pub fn dimensions(self) -> FrameDimensions {
+        self.dimensions
+    }
 }
 
 pub struct BgraFrame {
@@ -189,6 +223,40 @@ impl PreparedFrame {
     pub fn fingerprint(&self) -> u64 {
         self.fingerprint
     }
+
+    /// Copies `region` into a frame of its own, keeping the monitor and capture time.
+    pub fn crop(&self, region: FrameRegion) -> Result<PreparedFrame, FrameError> {
+        let dimensions = region.dimensions();
+        let right = region
+            .x()
+            .checked_add(dimensions.width())
+            .ok_or(FrameError::ArithmeticOverflow)?;
+        let bottom = region
+            .y()
+            .checked_add(dimensions.height())
+            .ok_or(FrameError::ArithmeticOverflow)?;
+        if right > self.dimensions.width() || bottom > self.dimensions.height() {
+            return Err(FrameError::RegionOutOfBounds);
+        }
+        let source_stride = self.dimensions.tight_stride()?;
+        let row_bytes = dimensions.tight_stride()?;
+        let left = region.x() as usize * BYTES_PER_PIXEL;
+        // The exact capacity keeps the copy in one allocation, so no unzeroized
+        // reallocation of pixel data is left behind.
+        let mut pixels = Vec::with_capacity(dimensions.tight_byte_len()?);
+        for row in region.y() as usize..bottom as usize {
+            let start = row * source_stride + left;
+            pixels.extend_from_slice(&self.pixels[start..start + row_bytes]);
+        }
+        let fingerprint = difference_hash(&pixels, dimensions)?;
+        Ok(Self::new(
+            self.monitor_id.clone(),
+            self.captured_at_ms,
+            dimensions,
+            pixels,
+            fingerprint,
+        ))
+    }
 }
 
 impl fmt::Debug for PreparedFrame {
@@ -230,6 +298,64 @@ mod tests {
             BgraFrame::new(MonitorId("m".into()), 1, dimensions, 8, vec![0; 15]),
             Err(FrameError::BufferLengthMismatch { .. })
         ));
+    }
+
+    fn prepared(width: u32, height: u32) -> PreparedFrame {
+        let dimensions = FrameDimensions::new(width, height).unwrap();
+        let pixels = (0..width * height)
+            .flat_map(|index| [index as u8, (index >> 8) as u8, 0, 255])
+            .collect();
+        crate::FramePreparer::new(crate::FramePreparationConfig::new(width.max(height)).unwrap())
+            .prepare(
+                BgraFrame::new(
+                    MonitorId("m".into()),
+                    9,
+                    dimensions,
+                    dimensions.tight_stride().unwrap(),
+                    pixels,
+                )
+                .unwrap(),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn crop_copies_the_region_rows_and_keeps_frame_identity() {
+        let frame = prepared(4, 3);
+
+        let cropped = frame.crop(FrameRegion::new(1, 1, 2, 2).unwrap()).unwrap();
+
+        assert_eq!(cropped.dimensions(), FrameDimensions::new(2, 2).unwrap());
+        assert_eq!(cropped.monitor_id(), &MonitorId("m".into()));
+        assert_eq!(cropped.captured_at_ms(), 9);
+        assert_eq!(
+            cropped.pixels(),
+            &[5, 0, 0, 255, 6, 0, 0, 255, 9, 0, 0, 255, 10, 0, 0, 255]
+        );
+    }
+
+    #[test]
+    fn crop_rejects_regions_outside_the_frame() {
+        let frame = prepared(4, 3);
+
+        assert_eq!(
+            frame
+                .crop(FrameRegion::new(3, 0, 2, 1).unwrap())
+                .unwrap_err(),
+            FrameError::RegionOutOfBounds
+        );
+        assert_eq!(
+            frame
+                .crop(FrameRegion::new(0, 1, 1, 3).unwrap())
+                .unwrap_err(),
+            FrameError::RegionOutOfBounds
+        );
+        assert_eq!(
+            frame
+                .crop(FrameRegion::new(u32::MAX, 0, 1, 1).unwrap())
+                .unwrap_err(),
+            FrameError::ArithmeticOverflow
+        );
     }
 
     #[test]

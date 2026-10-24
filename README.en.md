@@ -12,7 +12,7 @@ Karma is a local pornography-protection and digital-wellbeing application for Wi
 
 ### Content Recognition and Enforcement
 
-- **Real-time multi-display recognition**: each display is captured independently; a local ONNX model detects explicit images, and PP-OCRv5 models read Simplified Chinese, Traditional Chinese, and English text on screen.
+- **Real-time multi-display recognition**: each display is captured independently; a local ONNX model detects explicit images, and PP-OCRv5 models read Simplified Chinese, Traditional Chinese, and English text on screen. Continuously changing areas such as a video embedded in a web page or a shrunken player window are cropped and classified on their own, so they are not missed for covering only a small part of the screen.
 - **Precise source-application closing**: a match is attributed to the foreground window and process on that display, whose identity is rechecked before it is closed, so unrelated programs are left alone.
 - **Window-title keywords**: a built-in list of 2,543 explicit terms in 26 languages (1,592 strict terms always active; 951 terms prone to false positives off by default and can be turned on) and 1,809 adult video code prefixes (such as SSIS or JUY, matched when followed by 3–4 digits with an optional hyphen or space, as in SSIS-123, SSIS 123, or SSIS123; 1,642 strict and 167 prone to false positives), plus custom enforced, sensitive, and exemption keywords, and keywords added to the built-in list.
 - **Remembered window titles**: after image recognition closes a page, its title and host are remembered, and the same application showing the same title again is closed on sight. A misjudged title can be marked **Misjudged** so it is never remembered again.
@@ -86,6 +86,7 @@ Uninstall keeps local data by default. See the [Windows installation and testing
 - Network blocking, policy changes, and lifting a block early take effect within about 60 seconds; launch blocking ends a blocked application within about 2 seconds, losing its unsaved work.
 - If a browser hides its address bar or does not expose it to accessibility, Karma cannot identify the site for that window, but title and image recognition still work. Website rules match domains, not paths.
 - The console does not yet expose a complete audit-log reader.
+- Focused recognition covers only continuously changing areas: a small still image in a web page is still judged as part of the whole screen and can be missed when it covers too little of it.
 
 ### Limits of Tamper Resistance
 

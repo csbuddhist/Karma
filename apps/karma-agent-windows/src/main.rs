@@ -10,7 +10,7 @@ mod startup;
 #[cfg(windows)]
 use inference_consumer::{InferenceHealthHandle, ScheduledInferenceConsumer};
 #[cfg(windows)]
-use karma_ai::{OcrEngine, OcrMatchSummary, PreparedFrame, WordPack};
+use karma_ai::{MotionFocusClassifier, OcrEngine, OcrMatchSummary, PreparedFrame, WordPack};
 #[cfg(windows)]
 use karma_domain::OcrRisk;
 #[cfg(windows)]
@@ -523,7 +523,7 @@ fn run_windows(
                 None => (RuntimeOcrEngine::Unavailable, false),
             };
             let mut consumer = ScheduledInferenceConsumer::new(
-                model.create_classifier()?,
+                MotionFocusClassifier::new(model.create_classifier()?),
                 ocr_engine,
                 word_pack_source
                     .compile()
