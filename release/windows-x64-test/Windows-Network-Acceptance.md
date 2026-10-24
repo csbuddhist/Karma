@@ -28,6 +28,10 @@ Install the unsigned `v0.2.0` Windows x64 test build as administrator on Windows
 | Existing connections / 既有连接 | Start a TCP download/stream and UDP/QUIC flow before the block; after installation, verify traffic ceases on reauthorization; reconnect works after restore / 阻断前建立 TCP 下载/流和 UDP/QUIC 连接，安装规则后确认重新授权停止传输，恢复后可重新连接 |
 | Expiry, early restore, master switch / 到期、提前恢复、总开关 | Schedule end, correct-password restore and disabling protection remove blocks by the next poll; wrong password does not lift them; reenable/next block reapplies / 时段结束、正确密码恢复及关闭保护在下一轮询撤销规则，错误密码不放行，重新启用或下次时段重新阻断 |
 | Cross-midnight and local zone / 跨午夜与本地时区 | Block begins/ends according to local time, including Sunday→Monday / 按本地时间开始及结束，覆盖周日跨周一 |
+| Custom category / 自定义类别 | A network rule targeting a custom category blocks its enabled members only; moving a member out needs the super password once set / 针对自定义类别的禁止联网规则只阻断其已启用成员；设置超级密码后，移出成员需要超级密码 |
+| Block launch / 禁止启动 | A running member of a launch-blocked category, in any signed-in session, ends within about 2 seconds of the block starting; relaunching ends it again; one `schedule_launch_blocked` audit row per executable per period; its network access is unaffected / 被禁止启动类别中的运行中成员（任一登录会话）在时段开始约 2 秒内被结束，重新打开再次被结束；每个可执行文件每个时段一条 `schedule_launch_blocked` 审计；联网不受影响 |
+| Launch exemptions / 启动豁免 | Listing `notepad.exe`, `explorer.exe`, or `karma-ui.exe` never ends the copies under `C:\Windows` or the Karma install directory; a copy of `notepad.exe` elsewhere is ended / 列入 `notepad.exe`、`explorer.exe` 或 `karma-ui.exe` 时，`C:\Windows` 和 Karma 安装目录中的程序不会被结束；其他位置的 `notepad.exe` 副本会被结束 |
+| Launch restore / 启动解除 | Early lift, schedule end, and disabling protection let the program run again; an elevated or protected process that refuses termination is audited as `failed` / 提前解除、时段结束和关闭保护后程序可再次运行；拒绝终止的提升或受保护进程记为 `failed` |
 
 ## Lifecycle and failures / 生命周期与失败
 
