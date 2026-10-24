@@ -537,6 +537,9 @@ function useLanguageLabel(): (language: string) => string {
   }, [locale]);
 }
 
+/** Group key for video codes; it cannot collide with an ISO 639 language code. */
+const codeGroupKey = "#code";
+
 type BuiltInEntry = { term: string; category: TitleKeywordCategory; match: TitleKeywordMatch; confidence: BundledKeyword["confidence"] | "added"; addition?: TitleKeywordAddition };
 
 function BuiltInKeywordsCard({ state, update }: { state: ConsoleState; update: (state: ConsoleState) => void }) {
@@ -557,19 +560,23 @@ function BuiltInKeywordsCard({ state, update }: { state: ConsoleState; update: (
   const categoryLabel = (value: TitleKeywordCategory) => t(value === "organ" ? "keywords.categoryOrgan" : value === "code" ? "keywords.categoryCode" : "keywords.categorySexual");
   const matchLabel = (value: TitleKeywordMatch) => t(value === "word" ? "keywords.matchWord" : value === "substring" ? "keywords.matchSubstring" : value === "prefix" ? "keywords.matchPrefix" : "keywords.matchCode");
   const confidenceLabel = (value: BuiltInEntry["confidence"]) => t(value === "strict" ? "keywords.confidenceStrict" : value === "ambiguous" ? "keywords.confidenceAmbiguous" : "keywords.confidenceAdded");
-  const languages = useMemo(() => [...bundledLanguages, ...additions.map((item) => item.language).filter((code) => !bundledLanguages.includes(code))], [additions]);
+  const languages = useMemo(() => [...bundledLanguages, ...additions.filter((item) => item.category !== "code").map((item) => item.language).filter((code) => !bundledLanguages.includes(code))], [additions]);
   const groups = useMemo(() => {
     const needle = normalizeKeyword(search);
     const keep = (entry: BuiltInEntry) => (!needle || normalizeKeyword(entry.term).includes(needle)) && (!categoryFilter || entry.category === categoryFilter) && (!confidenceFilter || entry.confidence === confidenceFilter);
-    return languages
+    const addedEntry = (item: TitleKeywordAddition): BuiltInEntry => ({ term: item.term, category: item.category, match: item.match, confidence: "added", addition: item });
+    // Video codes match in titles of any language, so they form one group of their own.
+    const languageGroups = languages
       .filter((code) => !languageFilter || code === languageFilter)
       .map((code) => {
-        const added: BuiltInEntry[] = additions.filter((item) => item.language === code).map((item) => ({ term: item.term, category: item.category, match: item.match, confidence: "added", addition: item }));
-        const bundled: BuiltInEntry[] = bundledKeywordGroups.find((group) => group.language === code)?.keywords ?? [];
+        const added = additions.filter((item) => item.language === code && item.category !== "code").map(addedEntry);
+        const bundled: BuiltInEntry[] = (bundledKeywordGroups.find((group) => group.language === code)?.keywords ?? []).filter((entry) => entry.category !== "code");
         const all = [...added, ...bundled];
-        return { language: code, total: all.length, entries: all.filter(keep) };
-      })
-      .filter((group) => group.entries.length > 0);
+        return { key: code, total: all.length, entries: all.filter(keep) };
+      });
+    const codes: BuiltInEntry[] = [...additions.filter((item) => item.category === "code").map(addedEntry), ...bundledKeywordGroups.flatMap((group) => group.keywords.filter((entry) => entry.category === "code"))];
+    const codeGroups = languageFilter ? [] : [{ key: codeGroupKey, total: codes.length, entries: codes.filter(keep) }];
+    return [...languageGroups, ...codeGroups].filter((group) => group.entries.length > 0);
   }, [languages, additions, search, languageFilter, categoryFilter, confidenceFilter]);
   const filtering = Boolean(search.trim() || languageFilter || categoryFilter || confidenceFilter);
   function chooseLanguage(code: string) { setLanguage(code); if (category !== "code") setMatch(defaultMatchFor(code)); setAddError(""); }
@@ -586,7 +593,7 @@ function BuiltInKeywordsCard({ state, update }: { state: ConsoleState; update: (
     update({ ...state, titleKeywordAdditions: [...additions, { id: crypto.randomUUID(), term: trimmed, language, category, match }] });
     setTerm("");
     setAddError("");
-    setExpanded((current) => new Set(current).add(language));
+    setExpanded((current) => new Set(current).add(category === "code" ? codeGroupKey : language));
   }
   function remove(id: string) { update({ ...state, titleKeywordAdditions: additions.filter((item) => item.id !== id) }); }
   function toggleGroup(code: string) { setExpanded((current) => { const next = new Set(current); if (next.has(code)) next.delete(code); else next.add(code); return next; }); }
@@ -607,7 +614,7 @@ function BuiltInKeywordsCard({ state, update }: { state: ConsoleState; update: (
       <strong>{t("keywords.additionTitle")}</strong>
       <div className="toolbar">
         <div className="input-with-icon"><Plus size={17} /><input placeholder={t("keywords.additionPlaceholder")} value={term} maxLength={maxTitleKeywordTermChars * 2} onChange={(event) => { setTerm(event.target.value); setAddError(""); }} onKeyDown={(event) => event.key === "Enter" && add()} /></div>
-        <select aria-label={t("keywords.language")} value={language} onChange={(event) => chooseLanguage(event.target.value)}>{bundledLanguages.map((code) => <option value={code} key={code}>{languageLabel(code)}</option>)}</select>
+        {category !== "code" && <select aria-label={t("keywords.language")} value={language} onChange={(event) => chooseLanguage(event.target.value)}>{bundledLanguages.map((code) => <option value={code} key={code}>{languageLabel(code)}</option>)}</select>}
         <select aria-label={t("keywords.category")} value={category} onChange={(event) => chooseCategory(event.target.value as TitleKeywordCategory)}><option value="sexual">{categoryLabel("sexual")}</option><option value="organ">{categoryLabel("organ")}</option><option value="code">{categoryLabel("code")}</option></select>
         <select aria-label={t("keywords.matchMode")} value={match} disabled={category === "code"} onChange={(event) => { setMatch(event.target.value as TitleKeywordMatch); setAddError(""); }}>{category === "code" ? <option value="code">{matchLabel("code")}</option> : <><option value="word">{matchLabel("word")}</option><option value="substring">{matchLabel("substring")}</option><option value="prefix">{matchLabel("prefix")}</option></>}</select>
         <button className="primary-button" onClick={add}><Plus size={17} />{t("keywords.additionAdd")}</button>
@@ -624,20 +631,20 @@ function BuiltInKeywordsCard({ state, update }: { state: ConsoleState; update: (
     {groups.length ? (
       <div className="keyword-groups">
         {groups.map((group) => {
-          const open = filtering || expanded.has(group.language);
-          return <div className="keyword-group" key={group.language}>
-            <button type="button" className="keyword-group-head" aria-expanded={open} onClick={() => toggleGroup(group.language)}>
+          const open = filtering || expanded.has(group.key);
+          return <div className="keyword-group" key={group.key}>
+            <button type="button" className="keyword-group-head" aria-expanded={open} onClick={() => toggleGroup(group.key)}>
               {open ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-              <strong>{languageLabel(group.language)}</strong>
+              <strong>{group.key === codeGroupKey ? categoryLabel("code") : languageLabel(group.key)}</strong>
               <small>{filtering ? t("keywords.filteredCount", { shown: group.entries.length, total: group.total }) : t("keywords.count", { count: group.total })}</small>
             </button>
             {open && <div className="keyword-chips">{group.entries.map((entry) => {
               const inactive = entry.confidence === "ambiguous" && !ambiguousEnabled;
-              const detail = `${categoryLabel(entry.category)} · ${matchLabel(entry.match)} · ${confidenceLabel(entry.confidence)}${inactive ? ` · ${t("keywords.notEnforced")}` : ""}`;
+              const detail = `${categoryLabel(entry.category)} · ${matchLabel(entry.match)} · ${confidenceLabel(entry.confidence)}${inactive ? ` · ${t("keywords.notEnforced")}` : ""}${entry.match === "code" ? `\n${t("keywords.codeChipHint", { prefix: entry.term })}` : ""}`;
               return <span className={`keyword-chip ${entry.confidence}${inactive ? " inactive" : ""}`} key={entry.addition?.id ?? `${entry.match}:${entry.term}`} title={detail}>
                 {entry.term}
                 {entry.match === "prefix" && <i>…</i>}
-                {entry.match === "code" && <i>-123</i>}
+                {entry.match === "code" && <i>-###</i>}
                 {entry.addition && <button type="button" aria-label={t("keywords.delete", { name: entry.term })} onClick={() => remove(entry.addition!.id)}><X size={12} /></button>}
               </span>;
             })}</div>}

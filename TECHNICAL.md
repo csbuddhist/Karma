@@ -147,6 +147,9 @@ The unified engine supports:
   custom high-risk and sensitive keywords also join matching, and exemption keywords suppress
   matches. The console keyword page filters the built-in list by language, category, and
   confidence, and supports adding, editing, enabling, deleting, and searching custom keywords.
+  Video codes match titles in any language, so the page lists them in a group of their own, each
+  prefix followed by `-###` for its digits with matching examples on hover; adding a code does not
+  ask for a language.
 - The video-code category always uses code-pattern matching: the title must contain the prefix
   (not directly preceded by an ASCII letter or digit), an optional hyphen (one space is allowed on
   either side of it, or between prefix and digits when there is no hyphen), and exactly three or
