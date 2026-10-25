@@ -115,6 +115,29 @@ fn started_at_ms(seconds: u64, microseconds: u64) -> Result<i64, ProcessError> {
         .ok_or(ProcessError::InvalidProcess)
 }
 
+/// The pids of every running process, or an empty list when the kernel
+/// refuses to list them.
+pub fn all_pids() -> Vec<u32> {
+    // SAFETY: a null buffer asks only for the current number of processes.
+    let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+    let Ok(count) = usize::try_from(count) else {
+        return Vec::new();
+    };
+    // Leave room for processes started between the two calls.
+    let mut pids = vec![0 as libc::pid_t; count.saturating_add(64)];
+    let size = libc::c_int::try_from(pids.len() * size_of::<libc::pid_t>()).unwrap_or(0);
+    // SAFETY: `pids` is writable for `size` bytes.
+    let listed = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), size) };
+    let Ok(listed) = usize::try_from(listed) else {
+        return Vec::new();
+    };
+    pids.truncate(listed.min(pids.len()));
+    pids.into_iter()
+        .filter_map(|pid| u32::try_from(pid).ok())
+        .filter(|&pid| pid > 0)
+        .collect()
+}
+
 /// The audit token of the process instance currently running as `pid`.
 /// Requires root for processes of other users.
 pub fn audit_token(pid: u32) -> Result<AuditToken, ProcessError> {
@@ -196,6 +219,13 @@ mod tests {
             inspect(pid).unwrap().unwrap().started_at_ms,
             info.started_at_ms
         );
+    }
+
+    #[test]
+    fn the_process_list_includes_the_current_process_and_launchd() {
+        let pids = all_pids();
+        assert!(pids.contains(&std::process::id()));
+        assert!(pids.contains(&1));
     }
 
     #[test]

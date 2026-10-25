@@ -18,6 +18,7 @@ karma-disposition = { path = "../../crates/karma-disposition" }
 karma-ipc = { path = "../../crates/karma-ipc" }
 karma-macos = { path = "../../crates/karma-macos" }
 karma-macos-ipc = { path = "../../crates/karma-macos-ipc" }
+karma-policy = { path = "../../crates/karma-policy" }
 karma-service-core = { path = "../../crates/karma-service-core" }
 rand = "0.8"
 thiserror.workspace = true
@@ -27,4 +28,5 @@ zeroize = "1"
 libc = "0.2"
 
 [dev-dependencies]
+serde_json.workspace = true
 tempfile = "3"

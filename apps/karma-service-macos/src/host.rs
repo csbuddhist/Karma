@@ -23,7 +23,7 @@ use zeroize::Zeroizing;
 
 use crate::{
     disposition::{self, DispositionScope},
-    maintenance,
+    launch_enforcement, maintenance,
     peer::{Peer, PeerPolicy},
     storage, watchdog,
 };
@@ -31,6 +31,8 @@ use crate::{
 const MAX_CONCURRENT_CONNECTIONS: usize = 8;
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
 const SOCKET_DIRECTORY_MODE: u32 = 0o755;
+/// Where `install.sh` puts the console.
+const CONSOLE_APPLICATION: &str = "/Applications/Karma Family Protection.app";
 
 #[derive(Debug, Error)]
 pub enum HostError {
@@ -40,6 +42,8 @@ pub enum HostError {
     Core,
     #[error("the service socket could not be created")]
     Socket,
+    #[error("a service worker could not be started")]
+    Worker,
 }
 
 /// Where the service keeps its state and whom it trusts.
@@ -95,7 +99,7 @@ pub fn serve(config: HostConfig) -> Result<(), HostError> {
 
     let shutdown = Arc::new(AtomicBool::new(false));
     let last_heartbeat_ms = Arc::new(AtomicI64::new(0));
-    let protected_executables = config
+    let protected_executables: Vec<PathBuf> = config
         .peers
         .agent_executable
         .iter()
@@ -107,6 +111,12 @@ pub fn serve(config: HostConfig) -> Result<(), HostError> {
         )
         .collect();
     let maintenance = maintenance::start(Arc::clone(&core), Arc::clone(&shutdown));
+    let launch_worker = launch_enforcement::start(
+        Arc::clone(&core),
+        karma_directories(&protected_executables),
+        Arc::clone(&shutdown),
+    )
+    .map_err(|_| HostError::Worker)?;
     let shared = Arc::new(Shared {
         core,
         peers: config.peers,
@@ -165,11 +175,29 @@ pub fn serve(config: HostConfig) -> Result<(), HostError> {
         }
     }
     let _ = maintenance.join();
+    let _ = launch_worker.join();
     if let Some(watchdog) = watchdog {
         let _ = watchdog.join();
     }
     let _ = fs::remove_file(&config.socket_path);
     Ok(())
+}
+
+/// Karma's programs, which a launch-blocking schedule never ends: the
+/// directory holding this service (the install directory), the console, and
+/// the agent.
+fn karma_directories(protected_executables: &[PathBuf]) -> Vec<PathBuf> {
+    protected_executables
+        .iter()
+        .cloned()
+        .chain(
+            std::env::current_exe()
+                .and_then(|path| path.canonicalize())
+                .ok()
+                .and_then(|path| path.parent().map(Path::to_path_buf)),
+        )
+        .chain([PathBuf::from(CONSOLE_APPLICATION)])
+        .collect()
 }
 
 fn handle_connection(

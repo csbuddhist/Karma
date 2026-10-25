@@ -2,8 +2,9 @@
 //!
 //! The network schedule is still evaluated every minute, so its audit trail,
 //! early restores, and uninstall waiting periods behave as on Windows. Until
-//! the Network Extension filter exists, an active block is recorded as an
-//! enforcement failure instead of being reported as applied. Update requests
+//! the Network Extension filter exists, an active network block is recorded as
+//! an enforcement failure instead of being reported as applied. Launch
+//! blocking is enforced by `launch_enforcement`. Update requests
 //! are answered with a failure for the same reason, so the console never
 //! waits on a check that will not run.
 
@@ -46,7 +47,8 @@ fn evaluate_schedule(core: &ServiceCore) {
     let now_ms = unix_time_ms();
     match core.network_enforcement(now_ms) {
         Ok(enforcement) => {
-            let enforced = !enforcement.status.restricted;
+            let restriction = &enforcement.restriction;
+            let enforced = !restriction.block_all && restriction.network_executables.is_empty();
             if core.record_network_enforcement(enforced, now_ms).is_err() {
                 eprintln!("status=degraded component=network_schedule error=storage_unavailable");
             }

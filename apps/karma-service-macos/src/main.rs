@@ -11,6 +11,8 @@ mod disposition;
 #[cfg(target_os = "macos")]
 mod host;
 #[cfg(target_os = "macos")]
+mod launch_enforcement;
+#[cfg(target_os = "macos")]
 mod maintenance;
 #[cfg(target_os = "macos")]
 mod peer;
