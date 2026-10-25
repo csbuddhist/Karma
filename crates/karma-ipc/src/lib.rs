@@ -25,7 +25,7 @@ pub const MAX_EVIDENCE_BATCH: usize = 200;
 pub const CRITICAL_EVIDENCE_RISK_MILLIS: u16 = 950;
 /// The product version this build reports and updates from. Kept equal to the
 /// console's `tauri.conf.json` version by the installer contract test.
-pub const PRODUCT_VERSION: &str = "0.3.17";
+pub const PRODUCT_VERSION: &str = "0.3.18";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
