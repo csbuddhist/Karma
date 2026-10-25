@@ -47,7 +47,7 @@ An optional supervisor-held super password (at least 10 characters, different fr
 
 Automatic installation defaults on (`updates.autoInstall`), with Check now in the console. v0.2.4+ setup uses `Update-Karma.ps1 -ExpectedVersion <new-version>` for in-place upgrade with the administrator password. The service validates Ed25519 signatures, per-file SHA-256 and a strictly higher version in SYSTEM-only staging, replaces files with rollback, and keeps protection services registered. v0.2.3 and earlier retain legacy uninstall/reinstall. `release-manifest.json` includes `SHA256SUMS`; its signature is `release-manifest.json.sig`. EXEs and setup still lack Authenticode signatures and may trigger SmartScreen.
 
-**真机验收待完成 / Hardware acceptance pending**：[Windows-Update-Acceptance.md](Windows-Update-Acceptance.md)。用户态保护无法阻止懂技术的管理员夺取所有权或使用安全模式；建议监督人保管 Windows 管理员账户，日常用标准账户。User-mode protection cannot stop a technical administrator taking ownership or using safe mode; keep the Windows administrator account with the supervisor and use a standard account daily.
+**真机验收待完成 / Hardware acceptance pending**：[Windows-Update-Acceptance.md](Windows-Update-Acceptance.md)。建议监督人保管 Windows 管理员账户，日常用标准账户。Keep the Windows administrator account with the supervisor and use a standard account daily.
 
 ## v0.2.3 / Version 0.2.3
 
@@ -89,9 +89,9 @@ Adds weekly multi-block schedules with Windows WFP enforcement for browsers, sel
 
 ## v0.1.14 / Version 0.1.14
 
-新增配套守护服务 KarmaGuardian 与 KarmaService 每 5 秒互相守护：任一被“结束任务”强杀都会被服务控制管理器与对端在数秒内重新拉起。安装时收紧两个服务的 ACL（移除管理员的停止/暂停/更改配置权限）并收紧其注册表键 ACL（仅 SYSTEM 可写、管理员只读），因此在没有 Karma 密码时，services.msc / 任务管理器的“停止”、“启动类型=禁用”以及 regedit 改 `Start`/服务权限都会被拒绝。这面向“仅会使用 GUI 的非专业管理员”；懂终端命令、夺取所有权、恢复环境或离线修改的人仍可绕过。
+新增配套守护服务 KarmaGuardian 与 KarmaService 每 5 秒互相守护：任一被“结束任务”强杀都会被服务控制管理器与对端在数秒内重新拉起。安装时收紧两个服务的 ACL（移除管理员的停止/暂停/更改配置权限）并收紧其注册表键 ACL（仅 SYSTEM 可写、管理员只读），因此在没有 Karma 密码时，services.msc / 任务管理器的“停止”、“启动类型=禁用”以及 regedit 改 `Start`/服务权限都会被拒绝。
 
-Adds a companion KarmaGuardian service that mutually guards KarmaService every 5 seconds: an End-task kill of either is restarted within seconds by the Service Control Manager and the peer. Installation hardens both service ACLs (removing the administrator's stop/pause/change-config rights) and their registry-key ACLs (SYSTEM-writable, administrator read-only), so without the Karma password the Stop action in Services.msc / Task Manager, the "Startup type = Disabled" change, and regedit edits to `Start` / the service permissions are all denied. This targets a non-technical, GUI-only administrator; terminal commands, taking ownership, the recovery environment, or offline edits can still bypass it.
+Adds a companion KarmaGuardian service that mutually guards KarmaService every 5 seconds: an End-task kill of either is restarted within seconds by the Service Control Manager and the peer. Installation hardens both service ACLs (removing the administrator's stop/pause/change-config rights) and their registry-key ACLs (SYSTEM-writable, administrator read-only), so without the Karma password the Stop action in Services.msc / Task Manager, the "Startup type = Disabled" change, and regedit edits to `Start` / the service permissions are all denied.
 
 ## v0.1.13 / Version 0.1.13
 
