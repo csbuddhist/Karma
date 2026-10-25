@@ -32,7 +32,7 @@ Karma is a local pornography-protection and digital-wellbeing application for Wi
 - **Tamper resistance**: two Windows services guard each other; even administrators cannot stop or disable them from Services, Task Manager, or Registry Editor, and a killed service is restarted automatically.
 - **Delayed uninstall**: uninstall needs the super password, or a request followed by a 72-hour wait and the administrator password.
 - **Event evidence (optional)**: matched frames are stored encrypted and viewing an original requires the password again; a misattributed source application can be allowlisted in one click.
-- **Secure automatic updates**: GitHub Releases are checked periodically, and only developer-signed packages with matching hashes and a strictly higher version are accepted; downgrades are refused.
+- **Secure automatic updates**: GitHub Releases and their Gitee mirror are checked periodically, and only developer-signed packages with matching hashes and a strictly higher version are accepted; downgrades are refused.
 - **Policy backups**: export policy to JSON; imports are validated for structure and correctness.
 - **Chinese and English UI**: the console language is switchable, and the console starts in the background at sign-in by default; closing its window only hides it while protection continues.
 
@@ -56,7 +56,7 @@ Because setup and the executables are not yet Authenticode-signed, Windows Smart
 
 ### Upgrading
 
-- **Automatic updates**: enabled by default (`updates.autoInstall`); the service checks GitHub Releases periodically, and the console can check immediately.
+- **Automatic updates**: enabled by default (`updates.autoInstall`); the service periodically checks GitHub Releases and the [Gitee mirror](https://gitee.com/karmakarma/Karma/releases), takes the newer version of the two, and falls back to the other source if a download fails; the console can check immediately.
 - **Manual upgrade**: with v0.2.4 or later installed, run the new installer and enter the administrator password to upgrade in place. The service verifies the signature and file hashes, then replaces files with rollback; protection services stay registered throughout. The console is closed during the upgrade, and the service reopens it for the signed-in user once the upgrade finishes (or rolls back).
 - v0.2.3 and earlier must be uninstalled with password authorization before installing the new version.
 

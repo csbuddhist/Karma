@@ -35,8 +35,6 @@ pub const MANIFEST_FILE: &str = "release-manifest.json";
 pub const SIGNATURE_FILE: &str = "release-manifest.json.sig";
 /// Directory inside the release ZIP that holds the bundle.
 pub const BUNDLE_PREFIX: &str = "windows-x64-test/";
-pub const RELEASES_URL: &str = "https://api.github.com/repos/csbuddhist/Karma/releases?per_page=30";
-const DOWNLOAD_URL_PREFIX: &str = "https://github.com/csbuddhist/Karma/releases/download/";
 const MAX_MANIFEST_BYTES: u64 = 256 * 1024;
 const MAX_SIGNATURE_BYTES: u64 = 1024;
 const MAX_FILES: usize = 512;
@@ -576,37 +574,82 @@ fn read_zip_entry(
     Ok(bytes)
 }
 
+/// A fixed repository that publishes signed Karma releases. Gitee mirrors
+/// GitHub releases and assets, so either serves the same signed bundle; the
+/// Ed25519 manifest, not the host, authenticates what is installed.
+/// 发布签名版本的固定仓库。Gitee 同步 GitHub 的发布与附件，两者提供同一签名包；
+/// 安装内容由 Ed25519 清单而非下载来源认证。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReleaseSource {
+    GitHub,
+    Gitee,
+}
+
+impl ReleaseSource {
+    /// Every source, in the order downloads are attempted.
+    pub const ALL: [Self; 2] = [Self::GitHub, Self::Gitee];
+
+    pub fn releases_url(self) -> &'static str {
+        match self {
+            Self::GitHub => "https://api.github.com/repos/csbuddhist/Karma/releases?per_page=30",
+            Self::Gitee => {
+                "https://gitee.com/api/v5/repos/karmakarma/Karma/releases?page=1&per_page=30&direction=desc"
+            }
+        }
+    }
+
+    fn download_prefix(self) -> &'static str {
+        match self {
+            Self::GitHub => "https://github.com/csbuddhist/Karma/releases/download/",
+            Self::Gitee => "https://gitee.com/karmakarma/Karma/releases/download/",
+        }
+    }
+
+    fn bundle_url(self, version: Version) -> String {
+        format!(
+            "{}v{version}/Karma-windows-x64-test-v{version}.zip",
+            self.download_prefix()
+        )
+    }
+}
+
 /// A downloadable release newer than the installed version.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseAsset {
     pub version: Version,
+    pub source: ReleaseSource,
     pub download_url: String,
-    pub size: u64,
+    /// Exact byte count when the source announces it. Gitee's release API
+    /// omits sizes, so those downloads are only bounded by the global cap.
+    pub size: Option<u64>,
 }
 
+/// The release fields GitHub and Gitee share.
 #[derive(Deserialize)]
-struct GitHubRelease {
+struct PublishedRelease {
     tag_name: String,
     #[serde(default)]
     draft: bool,
     #[serde(default)]
-    assets: Vec<GitHubAsset>,
+    assets: Vec<PublishedAsset>,
 }
 
 #[derive(Deserialize)]
-struct GitHubAsset {
+struct PublishedAsset {
     name: String,
     browser_download_url: String,
-    size: u64,
+    #[serde(default)]
+    size: Option<u64>,
 }
 
 /// Picks the newest non-draft release (prereleases included) that is newer
-/// than `installed` and carries the Windows bundle ZIP from this repository.
+/// than `installed` and carries the Windows bundle ZIP from `source`.
 pub fn select_release(
+    source: ReleaseSource,
     releases_json: &[u8],
     installed: Version,
 ) -> Result<Option<ReleaseAsset>, UpdateError> {
-    let releases: Vec<GitHubRelease> =
+    let releases: Vec<PublishedRelease> =
         serde_json::from_slice(releases_json).map_err(|_| UpdateError::Network)?;
     Ok(releases
         .into_iter()
@@ -619,13 +662,14 @@ pub fn select_release(
                 .into_iter()
                 .find(|asset| {
                     asset.name == expected_name
-                        && asset.browser_download_url
-                            == format!("{DOWNLOAD_URL_PREFIX}v{version}/{expected_name}")
-                        && asset.size > 0
-                        && asset.size <= MAX_DOWNLOAD_BYTES
+                        && asset.browser_download_url == source.bundle_url(version)
+                        && asset
+                            .size
+                            .is_none_or(|size| size > 0 && size <= MAX_DOWNLOAD_BYTES)
                 })
                 .map(|asset| ReleaseAsset {
                     version,
+                    source,
                     download_url: asset.browser_download_url,
                     size: asset.size,
                 })
@@ -642,14 +686,15 @@ fn http_agent(installed: Version) -> ureq::Agent {
         .build()
 }
 
-/// Lists releases through the GitHub REST API.
-pub fn fetch_releases(installed: Version) -> Result<Vec<u8>, UpdateError> {
-    let response = http_agent(installed)
-        .get(RELEASES_URL)
-        .set("Accept", "application/vnd.github+json")
-        .timeout(HTTP_TIMEOUT)
-        .call()
-        .map_err(|_| UpdateError::Network)?;
+/// Lists releases through the source's REST API.
+pub fn fetch_releases(source: ReleaseSource, installed: Version) -> Result<Vec<u8>, UpdateError> {
+    let mut request = http_agent(installed)
+        .get(source.releases_url())
+        .timeout(HTTP_TIMEOUT);
+    if source == ReleaseSource::GitHub {
+        request = request.set("Accept", "application/vnd.github+json");
+    }
+    let response = request.call().map_err(|_| UpdateError::Network)?;
     let mut body = Vec::new();
     response
         .into_reader()
@@ -662,42 +707,71 @@ pub fn fetch_releases(installed: Version) -> Result<Vec<u8>, UpdateError> {
     Ok(body)
 }
 
-/// Downloads `asset` to `destination`, rejecting more bytes than announced.
+/// Asks every source for releases and returns each source's newest bundle
+/// newer than `installed`, newest version first and then in source order, so
+/// a caller can fall back to a mirror holding the same version. Fails only
+/// when no source answered.
+/// 查询所有来源，返回各来源中比已安装版本新的最新安装包：版本高者在前，同版本按来源
+/// 顺序排列，便于下载失败时改用镜像；只有所有来源都无响应时才返回错误。
+pub fn find_updates(installed: Version) -> Result<Vec<ReleaseAsset>, UpdateError> {
+    let mut answered = false;
+    let mut found = Vec::new();
+    for source in ReleaseSource::ALL {
+        let selected = fetch_releases(source, installed)
+            .and_then(|releases| select_release(source, &releases, installed));
+        if let Ok(asset) = selected {
+            answered = true;
+            found.extend(asset);
+        }
+    }
+    if !answered {
+        return Err(UpdateError::Network);
+    }
+    order_updates(&mut found);
+    Ok(found)
+}
+
+fn order_updates(assets: &mut [ReleaseAsset]) {
+    let rank = |source: ReleaseSource| ReleaseSource::ALL.iter().position(|item| *item == source);
+    assets.sort_by(|left, right| {
+        right
+            .version
+            .cmp(&left.version)
+            .then_with(|| rank(left.source).cmp(&rank(right.source)))
+    });
+}
+
+/// Downloads `asset` to `destination`, rejecting more bytes than announced
+/// or, when no size is announced, more than the download cap.
 pub fn download(
     asset: &ReleaseAsset,
     destination: &Path,
     installed: Version,
 ) -> Result<(), UpdateError> {
-    let expected = format!(
-        "{DOWNLOAD_URL_PREFIX}v{}/Karma-windows-x64-test-v{}.zip",
-        asset.version, asset.version
-    );
-    if asset.download_url != expected
-        || asset.size == 0
-        || asset.size > MAX_DOWNLOAD_BYTES
+    if asset.download_url != asset.source.bundle_url(asset.version)
+        || asset
+            .size
+            .is_some_and(|size| size == 0 || size > MAX_DOWNLOAD_BYTES)
         || asset.version <= installed
     {
         return Err(UpdateError::Network);
     }
+    let limit = asset.size.unwrap_or(MAX_DOWNLOAD_BYTES);
     reject_links(destination)?;
     let response = http_agent(installed)
         .get(&asset.download_url)
         .call()
         .map_err(|_| UpdateError::Network)?;
     let mut output = File::create(destination)?;
-    let result = hash_reader(
-        &mut response.into_reader(),
-        &mut output,
-        asset.size.min(MAX_DOWNLOAD_BYTES),
-    )
-    .and_then(|(_, written)| {
-        output.sync_all()?;
-        if written == asset.size {
-            Ok(())
-        } else {
-            Err(UpdateError::Network)
-        }
-    });
+    let result =
+        hash_reader(&mut response.into_reader(), &mut output, limit).and_then(|(_, written)| {
+            output.sync_all()?;
+            if asset.size.is_none_or(|size| written == size) && written > 0 {
+                Ok(())
+            } else {
+                Err(UpdateError::Network)
+            }
+        });
     if result.is_err() {
         drop(output);
         let _ = fs::remove_file(destination);
@@ -1082,12 +1156,24 @@ mod tests {
         ));
         let asset = ReleaseAsset {
             version: "0.2.4".parse().unwrap(),
+            source: ReleaseSource::GitHub,
             download_url: "https://github.com/csbuddhist/Karma/releases/download/other/evil.zip"
                 .into(),
-            size: 10,
+            size: Some(10),
         };
         assert!(matches!(
             download(&asset, Path::new("must-not-be-created.zip"), INSTALLED),
+            Err(UpdateError::Network)
+        ));
+        // A URL of the other repository never passes for this source.
+        let crossed = ReleaseAsset {
+            source: ReleaseSource::Gitee,
+            download_url: ReleaseSource::GitHub.bundle_url(asset.version),
+            size: None,
+            ..asset
+        };
+        assert!(matches!(
+            download(&crossed, Path::new("must-not-be-created.zip"), INSTALLED),
             Err(UpdateError::Network)
         ));
     }
@@ -1116,16 +1202,81 @@ mod tests {
         ]))
         .unwrap();
         assert_eq!(
-            select_release(&releases, INSTALLED).unwrap(),
+            select_release(ReleaseSource::GitHub, &releases, INSTALLED).unwrap(),
             Some(ReleaseAsset {
                 version: "0.2.4".parse().unwrap(),
+                source: ReleaseSource::GitHub,
                 download_url: "https://github.com/csbuddhist/Karma/releases/download/v0.2.4/Karma-windows-x64-test-v0.2.4.zip".into(),
-                size: 42,
+                size: Some(42),
             })
         );
         assert_eq!(
-            select_release(&releases, "0.2.4".parse().unwrap()).unwrap(),
+            select_release(ReleaseSource::GitHub, &releases, "0.2.4".parse().unwrap()).unwrap(),
             None
+        );
+        // GitHub download URLs are not Gitee assets.
+        assert_eq!(
+            select_release(ReleaseSource::Gitee, &releases, INSTALLED).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn gitee_releases_without_sizes_are_selected_from_the_mirror_only() {
+        let releases = serde_json::to_vec(&serde_json::json!([
+            {"tag_name": "v0.2.6", "prerelease": true, "assets": [
+                {"name": "Karma-windows-x64-test-v0.2.6.zip",
+                 "browser_download_url": "https://gitee.com/someone/Karma/releases/download/v0.2.6/Karma-windows-x64-test-v0.2.6.zip"}
+            ]},
+            {"tag_name": "v0.2.5", "prerelease": true, "assets": [
+                {"name": "Karma-windows-x64-test-v0.2.5-setup.exe",
+                 "browser_download_url": "https://gitee.com/karmakarma/Karma/releases/download/v0.2.5/Karma-windows-x64-test-v0.2.5-setup.exe"},
+                {"name": "Karma-windows-x64-test-v0.2.5.zip",
+                 "browser_download_url": "https://gitee.com/karmakarma/Karma/releases/download/v0.2.5/Karma-windows-x64-test-v0.2.5.zip"},
+                {"name": "v0.2.5.zip",
+                 "browser_download_url": "https://gitee.com/karmakarma/Karma/archive/refs/tags/v0.2.5.zip"}
+            ]}
+        ]))
+        .unwrap();
+        assert_eq!(
+            select_release(ReleaseSource::Gitee, &releases, INSTALLED).unwrap(),
+            Some(ReleaseAsset {
+                version: "0.2.5".parse().unwrap(),
+                source: ReleaseSource::Gitee,
+                download_url: "https://gitee.com/karmakarma/Karma/releases/download/v0.2.5/Karma-windows-x64-test-v0.2.5.zip".into(),
+                size: None,
+            })
+        );
+        assert_eq!(
+            select_release(ReleaseSource::GitHub, &releases, INSTALLED).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn newer_versions_come_first_and_github_precedes_its_mirror() {
+        let asset = |version: &str, source: ReleaseSource| {
+            let version: Version = version.parse().unwrap();
+            ReleaseAsset {
+                version,
+                source,
+                download_url: source.bundle_url(version),
+                size: None,
+            }
+        };
+        let mut found = vec![
+            asset("0.2.5", ReleaseSource::Gitee),
+            asset("0.2.4", ReleaseSource::GitHub),
+            asset("0.2.5", ReleaseSource::GitHub),
+        ];
+        order_updates(&mut found);
+        assert_eq!(
+            found,
+            vec![
+                asset("0.2.5", ReleaseSource::GitHub),
+                asset("0.2.5", ReleaseSource::Gitee),
+                asset("0.2.4", ReleaseSource::GitHub),
+            ]
         );
     }
 

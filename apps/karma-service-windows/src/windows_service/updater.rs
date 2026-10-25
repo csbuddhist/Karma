@@ -560,35 +560,36 @@ fn stage_and_handoff(
             &RELEASE_PUBLIC_KEY,
         )?
     } else {
-        let releases = karma_update::fetch_releases(installed())?;
-        let Some(asset) = karma_update::select_release(&releases, installed())? else {
+        // GitHub and its Gitee mirror are both checked; the newest version
+        // wins, and a failed download falls back to the other source.
+        // 同时检查 GitHub 与 Gitee 镜像：取最高版本，下载失败时改用另一来源。
+        let updates = karma_update::find_updates(installed())?;
+        let Some(newest) = updates.first().map(|asset| asset.version) else {
             status(core, UpdatePhase::UpToDate, None, None)?;
             return Ok(false);
         };
         if !apply {
-            status(
-                core,
-                UpdatePhase::Idle,
-                Some(asset.version.to_string()),
-                None,
-            )?;
+            status(core, UpdatePhase::Idle, Some(newest.to_string()), None)?;
             return Ok(false);
         }
         status(
             core,
             UpdatePhase::Downloading,
-            Some(asset.version.to_string()),
+            Some(newest.to_string()),
             None,
         )?;
-        let download = root.join("release.zip");
-        reject_links(&download)?;
-        karma_update::download(&asset, &download, installed())?;
-        let update = karma_update::stage_zip(&download, &staged, installed(), &RELEASE_PUBLIC_KEY)?;
-        fs::remove_file(download)?;
-        if update.manifest.version() != asset.version {
-            return Err(UpdateError::InvalidManifest);
+        let mut staged_update = Err(UpdateError::Network);
+        for asset in updates.iter().filter(|asset| asset.version == newest) {
+            if shutdown.load(Ordering::Acquire) {
+                return Err(UpdateError::UnsafePath);
+            }
+            staged_update = download_and_stage(&root, &staged, asset);
+            match &staged_update {
+                Ok(_) => break,
+                Err(error) => eprintln!("Karma update from {:?}: {error}", asset.source),
+            }
         }
-        update
+        staged_update?
     };
     for name in [
         "KarmaService.exe",
@@ -645,6 +646,26 @@ fn stage_and_handoff(
         return Err(error);
     }
     Ok(true)
+}
+
+fn download_and_stage(
+    root: &Path,
+    staged: &Path,
+    asset: &karma_update::ReleaseAsset,
+) -> Result<karma_update::StagedUpdate, UpdateError> {
+    let download = root.join("release.zip");
+    reject_links(&download)?;
+    let result = karma_update::download(asset, &download, installed()).and_then(|()| {
+        karma_update::stage_zip(&download, staged, installed(), &RELEASE_PUBLIC_KEY)
+    });
+    if download.exists() {
+        fs::remove_file(&download)?;
+    }
+    let update = result?;
+    if update.manifest.version() != asset.version {
+        return Err(UpdateError::InvalidManifest);
+    }
+    Ok(update)
 }
 
 fn old_signed_files(install: &Path) -> Vec<String> {

@@ -447,6 +447,7 @@ Security requirements:
 - Sign every EXE, DLL, MSI, and driver with a trusted code-signing certificate.
 - Configure the service SID, directory ACLs, named-pipe DACLs, and recovery policy during installation.
 - Uninstallation requires UAC and super-password or delayed administrator authorization; in MDM mode, the device policy determines whether removal is permitted.
+- In the current test builds, the service queries the release lists of GitHub (`csbuddhist/Karma`) and its Gitee mirror (`karmakarma/Karma`) every 6 hours (first one minute after startup), accepting only `Karma-windows-x64-test-v<version>.zip` at each fixed repository's download URL. The newest version across both wins; the same version is downloaded from GitHub first and from Gitee if the download or verification fails. Gitee's API omits asset sizes, so its downloads are bounded only by the 512 MiB cap. Whatever the source, packages must pass the Ed25519 manifest signature, per-file hashes, and the strictly-newer version check.
 
 ### macOS
 
