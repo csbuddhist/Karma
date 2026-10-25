@@ -25,7 +25,7 @@ pub use application_policy::{
 };
 pub use context::{
     ContextPolicy, ContextPolicyError, ContextVerdict, KeywordMatch, MAX_TITLE_KEYWORD_ADDITIONS,
-    MAX_TITLE_KEYWORD_TERM_CHARS, WebsiteRule, WebsiteRuleAction,
+    MAX_TITLE_KEYWORD_TERM_CHARS, WebsiteRule, WebsiteRuleAction, masked_title_keyword,
 };
 pub use engine::{DecisionEngine, EvaluationInput, EvaluationResult};
 pub use network_schedule::{

@@ -180,6 +180,8 @@ export interface AuditDetail {
   reason?: ClosureReason;
   riskMillis?: number;
   thresholdMillis?: number;
+  /** Matched title keyword, masked by the Service, for `title_keyword` closures. */
+  keyword?: string;
 }
 
 export interface AuditItem {

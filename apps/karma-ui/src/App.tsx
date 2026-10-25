@@ -1479,13 +1479,15 @@ function auditExecutable(item: AuditItem): string | undefined {
   return undefined;
 }
 
-function closureReasonText(detail: AuditDetail | null, t: Translate, withScore = true): string {
+/** Without `detailed`, closures with the same reason share one label, such as in ban summaries. */
+function closureReasonText(detail: AuditDetail | null, t: Translate, detailed = true): string {
   const reason = detail?.reason;
   if (!reason) return t("audit.reason.unrecorded");
   if (reason === "image") {
-    if (!withScore || detail.riskMillis === undefined || detail.thresholdMillis === undefined) return t("audit.reason.imageUnknown");
+    if (!detailed || detail.riskMillis === undefined || detail.thresholdMillis === undefined) return t("audit.reason.imageUnknown");
     return t("audit.reason.image", { risk: Math.round(detail.riskMillis / 10), threshold: Math.round(detail.thresholdMillis / 10) });
   }
+  if (reason === "title_keyword" && detailed && detail.keyword) return t("audit.reason.titleKeywordMatched", { keyword: detail.keyword });
   const key = `audit.reason.${reason}`;
   return isMessageKey(key) ? t(key) : reason;
 }

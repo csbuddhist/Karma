@@ -138,7 +138,7 @@ The table describes authorization, not a guarantee that an operation can succeed
 - Screen content is processed in memory only; it is neither uploaded nor saved in its original form, and runtime logs never contain recognized text, scores, titles, URLs, or screen content.
 - No root certificate is installed, HTTPS is not decrypted, and keyboard input and full URLs are not recorded.
 - The following are stored encrypted on the device (AES-256-GCM, keys protected by Windows DPAPI): matched frames that reach the immediate-enforcement threshold when “Save event evidence” is on; and, for the remembered-title feature (on by default), window titles, hosts, and executable paths (at most 5,000). Deleting an evidence image does not remove a remembered title.
-- Audit logs record only structured data such as time, application, enforcement result, and reason codes — never screen content or window titles.
+- Audit logs record only structured data such as time, application, enforcement result, and reason codes — never screen content or window titles. A closure caused by a window-title keyword also records the matched keyword, with its last Chinese character or last two English characters replaced by `*` (the first letter is kept).
 
 ### Lawful Use
 

@@ -308,23 +308,33 @@ impl ContextPolicy {
         }) {
             return ContextVerdict::Blocklisted;
         }
-        if self.title_matching_enabled {
-            let normalized_title = normalize_text(window_title);
-            let words = title_words(&normalized_title);
-            let is_exempt = self
-                .exempt_keywords
-                .iter()
-                .any(|keyword| phrase_matches(&normalized_title, &words, keyword));
-            if !is_exempt
-                && !normalized_title.is_empty()
-                && self
-                    .enforced_keywords()
-                    .any(|keyword| keyword.matches(&normalized_title, &words))
-            {
-                return ContextVerdict::TitleKeyword;
-            }
+        if self.matched_title_keyword(window_title).is_some() {
+            return ContextVerdict::TitleKeyword;
         }
         ContextVerdict::None
+    }
+
+    /// The normalized enforced keyword that `window_title` matches first, or
+    /// `None` when title matching is disabled or an exemption matches.
+    pub fn matched_title_keyword(&self, window_title: &str) -> Option<&str> {
+        if !self.title_matching_enabled {
+            return None;
+        }
+        let normalized_title = normalize_text(window_title);
+        if normalized_title.is_empty() {
+            return None;
+        }
+        let words = title_words(&normalized_title);
+        if self
+            .exempt_keywords
+            .iter()
+            .any(|keyword| phrase_matches(&normalized_title, &words, keyword))
+        {
+            return None;
+        }
+        self.enforced_keywords()
+            .find(|keyword| keyword.matches(&normalized_title, &words))
+            .map(|keyword| keyword.term.as_str())
     }
 
     /// Normalized hosts of the enabled website rules with `action`.
@@ -560,14 +570,41 @@ fn host_matches(observed: &str, rule: &str) -> bool {
                 .is_some_and(|prefix| prefix.ends_with('.')))
 }
 
+/// `keyword` with its last CJK character or, without one, its last two
+/// letters or digits replaced by `*`. The first letter stays visible unless
+/// it is the only one, so short keywords remain recognizable.
+pub fn masked_title_keyword(keyword: &str) -> String {
+    let mut characters: Vec<char> = keyword.chars().collect();
+    if let Some(last_cjk) = characters.iter().rposition(|&character| is_cjk(character)) {
+        characters[last_cjk] = '*';
+    } else {
+        let letters: Vec<usize> = characters
+            .iter()
+            .enumerate()
+            .filter(|(_, character)| character.is_alphanumeric())
+            .map(|(index, _)| index)
+            .collect();
+        let masked = match letters.len() {
+            0 | 1 => letters.len(),
+            count => (count - 1).min(2),
+        };
+        for &index in &letters[letters.len() - masked..] {
+            characters[index] = '*';
+        }
+    }
+    characters.into_iter().collect()
+}
+
 fn contains_cjk(value: &str) -> bool {
-    value.chars().any(|character| {
-        matches!(character,
-            '\u{3400}'..='\u{4dbf}'
-                | '\u{4e00}'..='\u{9fff}'
-                | '\u{3040}'..='\u{30ff}'
-                | '\u{31f0}'..='\u{31ff}')
-    })
+    value.chars().any(is_cjk)
+}
+
+fn is_cjk(character: char) -> bool {
+    matches!(character,
+        '\u{3400}'..='\u{4dbf}'
+            | '\u{4e00}'..='\u{9fff}'
+            | '\u{3040}'..='\u{30ff}'
+            | '\u{31f0}'..='\u{31ff}')
 }
 
 #[cfg(test)]
@@ -935,6 +972,50 @@ mod tests {
             policy.evaluate(None, "ordinary title"),
             ContextVerdict::None
         );
+    }
+
+    #[test]
+    fn matched_title_keyword_reports_the_normalized_keyword_unless_exempt() {
+        let policy = ContextPolicy::from_value(&json!({
+            "recognition": {"titleMatchingEnabled": true},
+            "keywords": [
+                {"id":"custom","phrase":"Hot Video","category":"high_risk","enabled":true},
+                {"id":"exempt","phrase":"医学教育","category":"exemption","enabled":true}
+            ]
+        }))
+        .unwrap();
+        assert_eq!(
+            policy.matched_title_keyword("New HOT video - Browser"),
+            Some("hot video")
+        );
+        assert_eq!(policy.matched_title_keyword("Weather forecast"), None);
+        assert_eq!(policy.matched_title_keyword("色情内容医学教育课件"), None);
+
+        let disabled = ContextPolicy::from_value(&json!({
+            "recognition": {"titleMatchingEnabled": false},
+            "keywords": [
+                {"id":"custom","phrase":"Hot Video","category":"high_risk","enabled":true}
+            ]
+        }))
+        .unwrap();
+        assert_eq!(disabled.matched_title_keyword("hot video"), None);
+    }
+
+    #[test]
+    fn masked_title_keyword_hides_the_last_cjk_character_or_two_letters() {
+        assert_eq!(masked_title_keyword("赌球直播"), "赌球直*");
+        assert_eq!(masked_title_keyword("色情"), "色*");
+        assert_eq!(masked_title_keyword("av女优"), "av女*");
+        assert_eq!(masked_title_keyword("エロ動画"), "エロ動*");
+        assert_eq!(masked_title_keyword("hot video"), "hot vid**");
+        assert_eq!(masked_title_keyword("ssis"), "ss**");
+        assert_eq!(masked_title_keyword("порно"), "пор**");
+        assert_eq!(masked_title_keyword("abc"), "a**");
+        assert_eq!(masked_title_keyword("r18"), "r**");
+        // The first letter stays visible unless it is the only one.
+        assert_eq!(masked_title_keyword("ab"), "a*");
+        assert_eq!(masked_title_keyword("x"), "*");
+        assert_eq!(masked_title_keyword("屄"), "*");
     }
 
     #[test]

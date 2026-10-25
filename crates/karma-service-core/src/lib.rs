@@ -149,7 +149,7 @@ struct PendingDisposition {
 /// What required a disposition. Every closure counts toward a
 /// repeat-offender ban, but only image closures can carry evidence, so the
 /// audit log records the reason for each one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum ClosureReason {
     Image {
         risk_millis: u16,
@@ -157,18 +157,21 @@ enum ClosureReason {
     },
     RememberedTitle,
     BlockedWebsite,
-    TitleKeyword,
+    /// `keyword` is the matched keyword, masked for the audit log.
+    TitleKeyword {
+        keyword: String,
+    },
     BlockedApplication,
     RepeatOffenderBan,
 }
 
 impl ClosureReason {
-    fn code(self) -> &'static str {
+    fn code(&self) -> &'static str {
         match self {
             Self::Image { .. } => "image",
             Self::RememberedTitle => "remembered_title",
             Self::BlockedWebsite => "blocked_website",
-            Self::TitleKeyword => "title_keyword",
+            Self::TitleKeyword { .. } => "title_keyword",
             Self::BlockedApplication => "blocked_application",
             Self::RepeatOffenderBan => "repeat_offender_ban",
         }
@@ -862,7 +865,12 @@ impl ServiceCore {
                 }
                 let reason = match verdict {
                     ContextVerdict::Blocklisted => ClosureReason::BlockedWebsite,
-                    ContextVerdict::TitleKeyword => ClosureReason::TitleKeyword,
+                    ContextVerdict::TitleKeyword => ClosureReason::TitleKeyword {
+                        keyword: context_policy
+                            .matched_title_keyword(&observation.window_title)
+                            .map(karma_policy::masked_title_keyword)
+                            .unwrap_or_default(),
+                    },
                     ContextVerdict::Allowlisted | ContextVerdict::None => {
                         ClosureReason::BlockedApplication
                     }
@@ -1972,13 +1980,16 @@ fn record_disposition(
         "executable": normalize_executable(&executable_name),
         "reason": reason.code(),
     });
-    if let ClosureReason::Image {
-        risk_millis,
-        threshold_millis,
-    } = reason
-    {
-        detail["riskMillis"] = json!(risk_millis);
-        detail["thresholdMillis"] = json!(threshold_millis);
+    match reason {
+        ClosureReason::Image {
+            risk_millis,
+            threshold_millis,
+        } => {
+            detail["riskMillis"] = json!(risk_millis);
+            detail["thresholdMillis"] = json!(threshold_millis);
+        }
+        ClosureReason::TitleKeyword { keyword } => detail["keyword"] = json!(keyword),
+        _ => {}
     }
     audit_detail(runtime, now_ms, "application_disposition", outcome, &detail);
     if matches!(
@@ -3128,6 +3139,53 @@ mod tests {
                 .detail
                 .as_deref()
                 .is_none_or(|detail| !detail.contains("hot video"))
+        }));
+    }
+
+    #[test]
+    fn title_keyword_closures_are_audited_with_the_masked_keyword() {
+        let directory = tempfile::tempdir().unwrap();
+        let core = open_core(directory.path(), 0);
+        configure_policy(
+            &core,
+            json!({
+                "protectionEnabled": true,
+                "recognition": {"imageEnabled": false, "titleMatchingEnabled": true},
+                "keywords": [
+                    {"id":"custom-1","phrase":"赌球直播","category":"high_risk","enabled":true}
+                ]
+            }),
+        );
+        let observation = context_observation_at("keyword", 2_000, "今晚赌球直播现场", None, 42);
+        assert!(matches!(
+            submit_context_at(&core, "keyword-nonce", observation, 2_001),
+            ServiceResult::DispositionRequired { .. }
+        ));
+        core.record_disposition(
+            &DispositionReport {
+                event_id: "keyword".into(),
+                process_id: 42,
+                started_at_ms: 77,
+                outcome: DispositionOutcome::Terminated,
+            },
+            2_002,
+        )
+        .unwrap();
+
+        let entries = list_audit(&core, "keyword", 3_000);
+        assert_eq!(
+            closure_details(&entries),
+            vec![json!({
+                "executable": r"c:\browser\chrome.exe",
+                "reason": "title_keyword",
+                "keyword": "赌球直*"
+            })]
+        );
+        assert!(entries.iter().all(|entry| {
+            entry
+                .detail
+                .as_deref()
+                .is_none_or(|detail| !detail.contains("赌球直播") && !detail.contains("今晚"))
         }));
     }
 
