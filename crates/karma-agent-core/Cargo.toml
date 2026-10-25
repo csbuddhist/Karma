@@ -17,6 +17,7 @@ rand = "0.8"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+url = "=2.5.4"
 zeroize = "1"
 
 [dev-dependencies]

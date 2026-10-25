@@ -10,7 +10,6 @@ karma-agent-core = { path = "../karma-agent-core" }
 karma-ai = { path = "../karma-ai" }
 karma-domain = { path = "../karma-domain" }
 thiserror.workspace = true
-url = "=2.5.4"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62.2", features = [

@@ -1,5 +1,8 @@
 use std::{ffi::c_void, marker::PhantomData, rc::Rc};
 
+use karma_agent_core::address_bar::{
+    ADDRESS_BAR_MINIMUM_SCORE, address_bar_score, host_from_address_bar_value,
+};
 use karma_domain::MonitorId;
 use thiserror::Error;
 use windows::{
@@ -280,52 +283,7 @@ pub fn browser_host(handle: isize) -> Option<String> {
             best = Some((score, host));
         }
     }
-    best.and_then(|(score, host)| (score >= 4).then_some(host))
-}
-
-fn address_bar_score(name: &str, automation_id: &str, value: &str) -> u8 {
-    let name = name.to_lowercase();
-    let automation_id = automation_id.to_lowercase();
-    let mut score = u8::from(value.starts_with("http://") || value.starts_with("https://"));
-    if [
-        "address",
-        "地址",
-        "アドレス",
-        "адрес",
-        "网址",
-        "網址",
-        "omnibox",
-        "url",
-    ]
-    .iter()
-    .any(|hint| name.contains(hint))
-    {
-        score = score.saturating_add(4);
-    }
-    if ["address", "location", "omnibox", "url"]
-        .iter()
-        .any(|hint| automation_id.contains(hint))
-    {
-        score = score.saturating_add(5);
-    }
-    score
-}
-
-fn host_from_address_bar_value(value: &str) -> Option<String> {
-    let value = value.trim();
-    if value.is_empty() || value.chars().any(char::is_whitespace) {
-        return None;
-    }
-    let url = url::Url::parse(value)
-        .or_else(|_| url::Url::parse(&format!("https://{value}")))
-        .ok()?;
-    if !matches!(url.scheme(), "http" | "https")
-        || !url.username().is_empty()
-        || url.password().is_some()
-    {
-        return None;
-    }
-    url.host_str().map(str::to_owned)
+    best.and_then(|(score, host)| (score >= ADDRESS_BAR_MINIMUM_SCORE).then_some(host))
 }
 
 pub fn inspect_process(process_id: u32) -> Result<Option<ProcessSnapshot>, WindowsAdapterError> {

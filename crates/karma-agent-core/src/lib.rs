@@ -4,6 +4,7 @@
 //! Platform agents add screen capture, window enumeration, and the local IPC
 //! transport.
 
+pub mod address_bar;
 pub mod attribution;
 pub mod inference;
 pub mod ocr_profile;
