@@ -2118,6 +2118,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.19",
+ "url",
  "zeroize",
 ]
 
@@ -2295,9 +2296,11 @@ dependencies = [
  "karma-ipc",
  "karma-macos",
  "karma-macos-ipc",
+ "karma-policy",
  "karma-service-core",
  "libc",
  "rand 0.8.7",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.19",
  "zeroize",
@@ -2370,7 +2373,6 @@ dependencies = [
  "karma-ai",
  "karma-domain",
  "thiserror 2.0.19",
- "url",
  "windows 0.62.2",
 ]
 
