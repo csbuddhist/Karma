@@ -54,6 +54,8 @@ const EVIDENCE_COOLDOWN_MS: i64 = 5000;
 const DISPOSITION_COOLDOWN_MS: i64 = 5000;
 const CONTEXT_POLL_INTERVAL: Duration = Duration::from_millis(750);
 const CONTEXT_RETRY_COOLDOWN_MS: i64 = 5000;
+const BROWSER_HOST_RETRIES: usize = 3;
+const BROWSER_HOST_RETRY_INTERVAL: Duration = Duration::from_millis(250);
 const JPEG_QUALITY: u8 = 80;
 
 #[derive(Debug, Error)]
@@ -220,6 +222,7 @@ pub struct AgentInferenceSink {
     observation_sender: Option<SyncSender<AgentObservation>>,
     evidence_sender: Option<SyncSender<EvidenceFrame>>,
     recognition_policy: RecognitionPolicyHandle,
+    context_policy: ContextPolicyHandle,
     source: WindowsSourceIdentityProvider,
     monitor_name: String,
     last_disposition_at_ms: i64,
@@ -289,6 +292,7 @@ impl AgentInferenceSink {
     pub fn new(
         client: Option<Arc<AgentServiceClient>>,
         recognition_policy: RecognitionPolicyHandle,
+        context_policy: ContextPolicyHandle,
         monitor_name: String,
         monitor_bounds: Rect,
     ) -> Self {
@@ -324,6 +328,7 @@ impl AgentInferenceSink {
             observation_sender,
             evidence_sender,
             recognition_policy,
+            context_policy,
             source: WindowsSourceIdentityProvider {
                 monitor_bounds,
                 cached_process: None,
@@ -413,7 +418,10 @@ impl OcrSummarySink for AgentInferenceSink {
             monitor_id: frame.monitor_id().0.clone(),
             risk_millis: inference.score_millis,
             reason_code: "image_immediate".into(),
-            browser_host: is_supported_browser(&source.identity.executable_name)
+            browser_host: self
+                .context_policy
+                .snapshot()
+                .is_browser(&source.identity.executable_name)
                 .then(|| browser_host(source.window_handle))
                 .flatten(),
             source: Some(source.identity),
@@ -612,24 +620,35 @@ pub fn start_context_monitor(
             let mut last_submitted_at_ms = i64::MIN;
             loop {
                 thread::sleep(CONTEXT_POLL_INTERVAL);
-                let Some(observation) = foreground_context_observation(&client.instance_id) else {
+                let context_policy = policy.snapshot();
+                let Some((mut observation, window)) =
+                    foreground_context_observation(&client.instance_id, &context_policy)
+                else {
                     continue;
                 };
-                let context_policy = policy.snapshot();
                 let effect = applications
                     .snapshot()
                     .effect_for(&observation.source.executable_name);
-                let verdict = context_policy.evaluate(
-                    observation.browser_host.as_deref(),
-                    &observation.window_title,
-                );
-                if !learned_enforcement_applies(
-                    &client.enforcement(),
-                    &context_policy,
-                    effect,
-                    &observation,
-                ) && !karma_policy::context_enforcement(verdict, effect)
-                {
+                let enforcement = client.enforcement();
+                let is_browser = context_policy.is_browser(&observation.source.executable_name);
+                if !requires_enforcement(
+                    &mut observation,
+                    is_browser,
+                    |observation| {
+                        let verdict = context_policy.evaluate(
+                            observation.browser_host.as_deref(),
+                            &observation.window_title,
+                        );
+                        learned_enforcement_applies(
+                            &enforcement,
+                            &context_policy,
+                            effect,
+                            observation,
+                        ) || karma_policy::context_enforcement(verdict, effect)
+                    },
+                    || browser_host(window),
+                    || thread::sleep(BROWSER_HOST_RETRY_INTERVAL),
+                ) {
                     continue;
                 }
                 let fingerprint = context_fingerprint(&observation);
@@ -650,7 +669,38 @@ pub fn start_context_monitor(
         .expect("failed to start foreground context monitor")
 }
 
-fn foreground_context_observation(agent_instance_id: &str) -> Option<AgentContextObservation> {
+/// Whether `observation` must be submitted for enforcement. When a browser's
+/// address bar could not be read, it is read again a few times first, so a
+/// momentary gap (the address bar being edited or not yet ready) does not
+/// leave the title alone to override an allowlisted website.
+fn requires_enforcement(
+    observation: &mut AgentContextObservation,
+    is_browser: bool,
+    enforces: impl Fn(&AgentContextObservation) -> bool,
+    mut read_host: impl FnMut() -> Option<String>,
+    mut pause: impl FnMut(),
+) -> bool {
+    if !enforces(observation) {
+        return false;
+    }
+    if !is_browser || observation.browser_host.is_some() {
+        return true;
+    }
+    for _ in 0..BROWSER_HOST_RETRIES {
+        pause();
+        if let Some(host) = read_host() {
+            observation.browser_host = Some(host);
+            return enforces(observation);
+        }
+    }
+    true
+}
+
+/// The foreground context and the window it was read from.
+fn foreground_context_observation(
+    agent_instance_id: &str,
+    context_policy: &ContextPolicy,
+) -> Option<(AgentContextObservation, isize)> {
     let foreground = foreground_window().ok().flatten()?;
     let title = window_title(foreground.handle);
     let process = inspect_process(foreground.pid).ok().flatten()?;
@@ -660,20 +710,24 @@ fn foreground_context_observation(agent_instance_id: &str) -> Option<AgentContex
         executable_name: process.executable_name,
         executable_sha256: None,
     };
-    let browser_host = is_supported_browser(&source.executable_name)
+    let browser_host = context_policy
+        .is_browser(&source.executable_name)
         .then(|| browser_host(foreground.handle))
         .flatten();
     if title.is_empty() && browser_host.is_none() {
         return None;
     }
-    Some(AgentContextObservation {
-        event_id: format!("context-{}", random_opaque()),
-        agent_instance_id: agent_instance_id.into(),
-        occurred_at_ms: unix_time_ms(),
-        source,
-        window_title: title,
-        browser_host,
-    })
+    Some((
+        AgentContextObservation {
+            event_id: format!("context-{}", random_opaque()),
+            agent_instance_id: agent_instance_id.into(),
+            occurred_at_ms: unix_time_ms(),
+            source,
+            window_title: title,
+            browser_host,
+        },
+        foreground.handle,
+    ))
 }
 
 /// Mirrors the service: banned executables are closed unconditionally, and
@@ -719,25 +773,6 @@ fn context_fingerprint(observation: &AgentContextObservation) -> u64 {
     observation.window_title.hash(&mut hasher);
     observation.browser_host.hash(&mut hasher);
     hasher.finish()
-}
-
-fn is_supported_browser(executable_name: &str) -> bool {
-    let file_name = executable_name
-        .rsplit(['\\', '/'])
-        .next()
-        .unwrap_or(executable_name);
-    [
-        "chrome.exe",
-        "msedge.exe",
-        "firefox.exe",
-        "brave.exe",
-        "opera.exe",
-        "opera_gx.exe",
-        "vivaldi.exe",
-        "arc.exe",
-    ]
-    .iter()
-    .any(|browser| file_name.eq_ignore_ascii_case(browser))
 }
 
 pub fn monitor_health(
@@ -925,6 +960,71 @@ mod tests {
                 Some("safe.example")
             ),
         ));
+    }
+
+    /// Runs `requires_enforcement` for a keyword-matching Gitee page whose
+    /// host is allowlisted, returning the decision and how often the address
+    /// bar was read again.
+    fn enforce_gitee_page(is_browser: bool, hosts: &[Option<&str>]) -> (bool, usize) {
+        let policy = ContextPolicy::from_value(&json!({
+            "websites": [{"id":"a","pattern":"gitee.com","action":"allow","enabled":true}]
+        }))
+        .unwrap();
+        let mut observation = observation(
+            r"C:\Program Files\Citro Labs\ego lite\Application\ego.exe",
+            "Karma: 免费的家庭色情防护软件 - ego",
+            None,
+        );
+        let mut reads = 0;
+        let mut pauses = 0;
+        let enforce = requires_enforcement(
+            &mut observation,
+            is_browser,
+            |observation| {
+                karma_policy::context_enforcement(
+                    policy.evaluate(
+                        observation.browser_host.as_deref(),
+                        &observation.window_title,
+                    ),
+                    ApplicationEffect::ContentOnly,
+                )
+            },
+            || {
+                reads += 1;
+                hosts.get(reads - 1).copied().flatten().map(str::to_owned)
+            },
+            || pauses += 1,
+        );
+        assert_eq!(reads, pauses);
+        (enforce, reads)
+    }
+
+    #[test]
+    fn unreadable_browser_host_is_retried_before_title_keywords_apply() {
+        assert_eq!(
+            enforce_gitee_page(true, &[None, Some("gitee.com")]),
+            (false, 2)
+        );
+        assert_eq!(enforce_gitee_page(true, &[Some("example.com")]), (true, 1));
+        assert_eq!(enforce_gitee_page(true, &[]), (true, BROWSER_HOST_RETRIES));
+        assert_eq!(enforce_gitee_page(false, &[Some("gitee.com")]), (true, 0));
+    }
+
+    #[test]
+    fn host_is_not_reread_when_nothing_would_be_enforced() {
+        let mut observation = observation("chrome.exe", "Homework - Google Chrome", None);
+        let mut reads = 0;
+        assert!(!requires_enforcement(
+            &mut observation,
+            true,
+            |_| false,
+            || {
+                reads += 1;
+                None
+            },
+            || {},
+        ));
+        assert_eq!(reads, 0);
     }
 
     #[test]

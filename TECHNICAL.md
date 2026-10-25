@@ -262,10 +262,15 @@ The current repository implements Windows frame input, image-inference and OCR-i
 
 Service state (administrator password hash, policy, up to 50,000 audit entries, evidence metadata, repeat-offender bans, and remembered titles) lives in a transactional SQLite database (WAL, `synchronous=FULL`, `secure_delete`). Every change commits atomically, so a crash or power loss cannot leave a half-written state file. Builds before v0.2.3 stored a JSON file; it is imported automatically on first start, in the same transaction that initializes the database, and kept as `service-state.json.migrated`. Downgrading to an earlier build is not supported: it would no longer find its JSON file and would start with first-time setup.
 
-Browser host discovery currently supports Chrome, Edge, Firefox, Brave, Opera/Opera GX,
-Vivaldi, and Arc on Windows through UI Automation. Rules are domain-level (including subdomains),
-not path-level. If a browser hides or does not expose its address bar to accessibility, Karma cannot
-identify an allowlisted or blocklisted host for that window; title and image rules continue to work.
+On Windows, browser host discovery reads the address bar through UI Automation for every known
+browser (`KNOWN_BROWSER_EXECUTABLES`: Chrome, Edge, Firefox, Brave, Opera/Opera GX, Vivaldi, Arc,
+360, QQ, Sogou, Quark, and others) and for every application rule in the “Browser” category, the
+same set the browser blocking schedule uses. When a title keyword or remembered title would close a
+browser whose address bar could not be read, the Agent reads it up to three more times, 250 ms
+apart, before acting, so a momentary gap (an address bar being edited or not yet exposed) does not
+override an allowlisted site. Rules are domain-level (including subdomains), not path-level. If a
+browser hides or does not expose its address bar to accessibility, Karma cannot identify an
+allowlisted or blocklisted host for that window; title and image rules continue to work.
 
 The management UI is located at [`apps/karma-ui/`](apps/karma-ui/). Windows builds connect to `KarmaService` through a native named pipe that supports concurrent clients. Administrator passwords, sessions, live Agent/display status, policy revisions, and evidence viewing are all controlled by the Service. The Event Evidence page shows each item's local capture date and time, newest first, and can be filtered by a start/end date-time range. System Settings can change the administrator password after re-verifying the current one, and can export the current policy to a JSON backup file or import a previously exported backup for review and restore; import validates the backup schema and policy before anything reaches the console. Service sessions are held in memory only: if `KarmaService` is stopped and started again, the console detects the invalid session and returns to the unlock screen, and unlocking once more restores the connection instead of leaving a permanent "service not connected" status. If the connection fails, the GUI shows an explicit Service connection error instead of presenting an unknown authentication state as a password-unlock screen. Non-Windows development builds continue to use an isolated local backend.
 

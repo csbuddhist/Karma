@@ -7,6 +7,11 @@ use thiserror::Error;
 use unicode_normalization::UnicodeNormalization;
 use url::{Host, Url};
 
+use crate::{
+    application_category::{BROWSER_CATEGORY, category_members},
+    network_schedule::matches_browser,
+};
+
 const MAX_WEBSITE_RULES: usize = 256;
 const MAX_KEYWORD_RULES: usize = 256;
 /// Upper bound on keywords administrators add to the built-in list.
@@ -90,6 +95,8 @@ pub struct ContextPolicy {
     /// Custom high-risk and sensitive phrases plus additions to the built-in list.
     added_keywords: Vec<TitleKeyword>,
     exempt_keywords: Vec<String>,
+    /// Enabled console application rules categorized as browsers.
+    browser_members: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -279,6 +286,9 @@ impl ContextPolicy {
             bundled,
             added_keywords,
             exempt_keywords,
+            browser_members: category_members(policy)
+                .remove(BROWSER_CATEGORY)
+                .unwrap_or_default(),
         })
     }
 
@@ -355,6 +365,12 @@ impl ContextPolicy {
 
     pub fn allows_host(&self, browser_host: Option<&str>) -> bool {
         self.evaluate(browser_host, "") == ContextVerdict::Allowlisted
+    }
+
+    /// Whether the address bar of `executable_path` is read for website
+    /// rules: known browsers and applications categorized as browsers.
+    pub fn is_browser(&self, executable_path: &str) -> bool {
+        matches_browser(Some(&self.browser_members), executable_path)
     }
 }
 
@@ -609,6 +625,33 @@ mod tests {
             }))
             .is_err()
         );
+    }
+
+    #[test]
+    fn applications_categorized_as_browsers_have_their_address_bar_read() {
+        let policy = ContextPolicy::from_value(&json!({
+            "applications": [
+                {"id":"ego","name":"ego","executable":r"C:\Program Files\Citro Labs\ego lite\Application\ego.exe","category":"browser","action":"content_only","enabled":true},
+                {"id":"off","name":"Off","executable":"oldbrowser.exe","category":"browser","action":"content_only","enabled":false},
+                {"id":"reader","name":"Reader","executable":"reader.exe","category":"custom","action":"allow","enabled":true}
+            ]
+        }))
+        .unwrap();
+        for browser in [
+            r"C:\Program Files\Citro Labs\ego lite\Application\EGO.EXE",
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files\Quark\quark.exe",
+        ] {
+            assert!(policy.is_browser(browser), "{browser}");
+        }
+        for other in [
+            r"D:\ego.exe",
+            r"C:\Tools\oldbrowser.exe",
+            r"C:\Tools\reader.exe",
+        ] {
+            assert!(!policy.is_browser(other), "{other}");
+        }
+        assert!(ContextPolicy::default().is_browser("msedge.exe"));
     }
 
     #[test]

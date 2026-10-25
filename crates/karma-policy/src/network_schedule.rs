@@ -161,18 +161,25 @@ fn matches_any(rules: &[String], executable_path: &str) -> bool {
 /// Whether `executable_path` is a known browser or matches an enabled console
 /// application rule categorized as a browser.
 pub fn is_browser_executable(policy: &Value, executable_path: &str) -> bool {
+    matches_browser(
+        category_members(policy).get(BROWSER_CATEGORY),
+        executable_path,
+    )
+}
+
+/// Whether `executable_path` is a known browser or matches one of the
+/// browser-category `members` from `category_members`.
+pub(crate) fn matches_browser(members: Option<&BTreeSet<String>>, executable_path: &str) -> bool {
     let observed = path_components(executable_path);
     observed.last().is_some_and(|file_name| {
         KNOWN_BROWSER_EXECUTABLES
             .iter()
             .any(|browser| file_name == browser)
-    }) || category_members(policy)
-        .get(BROWSER_CATEGORY)
-        .is_some_and(|members| {
-            members
-                .iter()
-                .any(|rule| trailing_components_match(&observed, &path_components(rule)))
-        })
+    }) || members.is_some_and(|members| {
+        members
+            .iter()
+            .any(|rule| trailing_components_match(&observed, &path_components(rule)))
+    })
 }
 
 #[derive(Deserialize)]

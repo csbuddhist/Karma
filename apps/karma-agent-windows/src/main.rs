@@ -531,6 +531,7 @@ fn run_windows(
                 AgentInferenceSink::new(
                     service_client.clone(),
                     recognition_policy.clone(),
+                    context_policy.clone(),
                     format!("显示器 {}", monitor_index.saturating_add(1)),
                     monitor.bounds,
                 ),

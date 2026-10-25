@@ -16,7 +16,7 @@ Karma is a local pornography-protection and digital-wellbeing application for Wi
 - **Precise source-application closing**: a match is attributed to the foreground window and process on that display, whose identity is rechecked before it is closed, so unrelated programs are left alone.
 - **Window-title keywords**: a built-in list of 2,543 explicit terms in 26 languages (1,592 strict terms always active; 951 terms prone to false positives off by default and can be turned on) and 1,809 adult video code prefixes (such as SSIS or JUY, matched when followed by 3–4 digits with an optional hyphen or space, as in SSIS-123, SSIS 123, or SSIS123; 1,642 strict and 167 prone to false positives), plus custom enforced, sensitive, and exemption keywords, and keywords added to the built-in list.
 - **Remembered window titles**: after image recognition closes a page, its title and host are remembered, and the same application showing the same title again is closed on sight. A misjudged title can be marked **Misjudged** so it is never remembered again.
-- **Website allowlists and blocklists**: host discovery supports Chrome, Edge, Firefox, Brave, Opera/Opera GX, Vivaldi, and Arc. Allowlisted sites are never closed by an image score; blocklisted sites close immediately. Rules cover subdomains.
+- **Website allowlists and blocklists**: host discovery supports Chrome, Edge, Firefox, Brave, Opera/Opera GX, Vivaldi, Arc, 360, QQ, Sogou, Quark, and other known browsers, plus any application whose category is set to “Browser” in Application Control. Allowlisted sites are never closed by an image score; blocklisted sites close immediately. Rules cover subdomains.
 
 ### Application and Network Control
 
