@@ -120,11 +120,12 @@ com.karma.service                LaunchDaemon, root (/Library/Karma/KarmaService
   ├─ Policy enforcement and agent watchdog
   ├─ Peer-verified local socket /var/run/karma/service.sock
   ├─ Identity-bound enforcement (SIGTERM, grace period, SIGKILL)
+  ├─ Launch blocking for blocking schedules
   └─ Network Extension management (planned)
 
 com.karma.agent                  LaunchAgent in every graphical session (KarmaAgent.app)
   ├─ ScreenCaptureKit multi-display capture
-  ├─ Foreground application attribution
+  ├─ Foreground application attribution and browser hosts (Accessibility)
   └─ ONNX inference
 
 Karma Family Protection.app      Tauri management UI, started on demand
@@ -308,7 +309,9 @@ The capture agent keeps the following information synchronized:
 
 A matched frame is attributed preferentially to the foreground window covering the largest area of that display. When reliable attribution is impossible, show a warning and apply a temporary overlay instead of directly terminating multiple candidate processes.
 
-On macOS the frontmost ordinary window (layer 0, front-to-back order from CoreGraphics) names the foreground application, and a display's frame is attributed to that application's window covering most of the display, using the same `SourceAttributor` rule as Windows. Display and window bounds share CoreGraphics' global point space. Browser address bars are not read yet (this needs the Accessibility permission), so host rules do not apply on macOS for now.
+On macOS the frontmost ordinary window (layer 0, front-to-back order from CoreGraphics) names the foreground application, and a display's frame is attributed to that application's window covering most of the display, using the same `SourceAttributor` rule as Windows. Display and window bounds share CoreGraphics' global point space.
+
+macOS reads browser address bars through the Accessibility API (`AXUIElement`) for the same set of applications as Windows (`ContextPolicy::is_browser`: the macOS executables of known browsers and application rules in the “Browser” category). The agent searches the application's focused window breadth-first for text fields, skipping page content (`AXWebArea`), at most 12 levels and 400 elements deep, with a 250 ms limit per attribute read. Text fields are scored by description, title, placeholder, and identifier with the scoring shared with Windows (`karma_agent_core::address_bar`). When the focused window is not the window an image frame belongs to (for example another window of the same browser on a second display), the image observation carries no host, so it cannot borrow another window's allowlisted site. An unreadable address bar is likewise read up to three more times, 250 ms apart. The agent needs the Accessibility permission and asks for the system prompt on first start; without it no host is read, website rules do not apply, and title and image rules still work.
 
 ## Application Control
 
@@ -355,6 +358,7 @@ Basic mode (implemented in the test build):
 - The daemon receives only dispositions the shared core authorized, for the pid, start time, and image path the agent reported.
 - It obtains the target's audit token (`task_name_for_pid` and `TASK_AUDIT_TOKEN`), confirms the start time, image path (`proc_pidpath_audittoken`), and owner, then sends `SIGTERM` and, after the grace period (at most 5 seconds), `SIGKILL` through `proc_signal_with_audittoken`. The kernel refuses both once that process instance has exited, even if its pid is reused.
 - Processes owned by root, system accounts (uid below 501), users other than the one at the console, pid 1, and Karma's own executables are never signalled; such dispositions are recorded as access denied.
+- Launch blocking for blocking schedules runs on its own daemon thread: while a rule is active it lists processes with `proc_listallpids` every 2 seconds, matches each image path against the rule, and then obtains that instance's audit token, re-checks its path, and sends `SIGKILL` (like `TerminateProcess` on Windows, without a grace period). It covers processes of every regular user (uid 501 and above), including other sessions after fast user switching. Root processes, macOS components (`/System`, `/usr`, `/bin`, `/sbin`, `/Library/Apple`; `/System/Applications` and the app cryptex that holds Safari are ordinary applications and may be blocked), the Karma install directory, the console, and the agent are never ended. Each program is audited once per blocked period as `schedule_launch_blocked`.
 
 Hardened mode:
 
@@ -416,7 +420,7 @@ Current status: the console's Blocking Schedules page configures any number of t
 - Block connections by application and policy; DNS is used only for domain-level categorization.
 - Do not enforce control by editing `/etc/hosts` or repeatedly switching the system proxy.
 
-Current status: the macOS service evaluates schedules every 60 seconds and keeps the same status, audit trail, and early restore as Windows, but no filter exists yet, so an active block is recorded as `network_enforcement` failure and the console states that macOS does not block traffic yet. The browser target also covers the macOS executables of common browsers (`KNOWN_BROWSER_EXECUTABLES`).
+Current status: the macOS service evaluates schedules every 60 seconds and keeps the same status, audit trail, and early restore as Windows, and enforces launch-blocking rules (see macOS Application Control). No network filter exists yet, so an active network-blocking rule is recorded as `network_enforcement` failure (launch-only rules are not), and the console states that macOS does not block traffic yet. The Browser category also covers the macOS executables of common browsers (`KNOWN_BROWSER_EXECUTABLES`); application type members may be macOS application paths or executable names, while the built-in “Supported browsers / Supported players” placeholder rows are not members.
 
 A browser extension can serve as an optional enhancement for full-URL categorization and friendly block pages, but it cannot be the only security boundary.
 

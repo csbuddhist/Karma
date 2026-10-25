@@ -86,14 +86,14 @@ bash tools/package-macos/package_bundle.sh      # 生成 target/macos-test/Karma
 cd target/macos-test/Karma-*-macos && sudo ./install.sh
 ```
 
-安装后打开“应用程序”中的 Karma Family Protection 设置管理员密码，并在“系统设置 → 隐私与安全性 → 屏幕与系统录音”中允许 KarmaAgent。卸载使用 `sudo /Library/Karma/uninstall.sh`，授权规则与 Windows 相同。详见 [macOS 安装与测试指南](docs/macos-installation-guide.md)。
+安装后打开“应用程序”中的 Karma Family Protection 设置管理员密码，并在“系统设置 → 隐私与安全性”的“屏幕与系统录音”和“辅助功能”中允许 KarmaAgent。卸载使用 `sudo /Library/Karma/uninstall.sh`，授权规则与 Windows 相同。详见 [macOS 安装与测试指南](docs/macos-installation-guide.md)。
 
 ## 注意事项
 
 ### 当前为测试版
 
 - 目前仅提供 Windows 未签名测试版，尚不适合作为家庭正式部署的完整产品。
-- macOS 版本开发中，只能从源码构建：禁止联网只计算和审计、尚未拦截网络（禁止启动照常生效）；尚未读取浏览器地址栏，网址黑白名单暂不生效（标题与图像识别照常工作）；暂无签名安装包、自动更新和 Intel Mac 支持。
+- macOS 版本开发中，只能从源码构建：禁止联网只计算和审计、尚未拦截网络（禁止启动照常生效）；网址黑白名单需要在“辅助功能”中允许 KarmaAgent 读取浏览器地址栏；暂无签名安装包、自动更新和 Intel Mac 支持。
 - 连续帧风险融合尚未完成；GPU 采集、ONNX 推理、网络执行、禁止启动和升级流程的 Windows 真机验收仍在进行中。
 - 禁止联网、策略修改和提前解除屏蔽最长约 60 秒后生效；禁止启动约 2 秒内结束被屏蔽的应用，应用中未保存的内容会丢失。
 - 如果浏览器隐藏地址栏或未向辅助功能公开地址栏，Karma 无法识别该窗口的网址，但标题与图像识别仍然有效。网址规则只匹配域名，不匹配路径。

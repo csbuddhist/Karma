@@ -86,14 +86,14 @@ bash tools/package-macos/package_bundle.sh      # creates target/macos-test/Karm
 cd target/macos-test/Karma-*-macos && sudo ./install.sh
 ```
 
-After installing, open Karma Family Protection from Applications to set the administrator password, and allow KarmaAgent in System Settings → Privacy & Security → Screen & System Audio Recording. Uninstall with `sudo /Library/Karma/uninstall.sh`; the authorization rules are the same as on Windows. See the [macOS installation and testing guide](docs/macos-installation-guide.md).
+After installing, open Karma Family Protection from Applications to set the administrator password, and allow KarmaAgent in System Settings → Privacy & Security under Screen & System Audio Recording and Accessibility. Uninstall with `sudo /Library/Karma/uninstall.sh`; the authorization rules are the same as on Windows. See the [macOS installation and testing guide](docs/macos-installation-guide.md).
 
 ## Important Notes
 
 ### This Is a Test Build
 
 - Only an unsigned Windows test build is available; it is not yet a complete product for production home deployment.
-- The macOS version is in development and can only be built from source: network blocking is evaluated and audited but not yet enforced (launch blocking works); browser address bars are not read yet, so website allowlists and blocklists do not apply (title and image recognition still work); there is no signed installer, automatic update, or Intel Mac support yet.
+- The macOS version is in development and can only be built from source: network blocking is evaluated and audited but not yet enforced (launch blocking works); website allowlists and blocklists need KarmaAgent to be allowed under Accessibility to read browser address bars; there is no signed installer, automatic update, or Intel Mac support yet.
 - Continuous-frame risk fusion is not finished; Windows hardware acceptance for GPU capture, ONNX inference, network enforcement, launch blocking, and updates is still in progress.
 - Network blocking, policy changes, and lifting a block early take effect within about 60 seconds; launch blocking ends a blocked application within about 2 seconds, losing its unsaved work.
 - If a browser hides its address bar or does not expose it to accessibility, Karma cannot identify the site for that window, but title and image recognition still work. Website rules match domains, not paths.

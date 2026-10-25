@@ -61,11 +61,11 @@ fi
 cat <<'MESSAGE'
 Karma 已安装。
 1. 打开“应用程序”中的 Karma Family Protection，设置至少 10 个字符的管理员密码。
-2. 在“系统设置 → 隐私与安全性 → 屏幕与系统录音”中允许 KarmaAgent。
+2. 在“系统设置 → 隐私与安全性 → 屏幕与系统录音”和“辅助功能”中允许 KarmaAgent。
 3. 卸载：sudo /Library/Karma/uninstall.sh
 
 Karma is installed.
 1. Open Karma Family Protection from Applications and set an administrator password of at least 10 characters.
-2. Allow KarmaAgent in System Settings → Privacy & Security → Screen & System Audio Recording.
+2. Allow KarmaAgent in System Settings → Privacy & Security → Screen & System Audio Recording and Accessibility.
 3. To uninstall: sudo /Library/Karma/uninstall.sh
 MESSAGE

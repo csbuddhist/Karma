@@ -13,9 +13,12 @@ sudo ./install.sh
 脚本先校验 `SHA256SUMS`，再把程序复制到 `/Library/Karma`、控制台复制到 `/Applications`，全部归 root 所有，注册并启动 `com.karma.service` 与当前用户的 `com.karma.agent`。之后：
 
 1. 打开 Karma Family Protection，设置至少 10 个字符的管理员密码。
-2. 在“系统设置 → 隐私与安全性 → 屏幕与系统录音”中允许 KarmaAgent。未授权时控制台的显示器页面显示“不可用”。测试包为临时签名，每次重新构建后都需要重新授权。
+2. 在“系统设置 → 隐私与安全性 → 屏幕与系统录音”中允许 KarmaAgent。未授权时控制台的显示器页面显示“不可用”。
+3. 在“系统设置 → 隐私与安全性 → 辅助功能”中允许 KarmaAgent，网址黑白名单依赖它读取浏览器地址栏。
 
-The script verifies `SHA256SUMS`, copies the programs to `/Library/Karma` and the console to `/Applications` (all owned by root), and registers and starts `com.karma.service` and the current user's `com.karma.agent`. Then set an administrator password in the console and allow KarmaAgent under Screen & System Audio Recording. The test bundle is ad-hoc signed, so every rebuild needs the permission again.
+测试包为临时签名，每次重新构建后都需要重新授予这两项权限。
+
+The script verifies `SHA256SUMS`, copies the programs to `/Library/Karma` and the console to `/Applications` (all owned by root), and registers and starts `com.karma.service` and the current user's `com.karma.agent`. Then set an administrator password in the console and allow KarmaAgent under Screen & System Audio Recording and under Accessibility (website rules read browser address bars through it). The test bundle is ad-hoc signed, so every rebuild needs both permissions again.
 
 ## 卸载 / Uninstall
 
@@ -29,8 +32,7 @@ The script reads the super password (or the administrator password after the wai
 
 ## 尚未实现 / Not yet implemented
 
-- 断网时段只计算和审计，尚未拦截网络（需要 Network Extension）。/ Network schedules are evaluated and audited but not enforced yet (needs a Network Extension).
-- 浏览器地址栏域名识别（需要辅助功能权限），因此网站允许 / 阻止名单暂不生效；标题与图像规则照常工作。/ Browser host detection (needs the Accessibility permission), so website rules do not apply yet; title and image rules do.
+- “禁止联网”规则只计算和审计，尚未拦截网络（需要 Network Extension）；“禁止启动”照常执行。/ Network-blocking rules are evaluated and audited but not enforced yet (needs a Network Extension); launch blocking works.
 - 签名更新、公证安装包与 Intel Mac 支持。/ Signed updates, a notarized installer, and Intel Macs.
 
 ## 诊断 / Diagnostics

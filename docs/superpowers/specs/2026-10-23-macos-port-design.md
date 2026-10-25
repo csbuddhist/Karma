@@ -2,7 +2,7 @@
 
 日期：2026-10-23  
 状态：开发中（分支 `feat/macos-port`，进度见 6.1）  
-基线：Windows 测试版 v0.3.8 已实现的功能  
+基线：Windows 测试版 v0.3.8 已实现的功能；2026-10-25 起对齐 v0.3.18（见 6.2）  
 目标平台：macOS 13 Ventura 及以上，Apple Silicon 与 Intel  
 
 ## 1. 目标
@@ -51,8 +51,9 @@
 | 屏幕采集 | Windows.Graphics.Capture + D3D11 GPU 缩放 | ScreenCaptureKit，由系统按 640 像素最长边输出 BGRA，最高 4 帧/秒 |
 | 前台归属 | `GetForegroundWindow` + 显示器重叠面积 | `CGWindowListCopyWindowInfo` 由前到后的第 0 层窗口；同样的 `SourceAttributor` 重叠规则 |
 | 窗口标题 | `GetWindowTextW` | `kCGWindowName`（需要“屏幕录制”权限，Agent 本来就需要） |
-| 浏览器地址栏域名 | UI Automation | M4：辅助功能（AXUIElement），需要“辅助功能”权限；未授权时标题与图像规则照常工作 |
-| 网络时间表 | WFP 持久过滤器 | M3：Network Extension 内容过滤器（系统扩展，需要 Developer ID 与 entitlement） |
+| 浏览器地址栏域名 | UI Automation | 辅助功能（AXUIElement），需要“辅助功能”权限；未授权时标题与图像规则照常工作 |
+| 网络时间表（禁止联网） | WFP 持久过滤器 | M3：Network Extension 内容过滤器（系统扩展，需要 Developer ID 与 entitlement） |
+| 网络时间表（禁止启动） | Toolhelp 快照 + 同一句柄 `TerminateProcess` | `proc_listallpids` + 审计令牌复核路径后 `SIGKILL` |
 | 已安装应用选择器 | 注册表 + 开始菜单 | 扫描 `/Applications`、`/System/Applications`、`~/Applications` 的 `.app`，读取 `Info.plist` |
 | 开机自启控制台 | tauri-plugin-autostart（注册表） | tauri-plugin-autostart（LaunchAgent） |
 | 安装 / 卸载 | NSIS 安装包 + PowerShell | M3：开发安装脚本；M5：签名并公证的 `.pkg` |
@@ -123,15 +124,34 @@ macOS 原生接口用 Rust + `objc2` 系列绑定实现（与 Tauri 依赖的 ob
 | **M4 浏览器域名** | 通过辅助功能读取 Chrome / Safari / Edge / Firefox / Arc 地址栏主机名 | 需要授予辅助功能权限 |
 | **M5 发布** | Developer ID 签名、hardened runtime、公证、`.pkg`、代码签名要求校验、钥匙串包装密钥、签名更新、Endpoint Security（视 entitlement 审批） | 需要 Apple Developer 账号 |
 
-### 6.1 当前进度（2026-10-23）
+### 6.1 当前进度（2026-10-25）
 
 | 阶段 | 状态 |
 | --- | --- |
 | M1 服务端基础 | 已完成：`karma-macos-ipc`、`karma-macos` 进程与会话、`karma-service-macos`、控制台 macOS 服务后端与已安装应用、macOS 浏览器名单、平台文案 |
 | M2 会话 Agent | 已完成：`karma-agent-core` 抽取（Windows Agent 已改用并通过 xwin 交叉检查）、ScreenCaptureKit 采集、CGWindowList 归属、`karma-agent-macos`；本机已验证 Agent 经对端校验接入服务、模型加载与无权限时的失效保护，真实帧路径待授予屏幕录制权限后验证 |
 | M3 打包 | 测试包已完成：`tools/package-macos`、安装 / 卸载脚本、约定测试、安装指南与验收清单；Network Extension 未开始（需要 Apple Developer 账号） |
-| M4 浏览器域名 | 未开始 |
+| M4 浏览器域名 | 已实现：`karma-macos::accessibility` 读取焦点窗口地址栏，评分与 Windows 共用；需授予“辅助功能”权限后真机验收 |
 | M5 发布 | 未开始 |
+
+### 6.2 与 Windows v0.3.18 对齐（2026-10-25）
+
+分支合并了 v0.3.9–v0.3.18。共享层（`karma-service-core`、`karma-policy`、`karma-ai`、控制台）的改动直接生效；平台层按下表补齐：
+
+| Windows 版本与功能 | macOS 实现 |
+| --- | --- |
+| v0.3.9 hentai 概率折算 | 共享 `karma-ai`，直接生效 |
+| v0.3.10 审计日志与关闭原因 | 共享核心与控制台，直接生效 |
+| v0.3.11 显示器拓扑变化后重启 Agent | macOS Agent 原本每 2 秒对显示器增删做增量重建，无需重启 |
+| v0.3.12 更新前关闭所有会话中的客户端；关闭上一个服务实例遗留的 Agent | macOS 尚无签名更新（M5）；launchd 保证每个会话只有一个 LaunchAgent |
+| v0.3.13 应用类型与“禁止启动” | `karma-service-macos::launch_enforcement`；应用类型成员接受 macOS 路径与可执行文件名（占位行改为按内置值识别，Windows 行为不变） |
+| v0.3.14 在审计日志中为被关闭的应用选择类别 | 控制台把服务记录的反斜杠路径还原为 macOS 路径后提供类别选择 |
+| v0.3.15 / v0.3.17 番号匹配与独立词组 | 共享词库与策略，直接生效 |
+| v0.3.16 动态区域重点识别 | macOS Agent 同样用 `MotionFocusClassifier` 包装分类器 |
+| v0.3.17 删除严重证据需要超级密码；移除安全说明卡片 | 共享核心与控制台，直接生效；macOS 文案中的安全说明一并移除 |
+| v0.3.18 网址白名单覆盖所有浏览器、读不到地址栏时重读 | 重读逻辑移入 `karma-agent-core`；macOS 通过辅助功能读取地址栏（M4） |
+
+仍未对齐：“禁止联网”的实际拦截（Network Extension，M3b）与签名更新（M5）。
 
 ## 7. 验收标准（macOS）
 
