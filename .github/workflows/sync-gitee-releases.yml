@@ -1,0 +1,77 @@
+name: Sync GitHub Releases to Gitee
+
+on:
+  release:
+    types: [published, edited, released]
+  workflow_dispatch:
+  schedule:
+    - cron: '17 1 * * *' # Daily at 09:17 Asia/Shanghai; catches late assets.
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-gitee-releases
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'csbuddhist/Karma'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Read the reviewed configuration from main
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: main
+          persist-credentials: false
+          sparse-checkout: |
+            .github
+            tools/release-sync
+
+      - name: Verify the Gitee secret is configured
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: |
+          if [ -z "$GITEE_TOKEN" ]; then
+            echo '::error::Add the GITEE_TOKEN repository Actions secret before running synchronization.'
+            exit 1
+          fi
+
+      - name: Get the reviewed upstream Action
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: trustedinster/sync-release-gitee
+          ref: c91fb121df8bb3607b0d1294c31d649783bae120 # v1.3
+          path: .gitee-sync-action
+          persist-credentials: false
+
+      - name: Apply the reviewed hardening patch
+        run: |
+          git -C .gitee-sync-action apply --check ../.github/patches/sync-release-gitee-v1.3.patch
+          git -C .gitee-sync-action apply ../.github/patches/sync-release-gitee-v1.3.patch
+
+      - name: Prepare an isolated Python environment
+        run: |
+          python3 -m venv "$RUNNER_TEMP/release-sync-venv"
+          "$RUNNER_TEMP/release-sync-venv/bin/python" -m pip install --disable-pip-version-check -r .gitee-sync-action/requirements.txt
+          echo "$RUNNER_TEMP/release-sync-venv/bin" >> "$GITHUB_PATH"
+
+      - name: Check the patched Action without real credentials
+        env:
+          SYNC_ACTION_PATH: ${{ github.workspace }}/.gitee-sync-action
+          PYTHONUTF8: '1'
+        run: python tools/release-sync/test_hardening.py
+
+      - name: Sync releases and attachments
+        uses: ./.gitee-sync-action
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          gitee_owner: karmakarma
+          gitee_repo: Karma
+          gitee_token: ${{ secrets.GITEE_TOKEN }}
+          github_owner: csbuddhist
+          github_repo: Karma
+          gitee_upload_retry_times: '3'
+          debug: 'false'
