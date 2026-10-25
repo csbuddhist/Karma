@@ -28,6 +28,40 @@ const EXIT_WAIT_MS: u32 = 5_000;
 /// 服务位于会话 0，Restart Manager 无法关闭其他会话中的进程，因此按完整映像路径
 /// 匹配；只接受固定的安装文件名，绝不接受调用方提供的 PID。
 pub fn terminate_installed(install: &Path, names: &[&str]) -> io::Result<()> {
+    let mut failed = 0_u32;
+    for_each_named_process(names, |process_id| {
+        if terminate_if_installed(process_id, install, names).is_err() {
+            failed += 1;
+        }
+        true
+    })?;
+    if failed == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "{failed} installed client process(es) could not be closed"
+        )))
+    }
+}
+
+/// Whether any process in any session runs one of the fixed installed `names`.
+/// 是否有任一会话中的进程正在运行安装目录内的固定文件名之一。
+pub fn any_installed_running(install: &Path, names: &[&str]) -> io::Result<bool> {
+    let mut found = false;
+    for_each_named_process(names, |process_id| {
+        found = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id) }
+            .ok()
+            .map(OwnedHandle)
+            .and_then(|handle| image_path(&handle).ok())
+            .is_some_and(|image| is_installed_image(&image, install, names));
+        !found
+    })?;
+    Ok(found)
+}
+
+/// Visits other processes whose file name is one of `names` until `visit`
+/// returns false.
+fn for_each_named_process(names: &[&str], mut visit: impl FnMut(u32) -> bool) -> io::Result<()> {
     let snapshot = OwnedHandle(
         unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }.map_err(io::Error::other)?,
     );
@@ -36,7 +70,6 @@ pub fn terminate_installed(install: &Path, names: &[&str]) -> io::Result<()> {
         dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
         ..Default::default()
     };
-    let mut failed = 0_u32;
     let mut more = unsafe { Process32FirstW(snapshot.0, &mut entry) }.is_ok();
     while more {
         let file_name = utf16_until_nul(&entry.szExeFile);
@@ -44,19 +77,29 @@ pub fn terminate_installed(install: &Path, names: &[&str]) -> io::Result<()> {
             && names
                 .iter()
                 .any(|name| name.eq_ignore_ascii_case(&file_name))
-            && terminate_if_installed(entry.th32ProcessID, install, names).is_err()
+            && !visit(entry.th32ProcessID)
         {
-            failed += 1;
+            break;
         }
         more = unsafe { Process32NextW(snapshot.0, &mut entry) }.is_ok();
     }
-    if failed == 0 {
-        Ok(())
-    } else {
-        Err(io::Error::other(format!(
-            "{failed} installed client process(es) could not be closed"
-        )))
+    Ok(())
+}
+
+fn image_path(handle: &OwnedHandle) -> io::Result<String> {
+    let mut path = vec![0_u16; MAX_PROCESS_PATH_U16];
+    let mut path_len = path.len() as u32;
+    unsafe {
+        QueryFullProcessImageNameW(
+            handle.0,
+            Default::default(),
+            PWSTR(path.as_mut_ptr()),
+            &mut path_len,
+        )
     }
+    .map_err(io::Error::other)?;
+    path.truncate(path_len as usize);
+    Ok(String::from_utf16_lossy(&path))
 }
 
 fn terminate_if_installed(process_id: u32, install: &Path, names: &[&str]) -> io::Result<()> {
@@ -72,19 +115,7 @@ fn terminate_if_installed(process_id: u32, install: &Path, names: &[&str]) -> io
         Err(_) if !process_exists(process_id) => return Ok(()),
         Err(error) => return Err(io::Error::other(error)),
     };
-    let mut path = vec![0_u16; MAX_PROCESS_PATH_U16];
-    let mut path_len = path.len() as u32;
-    unsafe {
-        QueryFullProcessImageNameW(
-            handle.0,
-            Default::default(),
-            PWSTR(path.as_mut_ptr()),
-            &mut path_len,
-        )
-    }
-    .map_err(io::Error::other)?;
-    path.truncate(path_len as usize);
-    if !is_installed_image(&String::from_utf16_lossy(&path), install, names) {
+    if !is_installed_image(&image_path(&handle)?, install, names) {
         return Ok(());
     }
     unsafe { TerminateProcess(handle.0, 1) }.map_err(io::Error::other)?;

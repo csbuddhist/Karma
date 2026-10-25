@@ -42,6 +42,7 @@ use windows_service::{
 };
 use zeroize::Zeroizing;
 mod agent_watchdog;
+mod console_relaunch;
 mod evidence_key;
 mod installed_processes;
 mod process_disposition;

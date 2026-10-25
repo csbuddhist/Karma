@@ -57,7 +57,7 @@ Because setup and the executables are not yet Authenticode-signed, Windows Smart
 ### Upgrading
 
 - **Automatic updates**: enabled by default (`updates.autoInstall`); the service checks GitHub Releases periodically, and the console can check immediately.
-- **Manual upgrade**: with v0.2.4 or later installed, run the new installer and enter the administrator password to upgrade in place. The service verifies the signature and file hashes, then replaces files with rollback; protection services stay registered throughout. The console is closed during the upgrade; reopen it afterwards.
+- **Manual upgrade**: with v0.2.4 or later installed, run the new installer and enter the administrator password to upgrade in place. The service verifies the signature and file hashes, then replaces files with rollback; protection services stay registered throughout. The console is closed during the upgrade, and the service reopens it for the signed-in user once the upgrade finishes (or rolls back).
 - v0.2.3 and earlier must be uninstalled with password authorization before installing the new version.
 
 ### Installing from the Repository

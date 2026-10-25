@@ -97,7 +97,11 @@ fn write_completion(root: &Path, completion: &Completion) -> Result<(), UpdateEr
     Ok(())
 }
 
-fn import_completion(core: &ServiceCore) -> Result<(), UpdateError> {
+/// Imports the worker's result once it released the lock. The worker closed
+/// the console to replace its image, so reopen it for the signed-in user
+/// whether the update was applied or rolled back.
+/// 升级器为替换文件关闭了控制台；无论升级成功还是回滚，都为已登录用户重新打开。
+fn import_completion(core: &ServiceCore, install: &Path) -> Result<(), UpdateError> {
     let root = state()?;
     let Ok(_lock) = lock(&root) else {
         return Ok(());
@@ -123,6 +127,9 @@ fn import_completion(core: &ServiceCore) -> Result<(), UpdateError> {
         status(core, UpdatePhase::UpToDate, None, None)?;
     }
     fs::remove_file(path)?;
+    if let Err(error) = super::console_relaunch::relaunch(install) {
+        eprintln!("Karma console relaunch: {error}");
+    }
     Ok(())
 }
 
@@ -485,7 +492,7 @@ pub fn start(
                         eprintln!("Karma update cleanup: {error}");
                     }
                     if !transaction_active() {
-                        if let Err(error) = import_completion(&core) {
+                        if let Err(error) = import_completion(&core, &install) {
                             eprintln!("Karma update result: {error}");
                         }
                     }
