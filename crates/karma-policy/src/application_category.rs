@@ -4,7 +4,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use thiserror::Error;
 
-use crate::application_policy::path_components;
+use crate::application_policy::executable_name;
 
 /// Categories every policy has. `custom` holds applications without a more
 /// specific category.
@@ -78,9 +78,9 @@ impl ApplicationCategories {
     }
 }
 
-/// Joined, lowercase executable components of the enabled application rules
-/// in each category. Placeholder rules without an `.exe` file name and
-/// malformed entries are skipped; `ApplicationPolicy` validates the list.
+/// Lowercase executable file names of the enabled application rules in each
+/// category. Placeholder rules without an `.exe` file name and malformed
+/// entries are skipped; `ApplicationPolicy` validates the list.
 pub(crate) fn category_members(policy: &Value) -> BTreeMap<String, BTreeSet<String>> {
     let mut members: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let Some(applications) = policy.get("applications").and_then(Value::as_array) else {
@@ -91,15 +91,13 @@ pub(crate) fn category_members(policy: &Value) -> BTreeMap<String, BTreeSet<Stri
         .filter_map(|value| serde_json::from_value::<ApplicationInput>(value.clone()).ok())
         .filter(|application| application.enabled)
     {
-        let components = path_components(&application.executable);
-        if components
-            .last()
-            .is_some_and(|file_name| file_name.ends_with(".exe"))
+        if let Some(file_name) =
+            executable_name(&application.executable).filter(|file_name| file_name.ends_with(".exe"))
         {
             members
                 .entry(application.category)
                 .or_default()
-                .insert(components.join("\\"));
+                .insert(file_name);
         }
     }
     members
@@ -151,7 +149,7 @@ mod tests {
         ]}));
         assert_eq!(
             members["cat-games"],
-            BTreeSet::from([r"c:\games\steam.exe".to_owned(), "launcher.exe".to_owned()])
+            BTreeSet::from(["steam.exe".to_owned(), "launcher.exe".to_owned()])
         );
         assert!(!members.contains_key("player"));
     }

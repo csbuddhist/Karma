@@ -678,14 +678,12 @@ mod tests {
             r"C:\Program Files\Citro Labs\ego lite\Application\EGO.EXE",
             r"C:\Program Files\Google\Chrome\Application\chrome.exe",
             r"C:\Program Files\Quark\quark.exe",
+            // Application rules match by file name wherever the program is.
+            r"D:\ego.exe",
         ] {
             assert!(policy.is_browser(browser), "{browser}");
         }
-        for other in [
-            r"D:\ego.exe",
-            r"C:\Tools\oldbrowser.exe",
-            r"C:\Tools\reader.exe",
-        ] {
+        for other in [r"C:\Tools\oldbrowser.exe", r"C:\Tools\reader.exe"] {
             assert!(!policy.is_browser(other), "{other}");
         }
         assert!(ContextPolicy::default().is_browser("msedge.exe"));

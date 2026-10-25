@@ -186,8 +186,12 @@ Device-enforced policy > Emergency-disable policy > Schedule block > App blockli
 
 For browser content enforcement, the more specific precedence is `website allowlist > website
 blocklist > application allow > title keyword > image threshold`. Domain rules include subdomains
-but not sibling domains. Console-managed application rules are enforced by the Service: an
-"allow" application (matched by executable name or full path tail) is never closed by image or
+but not sibling domains. Console-managed application rules are enforced by the Service. They match only the program file
+name (`.exe`, case-insensitive), so a rule still applies after the program is moved or copied
+elsewhere. New rules from the console (typed, picked from installed applications, batch-added,
+one-click allowed, or added from evidence) record only the file name, rules saved with a full path
+by earlier builds match by their file name, and application category members resolve by file name
+too. An "allow" application is never closed by image or
 title enforcement — except on a blocklisted site — and an "always block" application is closed
 whenever its foreground window is observed.
 

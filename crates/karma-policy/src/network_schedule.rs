@@ -580,7 +580,7 @@ mod tests {
         assert!(!restriction.blocks_network(r"C:\Windows\System32\svchost.exe"));
         let executables = &restriction.network_executables;
         assert!(executables.contains(&"msedge.exe".to_owned()));
-        assert!(executables.contains(&r"c:\tools\mybrowser.exe".to_owned()));
+        assert!(executables.contains(&"mybrowser.exe".to_owned()));
         assert!(!executables.iter().any(|name| name.contains("受支持")));
     }
 
@@ -603,10 +603,16 @@ mod tests {
         }))
         .unwrap();
         let restriction = value.restriction_at(at(1, 9, 0));
-        for blocked in [r"c:\apps\wechat.exe", r"D:\QQ\QQ.exe", "msedge.exe"] {
+        // Category members match by file name wherever the program is.
+        for blocked in [
+            r"c:\apps\wechat.exe",
+            r"D:\Other\WeChat.exe",
+            r"D:\QQ\QQ.exe",
+            "msedge.exe",
+        ] {
             assert!(restriction.blocks_network(blocked), "{blocked}");
         }
-        for open in ["old.exe", "game.exe", r"D:\Other\WeChat.exe"] {
+        for open in ["old.exe", "game.exe", r"D:\Other\WeChat2.exe"] {
             assert!(!restriction.blocks_network(open), "{open}");
         }
     }

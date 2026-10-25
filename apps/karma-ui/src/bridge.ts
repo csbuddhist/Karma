@@ -318,12 +318,14 @@ export async function listInstalledApplications(sessionToken: string): Promise<I
 /** Mirrors the Service's application rule limit. */
 export const maxApplicationRules = 256;
 
-function pathComponents(value: string): string[] {
-  return value.split(/[\\/]/).filter(Boolean).map((part) => part.toLowerCase());
+/** The program file name of an executable path as written, such as `Game.exe`; application rules record only this. */
+export function executableFileName(path: string): string {
+  return path.trim().split(/[\\/]/).filter(Boolean).pop() ?? "";
 }
 
-function trailingMatch(observed: string[], rule: string[]): boolean {
-  return rule.length > 0 && observed.length >= rule.length && rule.every((part, index) => observed[observed.length - rule.length + index] === part);
+/** Mirrors the Service: application rules match the case-insensitive file name wherever the program is. */
+function executableName(path: string): string {
+  return executableFileName(path).toLowerCase();
 }
 
 /** Mirrors `karma_policy::KNOWN_BROWSER_EXECUTABLES`; a console test keeps the two lists equal. */
@@ -337,21 +339,18 @@ export const knownBrowserExecutables: readonly string[] = [
 
 /** Mirrors the Service: a known browser, or an enabled application rule categorized as a browser. */
 export function isBrowserExecutable(rules: ApplicationRule[], executable: string): boolean {
-  const observed = pathComponents(executable);
-  const fileName = observed[observed.length - 1];
-  if (fileName && knownBrowserExecutables.includes(fileName)) return true;
-  return rules.some((rule) => {
-    const components = pathComponents(rule.executable);
-    return rule.enabled && rule.category === "browser" && (components[components.length - 1] ?? "").endsWith(".exe") && trailingMatch(observed, components);
-  });
+  const fileName = executableName(executable);
+  if (!fileName) return false;
+  if (knownBrowserExecutables.includes(fileName)) return true;
+  return fileName.endsWith(".exe") && rules.some((rule) => rule.enabled && rule.category === "browser" && executableName(rule.executable) === fileName);
 }
 
 /** Resolves an executable like the Service does: an enabled block rule outranks allow. */
 export function applicationEffect(rules: ApplicationRule[], executable: string): ApplicationRule["action"] {
-  const observed = pathComponents(executable);
+  const observed = executableName(executable);
   let effect: ApplicationRule["action"] = "content_only";
   for (const rule of rules) {
-    if (!rule.enabled || !trailingMatch(observed, pathComponents(rule.executable))) continue;
+    if (!observed || !rule.enabled || executableName(rule.executable) !== observed) continue;
     if (rule.action === "block") return "block";
     if (rule.action === "allow") effect = "allow";
   }
@@ -359,64 +358,69 @@ export function applicationEffect(rules: ApplicationRule[], executable: string):
 }
 
 /**
- * Always allows each application, as the Service's one-click allow does: a rule
- * for exactly that executable becomes an enabled "Allow" rule, an enabled
- * "Always block" rule that would outrank it becomes "Allow", and otherwise a
- * new "Allow" rule is appended.
+ * Always allows each application, as the Service's one-click allow does: the
+ * first rule for that program file name becomes an enabled "Allow" rule, any
+ * other enabled "Always block" rule for it that would outrank it becomes
+ * "Allow", and otherwise a new "Allow" rule recording only the file name is
+ * appended.
  */
 export function allowApplications(rules: ApplicationRule[], applications: InstalledApplication[]): ApplicationRule[] {
   let next = rules;
   for (const application of applications) {
-    const target = pathComponents(application.executable);
-    let exact = false;
+    const target = executableName(application.executable);
+    if (!target) continue;
+    let found = false;
     next = next.map((rule) => {
-      const components = pathComponents(rule.executable);
-      if (components.length === target.length && trailingMatch(target, components)) {
-        exact = true;
+      if (executableName(rule.executable) !== target) return rule;
+      if (!found) {
+        found = true;
         return { ...rule, action: "allow", enabled: true };
       }
-      return rule.enabled && rule.action === "block" && trailingMatch(target, components) ? { ...rule, action: "allow" } : rule;
+      return rule.enabled && rule.action === "block" ? { ...rule, action: "allow" } : rule;
     });
-    if (!exact) next = [...next, { id: crypto.randomUUID(), name: application.name, executable: application.executable, category: application.browser ? "browser" : "custom", action: "allow", enabled: true }];
+    if (!found) next = [...next, { id: crypto.randomUUID(), name: application.name, executable: executableFileName(application.executable), category: application.browser ? "browser" : "custom", action: "allow", enabled: true }];
   }
   return next;
 }
 
 /** Whether a rule names no program file, like the built-in "Supported browsers" entry; the Service gives it no category members. */
 export function isPlaceholderApplication(rule: ApplicationRule): boolean {
-  return !(pathComponents(rule.executable).at(-1) ?? "").endsWith(".exe");
+  return !executableName(rule.executable).endsWith(".exe");
 }
 
 /**
- * Puts each application in `category`: a rule for exactly that executable
- * moves to it, keeping its action; otherwise a "Content only" rule is
- * appended, which changes nothing but the category.
+ * Puts each application in `category`: the rules for that program file name
+ * move to it, keeping their action; otherwise a "Content only" rule recording
+ * only the file name is appended, which changes nothing but the category.
  */
 export function assignApplicationsToCategory(rules: ApplicationRule[], applications: Array<Pick<InstalledApplication, "name" | "executable">>, category: string): ApplicationRule[] {
   let next = rules;
   for (const application of applications) {
-    const target = pathComponents(application.executable);
-    if (!target.length) continue;
-    let exact = false;
+    const target = executableName(application.executable);
+    if (!target) continue;
+    let found = false;
     next = next.map((rule) => {
-      const components = pathComponents(rule.executable);
-      if (components.length !== target.length || !trailingMatch(target, components)) return rule;
-      exact = true;
+      if (executableName(rule.executable) !== target) return rule;
+      found = true;
       return { ...rule, category };
     });
-    if (!exact) next = [...next, { id: crypto.randomUUID(), name: application.name.trim() || application.executable, executable: application.executable.trim(), category, action: "content_only", enabled: true }];
+    const fileName = executableFileName(application.executable);
+    if (!found) next = [...next, { id: crypto.randomUUID(), name: application.name.trim() || fileName, executable: fileName, category, action: "content_only", enabled: true }];
   }
   return next;
 }
 
-/** The category an observed executable is in: known browsers are always browsers; otherwise the rule for exactly that executable, or `custom`. */
+/** The category an observed executable is in: known browsers are always browsers; otherwise the first rule for that program file name, or `custom`. */
 export function applicationCategoryOf(rules: ApplicationRule[], executable: string): string {
-  const target = pathComponents(executable);
-  if (knownBrowserExecutables.includes(target[target.length - 1] ?? "")) return "browser";
-  return rules.find((rule) => {
-    const components = pathComponents(rule.executable);
-    return components.length === target.length && trailingMatch(target, components);
-  })?.category ?? "custom";
+  const target = executableName(executable);
+  if (knownBrowserExecutables.includes(target)) return "browser";
+  return rules.find((rule) => target !== "" && executableName(rule.executable) === target)?.category ?? "custom";
+}
+
+/** Whether two executable paths name the same program for application rules. */
+export function sameProgram(first: string, second: string): boolean {
+  const name = executableName(first);
+  return name !== "" && name === executableName(second);
 }
 
 /** Takes a rule out of its category: a "Content only" rule has no other effect and is removed; any other rule moves to `custom`. */

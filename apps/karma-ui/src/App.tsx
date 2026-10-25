@@ -68,6 +68,8 @@ import {
   allowBannedApplication,
   allowEvidenceApplication,
   isBrowserExecutable,
+  executableFileName,
+  sameProgram,
   allowApplications,
   applicationEffect,
   assignApplicationsToCategory,
@@ -424,10 +426,6 @@ function Monitors({ state }: { state: ConsoleState }) {
   return <div className="monitor-grid">{state.monitors.length ? state.monitors.map((monitor) => <Card key={monitor.id} className="monitor-card"><div className="monitor-preview"><Monitor size={48} /><span>{monitor.resolution}</span></div><div className="monitor-info"><div><strong>{monitor.name}</strong><StatusPill tone={monitor.state === "healthy" ? "good" : monitor.state === "degraded" ? "warn" : "muted"}>{t(`monitors.${monitor.state}`)}</StatusPill></div><dl><div><dt>{t("monitors.fps")}</dt><dd>{monitor.fps.toFixed(1)} FPS</dd></div><div><dt>{t("monitors.latency")}</dt><dd>{monitor.latencyMs} ms</dd></div></dl></div></Card>) : <Card className="full-span"><EmptyState icon={<Monitor />} title={t("monitors.emptyTitle")} text={t("monitors.emptyDescription")} /></Card>}</div>;
 }
 
-function executableFileName(path: string): string {
-  return path.split(/[\\/]/).pop() || path;
-}
-
 /** The Service's comparison form of an executable path. */
 function normalizeExecutable(path: string): string {
   return path.trim().replace(/\//g, "\\").toLowerCase();
@@ -771,7 +769,8 @@ function localizedApplicationName(rule: ApplicationRule, t: Translate): string {
 function localizedExecutable(rule: ApplicationRule, t: Translate): string {
   if (rule.id === "browser" && rule.executable === "受支持浏览器") return t("applications.supportedBrowser");
   if (rule.id === "player" && rule.executable === "受支持播放器") return t("applications.supportedPlayer");
-  return rule.executable;
+  // Rules match by file name, so a rule saved with a full path shows only its file name.
+  return executableFileName(rule.executable) || rule.executable;
 }
 
 function NumberField({ label, value, min, max, onCommit }: { label: string; value: number; min: number; max: number; onCommit: (value: number) => void }) {
@@ -938,8 +937,7 @@ function CategoryMembersModal({ state, update, sessionToken, categoryId, onClose
   }, [sessionToken]);
   const name = categoryName(state, categoryId, t);
   const members = state.applications.filter((rule) => rule.category === categoryId);
-  const memberExecutables = new Set(members.map((rule) => normalizeExecutable(rule.executable)));
-  const candidates = installed?.filter((application) => !memberExecutables.has(normalizeExecutable(application.executable)));
+  const candidates = installed?.filter((application) => !members.some((rule) => sameProgram(rule.executable, application.executable)));
   function add(applications: Array<{ name: string; executable: string }>) {
     const next = assignApplicationsToCategory(state.applications, applications, categoryId);
     if (next.length > maxApplicationRules) { setError(t("applications.batchTooMany", { max: maxApplicationRules })); return; }
@@ -1055,7 +1053,8 @@ function Applications({ state, update, sessionToken, onBannedAllowed }: { state:
   const loadingInstalled = useRef(false);
   const [draft, setDraft] = useState({ name: "", executable: "", category: "custom" });
   function closeAdd() { setShowAdd(false); setSource("manual"); }
-  function add() { if (!draft.name.trim() || !draft.executable.trim()) return; update({ ...state, applications: [...state.applications, { id: crypto.randomUUID(), ...draft, action: "content_only", enabled: true }] }); closeAdd(); setDraft({ name: "", executable: "", category: "custom" }); }
+  // Only the program file name is recorded, so the rule follows the program wherever it is.
+  function add() { const executable = executableFileName(draft.executable); if (!draft.name.trim() || !executable) return; update({ ...state, applications: [...state.applications, { id: crypto.randomUUID(), ...draft, executable, action: "content_only", enabled: true }] }); closeAdd(); setDraft({ name: "", executable: "", category: "custom" }); }
   function chooseInstalled() {
     setSource("installed");
     if (installed || loadingInstalled.current) return;
@@ -1066,7 +1065,7 @@ function Applications({ state, update, sessionToken, onBannedAllowed }: { state:
       .finally(() => { loadingInstalled.current = false; });
   }
   // Picking fills the form; the administrator still reviews the category and saves.
-  function pick(application: InstalledApplication) { setDraft({ ...draft, name: application.name, executable: application.executable }); setSource("manual"); }
+  function pick(application: InstalledApplication) { setDraft({ ...draft, name: application.name, executable: executableFileName(application.executable) }); setSource("manual"); }
   function patchRule(id: string, next: Partial<ApplicationRule>) { update({ ...state, applications: state.applications.map((item) => item.id === id ? { ...item, ...next } : item) }); }
   const sourceToggle = <div className="learned-tabs source-toggle" role="group" aria-label={t("applications.executable")}>
     <button type="button" className={source === "manual" ? "active" : ""} aria-pressed={source === "manual"} onClick={() => setSource("manual")}><Pencil size={14} />{t("applications.sourceManual")}</button>
@@ -1176,7 +1175,7 @@ function Schedule({ state, update, sessionToken, onNetworkChange }: { state: Con
   const [editingId, setEditingId] = useState<string>();
   const [application, setApplication] = useState("");
   const [error, setError] = useState("");
-  const knownExecutables = useMemo(() => Array.from(new Set(state.applications.map((rule) => rule.executable).filter((value) => /\.exe$/i.test(value)))), [state.applications]);
+  const knownExecutables = useMemo(() => Array.from(new Set(state.applications.map((rule) => executableFileName(rule.executable)).filter((value) => /\.exe$/i.test(value)))), [state.applications]);
   const targetHint = networkTargets.find((target) => target.value === draft.target)?.hint ?? "schedule.targetCategoriesHint";
   const actionHint = scheduleActions.find((action) => action.value === draft.action)?.hint ?? "schedule.actionBlockNetworkHint";
   // "Other" groups programs without a category, so it is not offered as a target.
@@ -1333,7 +1332,6 @@ function Evidence({ state, update, sessionToken, onDeleted, onApplicationAllowed
   const [allowing, setAllowing] = useState(false);
   const [allowError, setAllowError] = useState("");
   const [allowNotice, setAllowNotice] = useState("");
-  const allowedExecutables = useMemo(() => new Set(state.applications.filter((rule) => rule.enabled && rule.action === "allow").map((rule) => normalizeExecutable(rule.executable))), [state.applications]);
   const [selected, setSelected] = useState<EvidenceItem | null>(null);
   const [checked, setChecked] = useState<ReadonlySet<string>>(new Set());
   const [pendingDelete, setPendingDelete] = useState<string[] | null>(null);
@@ -1384,7 +1382,7 @@ function Evidence({ state, update, sessionToken, onDeleted, onApplicationAllowed
   }
   function allowButton(item: EvidenceItem) {
     const attributed = isAttributedExecutable(item.applicationName);
-    const allowed = attributed && allowedExecutables.has(normalizeExecutable(item.applicationName));
+    const allowed = attributed && applicationEffect(state.applications, item.applicationName) === "allow";
     // Allowing a browser would exempt every page it shows; the Service refuses it too.
     const browser = attributed && isBrowserExecutable(state.applications, item.applicationName);
     return <button type="button" className="secondary-button compact" disabled={!attributed || allowed || browser || !state.serviceConnected} aria-label={t("evidence.allowApplicationOne", { name: item.applicationName })} title={t(!attributed ? "evidence.allowApplicationUnavailable" : browser ? "evidence.allowApplicationBrowser" : "evidence.allowApplicationHint")} onClick={() => askAllow(item)}><ShieldCheck size={14} />{t(allowed ? "evidence.alreadyAllowed" : "evidence.allowApplication")}</button>;

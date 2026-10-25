@@ -22,7 +22,9 @@ pub enum ApplicationEffect {
 }
 
 /// Console-managed application rules (`policy.applications`), matched against
-/// the observed process image path.
+/// the file name of the observed process image, so a program keeps its rule
+/// wherever it is installed or copied. Rules saved with a full path match by
+/// their file name too.
 #[derive(Debug, Clone, Default)]
 pub struct ApplicationPolicy {
     rules: Vec<StoredRule>,
@@ -30,7 +32,7 @@ pub struct ApplicationPolicy {
 
 #[derive(Debug, Clone)]
 struct StoredRule {
-    executable_components: Vec<String>,
+    executable_name: String,
     effect: ApplicationEffect,
 }
 
@@ -81,12 +83,11 @@ impl ApplicationPolicy {
             {
                 return Err(ApplicationPolicyError::InvalidPolicy);
             }
-            let executable_components = path_components(&rule.executable);
-            if executable_components.is_empty() {
+            let Some(executable_name) = executable_name(&rule.executable) else {
                 return Err(ApplicationPolicyError::InvalidPolicy);
-            }
+            };
             rules.push(StoredRule {
-                executable_components,
+                executable_name,
                 effect: match rule.action {
                     ApplicationAction::Allow => ApplicationEffect::Allow,
                     ApplicationAction::Block => ApplicationEffect::Block,
@@ -97,20 +98,22 @@ impl ApplicationPolicy {
         Ok(Self { rules })
     }
 
-    /// Joined executable rule components of the enabled rules with `effect`.
+    /// Executable file names of the enabled rules with `effect`.
     pub(crate) fn executables_with(&self, effect: ApplicationEffect) -> BTreeSet<String> {
         self.rules
             .iter()
             .filter(|rule| rule.effect == effect)
-            .map(|rule| rule.executable_components.join("\\"))
+            .map(|rule| rule.executable_name.clone())
             .collect()
     }
 
     pub fn effect_for(&self, executable_path: &str) -> ApplicationEffect {
-        let observed = path_components(executable_path);
+        let Some(observed) = executable_name(executable_path) else {
+            return ApplicationEffect::ContentOnly;
+        };
         let mut resolved = ApplicationEffect::ContentOnly;
         for rule in &self.rules {
-            if trailing_components_match(&observed, &rule.executable_components) {
+            if rule.executable_name == observed {
                 // A block rule outranks an allow rule so a malicious or
                 // mistaken allow entry cannot neutralize an explicit block.
                 if rule.effect == ApplicationEffect::Block {
@@ -125,19 +128,19 @@ impl ApplicationPolicy {
     }
 }
 
-/// Returns `policy` with `executable_path` always allowed. A matching enabled
-/// "Always block" rule would outrank any allow rule, so it becomes "Allow";
-/// a rule for exactly this executable is enabled as "Allow"; otherwise a new
-/// custom "Allow" rule with `new_rule_id` is appended.
+/// Returns `policy` with the program `executable_path` names always allowed.
+/// Rules match by file name: an enabled "Always block" rule for it would
+/// outrank any allow rule, so it becomes "Allow"; the first rule for it is
+/// enabled as "Allow"; otherwise a new custom "Allow" rule with `new_rule_id`
+/// is appended that records only the file name.
 pub fn allow_application(
     policy: &Value,
     executable_path: &str,
     new_rule_id: &str,
 ) -> Result<Value, ApplicationPolicyError> {
-    let target = path_components(executable_path);
-    if target.is_empty() {
+    let Some(target) = executable_name(executable_path) else {
         return Err(ApplicationPolicyError::InvalidPolicy);
-    }
+    };
     ApplicationPolicy::from_value(policy)?;
     let mut next = policy.clone();
     let rules = next
@@ -147,29 +150,27 @@ pub fn allow_application(
         .or_insert_with(|| Value::Array(Vec::new()))
         .as_array_mut()
         .ok_or(ApplicationPolicyError::InvalidPolicy)?;
-    let mut exact = false;
+    let mut found = false;
     for rule in rules.iter_mut() {
-        let components = path_components(rule["executable"].as_str().unwrap_or_default());
-        if components == target {
+        if executable_name(rule["executable"].as_str().unwrap_or_default()).as_ref()
+            != Some(&target)
+        {
+            continue;
+        }
+        if !found {
             rule["action"] = Value::from("allow");
             rule["enabled"] = Value::Bool(true);
-            exact = true;
-        } else if rule["enabled"] == Value::Bool(true)
-            && rule["action"] == "block"
-            && trailing_components_match(&target, &components)
-        {
+            found = true;
+        } else if rule["enabled"] == Value::Bool(true) && rule["action"] == "block" {
             rule["action"] = Value::from("allow");
         }
     }
-    if !exact {
-        let name = executable_path
-            .rsplit(['\\', '/'])
-            .find(|component| !component.is_empty())
-            .unwrap_or(executable_path);
+    if !found {
+        let name = executable_file_name(executable_path).unwrap_or(executable_path);
         rules.push(serde_json::json!({
             "id": new_rule_id,
             "name": name,
-            "executable": executable_path,
+            "executable": name,
             "category": "custom",
             "action": "allow",
             "enabled": true
@@ -181,6 +182,19 @@ pub fn allow_application(
         return Err(ApplicationPolicyError::InvalidPolicy);
     }
     Ok(next)
+}
+
+/// The last component of an executable path as written, such as `Game.exe`.
+pub(crate) fn executable_file_name(value: &str) -> Option<&str> {
+    value
+        .trim()
+        .rsplit(['\\', '/'])
+        .find(|component| !component.is_empty())
+}
+
+/// The case-insensitive file name application rules match by.
+pub(crate) fn executable_name(value: &str) -> Option<String> {
+    executable_file_name(value).map(str::to_lowercase)
 }
 
 pub(crate) fn path_components(value: &str) -> Vec<String> {
@@ -220,7 +234,7 @@ mod tests {
     }
 
     #[test]
-    fn allow_rules_match_executable_names_and_full_paths() {
+    fn rules_match_the_executable_file_name_wherever_it_is() {
         let applications = policy(json!([
             {"id":"zcode","name":"ZCode","executable":"ZCode.exe","category":"custom","action":"allow","enabled":true},
             {"id":"chatgpt","name":"ChatGPT","executable":"C:\\Program Files\\ChatGPT\\ChatGPT.exe","category":"custom","action":"allow","enabled":true}
@@ -234,9 +248,10 @@ mod tests {
             applications.effect_for(r"C:\Program Files\ChatGPT\ChatGPT.exe"),
             ApplicationEffect::Allow
         );
+        // A rule saved with a full path still follows the program when it moves.
         assert_eq!(
-            applications.effect_for(r"C:\Program Files\Other\ChatGPT.exe"),
-            ApplicationEffect::ContentOnly
+            applications.effect_for(r"D:\Portable\ChatGPT.exe"),
+            ApplicationEffect::Allow
         );
         // Component matching must not let a short name hit a longer one.
         assert_eq!(
@@ -258,8 +273,12 @@ mod tests {
             ApplicationEffect::Block
         );
         assert_eq!(
-            applications.effect_for(r"E:\Games\game.exe"),
-            ApplicationEffect::Allow
+            applications.effect_for(r"E:\Games\GAME.EXE"),
+            ApplicationEffect::Block
+        );
+        assert_eq!(
+            applications.effect_for(r"E:\Games\game2.exe"),
+            ApplicationEffect::ContentOnly
         );
         assert_eq!(
             applications.effect_for(r"C:\player.exe"),
@@ -268,11 +287,10 @@ mod tests {
     }
 
     #[test]
-    fn allowing_an_application_appends_a_rule_and_overrides_blocks() {
-        let banned = r"c:\games\game.exe";
+    fn allowing_an_application_appends_a_rule_with_only_its_file_name() {
+        let banned = r"c:\games\Game.exe";
         let next = allow_application(
             &json!({"protectionEnabled": true, "applications": [
-                {"id":"block-name","name":"Game","executable":"game.exe","category":"game","action":"block","enabled":true},
                 {"id":"other","name":"Other","executable":"other.exe","category":"custom","action":"block","enabled":true}
             ]}),
             banned,
@@ -282,34 +300,39 @@ mod tests {
 
         assert_eq!(next["protectionEnabled"], true);
         let rules = next["applications"].as_array().unwrap();
-        assert_eq!(rules[0]["action"], "allow");
-        assert_eq!(rules[1]["action"], "block");
+        assert_eq!(rules[0]["action"], "block");
         assert_eq!(
-            rules[2],
-            json!({"id":"app-new","name":"game.exe","executable":banned,"category":"custom","action":"allow","enabled":true})
+            rules[1],
+            json!({"id":"app-new","name":"Game.exe","executable":"Game.exe","category":"custom","action":"allow","enabled":true})
         );
+        let applications = ApplicationPolicy::from_value(&next).unwrap();
+        assert_eq!(applications.effect_for(banned), ApplicationEffect::Allow);
         assert_eq!(
-            ApplicationPolicy::from_value(&next)
-                .unwrap()
-                .effect_for(banned),
+            applications.effect_for(r"E:\Moved\game.exe"),
             ApplicationEffect::Allow
         );
     }
 
     #[test]
-    fn allowing_an_application_reuses_its_exact_rule() {
+    fn allowing_an_application_reuses_its_rules_and_overrides_blocks() {
         let next = allow_application(
             &json!({"applications": [
-                {"id":"player","name":"Player","executable":"C:\\Apps\\Player.exe","category":"player","action":"content_only","enabled":false}
+                {"id":"player","name":"Player","executable":"C:\\Apps\\Player.exe","category":"player","action":"content_only","enabled":false},
+                {"id":"block-name","name":"Player","executable":"player.exe","category":"player","action":"block","enabled":true},
+                {"id":"other","name":"Other","executable":"other.exe","category":"custom","action":"block","enabled":true}
             ]}),
-            r"c:\apps\player.exe",
+            r"d:\portable\player.exe",
             "app-new",
         )
         .unwrap();
 
         assert_eq!(
             next["applications"],
-            json!([{"id":"player","name":"Player","executable":"C:\\Apps\\Player.exe","category":"player","action":"allow","enabled":true}])
+            json!([
+                {"id":"player","name":"Player","executable":"C:\\Apps\\Player.exe","category":"player","action":"allow","enabled":true},
+                {"id":"block-name","name":"Player","executable":"player.exe","category":"player","action":"allow","enabled":true},
+                {"id":"other","name":"Other","executable":"other.exe","category":"custom","action":"block","enabled":true}
+            ])
         );
         assert!(allow_application(&json!({}), "", "app-new").is_err());
     }

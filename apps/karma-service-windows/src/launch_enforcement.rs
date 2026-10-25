@@ -100,7 +100,8 @@ mod tests {
             r"\\?\D:\Tools\notepad.exe",
             &protected()
         ));
-        assert!(!must_terminate(
+        // Category members match by file name, so a moved copy is blocked too.
+        assert!(must_terminate(
             &restriction,
             r"E:\Games\Game.exe",
             &protected()

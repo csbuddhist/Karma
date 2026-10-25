@@ -2634,15 +2634,10 @@ mod tests {
             panic!("expected the updated policy");
         };
         assert_eq!(revision, 2);
-        let rules = policy["applications"].as_array().unwrap();
-        assert_eq!(rules[0]["action"], "allow");
+        // The "game.exe" block rule names the same program, so it becomes the allow rule.
         assert_eq!(
-            (
-                &rules[1]["executable"],
-                &rules[1]["action"],
-                &rules[1]["enabled"]
-            ),
-            (&json!(r"c:\games\game.exe"), &json!("allow"), &json!(true))
+            policy["applications"],
+            json!([{"id":"games","name":"Game","executable":"game.exe","category":"game","action":"allow","enabled":true}])
         );
         assert_eq!(
             ApplicationPolicy::from_value(&policy)
@@ -2768,7 +2763,7 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .find(|rule| rule["executable"] == r"c:\apps\player.exe")
+            .find(|rule| rule["executable"] == "player.exe")
             .unwrap();
         assert_eq!(
             (&rule["action"], &rule["enabled"]),

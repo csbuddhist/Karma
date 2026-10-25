@@ -138,7 +138,7 @@ mod tests {
         assert!(
             browsers
                 .applications
-                .contains(&ApplicationMatcher::Suffix("\\custom\\browser.exe".into()))
+                .contains(&ApplicationMatcher::Suffix("\\browser.exe".into()))
         );
         assert!(
             !browsers
