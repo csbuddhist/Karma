@@ -4,7 +4,8 @@ use std::{
 };
 
 use karma_ai::{
-    FrameWork, ImageClassifier, ImageInference, OcrEngine, OcrMatchSummary, PreparedFrame, WordPack,
+    FrameDetailSource, FrameWork, ImageClassifier, ImageInference, OcrEngine, OcrMatchSummary,
+    PreparedFrame, WordPack,
 };
 use karma_onnx::InferenceHealth;
 
@@ -163,16 +164,25 @@ where
             .then(|| self.sink.prepare_image());
     }
 
-    pub fn consume(&mut self, frame: PreparedFrame, work: FrameWork) {
+    /// `detail` reads parts of the capture behind `frame` for the image classifier.
+    pub fn consume(
+        &mut self,
+        frame: PreparedFrame,
+        work: FrameWork,
+        detail: &mut dyn FrameDetailSource,
+    ) {
         if work.run_image && self.sink.image_recognition_enabled() {
             let context = self
                 .pending_image_context
                 .take()
                 .unwrap_or_else(|| self.sink.prepare_image());
             let started = Instant::now();
-            let result = self.image_classifier.classify(&frame).map(|inference| {
-                self.sink.consume_image(&frame, &inference, context);
-            });
+            let result = self
+                .image_classifier
+                .classify_with_detail(&frame, detail)
+                .map(|inference| {
+                    self.sink.consume_image(&frame, &inference, context);
+                });
             record_result(&self.image_health, started, result);
         } else {
             self.pending_image_context = None;
@@ -233,8 +243,13 @@ where
         ScheduledInferenceConsumer::begin_frame(self);
     }
 
-    fn consume(&mut self, frame: PreparedFrame, work: FrameWork) {
-        ScheduledInferenceConsumer::consume(self, frame, work);
+    fn consume(
+        &mut self,
+        frame: PreparedFrame,
+        work: FrameWork,
+        detail: &mut dyn FrameDetailSource,
+    ) {
+        ScheduledInferenceConsumer::consume(self, frame, work, detail);
     }
 }
 
@@ -242,7 +257,8 @@ where
 mod tests {
     use karma_ai::{
         BgraFrame, FrameDimensions, FramePreparationConfig, FramePreparer, FrameWork,
-        ImageClassifier, ImageInference, OcrEngine, OcrMatchSummary, PreparedFrame, WordPack,
+        ImageClassifier, ImageInference, NoFrameDetail, OcrEngine, OcrMatchSummary, PreparedFrame,
+        WordPack,
     };
     use karma_domain::{MonitorId, OcrRisk, RiskCategory};
 
@@ -386,7 +402,11 @@ mod tests {
         ] {
             let mut value = consumer(false, false);
             value.begin_frame();
-            value.consume(prepared_frame(), FrameWork { run_image, run_ocr });
+            value.consume(
+                prepared_frame(),
+                FrameWork { run_image, run_ocr },
+                &mut NoFrameDetail,
+            );
             assert_eq!(value.image_classifier().calls, expected_image);
             assert_eq!(value.ocr_engine().calls, expected_ocr);
             assert_eq!(value.sink().prepared_images, 1);
@@ -406,6 +426,7 @@ mod tests {
                 run_image: true,
                 run_ocr: true,
             },
+            &mut NoFrameDetail,
         );
 
         assert_eq!(value.image_classifier().calls, 0);
@@ -432,6 +453,7 @@ mod tests {
                 run_image: true,
                 run_ocr: true,
             },
+            &mut NoFrameDetail,
         );
         assert_eq!(image_failure.ocr_engine().calls, 1);
         assert_eq!(image_failure.image_health().failures(), 1);
@@ -444,6 +466,7 @@ mod tests {
                 run_image: true,
                 run_ocr: true,
             },
+            &mut NoFrameDetail,
         );
         assert_eq!(ocr_failure.image_classifier().calls, 1);
         assert_eq!(ocr_failure.image_health().inferences(), 1);
@@ -459,6 +482,7 @@ mod tests {
                 run_image: false,
                 run_ocr: true,
             },
+            &mut NoFrameDetail,
         );
         assert_eq!(value.sink().calls, 1);
 
@@ -483,6 +507,7 @@ mod tests {
                     run_image: false,
                     run_ocr: true,
                 },
+                &mut NoFrameDetail,
             );
         }
         assert!(image_health.is_available());
@@ -495,6 +520,7 @@ mod tests {
                 run_image: false,
                 run_ocr: true,
             },
+            &mut NoFrameDetail,
         );
         assert!(ocr_health.is_available());
     }
@@ -519,6 +545,7 @@ mod tests {
                     run_image: false,
                     run_ocr: true,
                 },
+                &mut NoFrameDetail,
             );
         }
         assert!(!first.ocr_health_handle().is_available());

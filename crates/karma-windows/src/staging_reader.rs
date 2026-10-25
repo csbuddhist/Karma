@@ -127,12 +127,13 @@ impl MappedBgraLayout {
 mod native {
     use std::slice;
 
-    use karma_ai::{BgraFrame, FrameDimensions};
+    use karma_ai::{BgraFrame, FrameDimensions, FrameRegion};
     use karma_domain::MonitorId;
     use windows::Win32::Graphics::{
         Direct3D11::{
-            D3D11_CPU_ACCESS_READ, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE, D3D11_TEXTURE2D_DESC,
-            D3D11_USAGE_STAGING, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
+            D3D11_BOX, D3D11_CPU_ACCESS_READ, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE,
+            D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING, ID3D11Device, ID3D11DeviceContext,
+            ID3D11Texture2D,
         },
         Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC},
     };
@@ -216,30 +217,68 @@ mod native {
             Ok(&self.staging.as_ref().expect("staging texture exists").1)
         }
 
+        /// Reads all of `source`, or only `area` of it.
+        #[allow(clippy::too_many_arguments)]
         fn read_with_limits(
             &mut self,
             monitor_id: MonitorId,
             captured_at_ms: i64,
             source: &ID3D11Texture2D,
             dimensions: FrameDimensions,
+            area: Option<FrameRegion>,
             maximum_edge: u32,
             maximum_bytes: usize,
         ) -> Result<BgraFrame, WindowsAdapterError> {
             let mut source_description = D3D11_TEXTURE2D_DESC::default();
             // SAFETY: the description is writable and the source is live.
             unsafe { source.GetDesc(&mut source_description) };
-            if source_description.Width != dimensions.width()
-                || source_description.Height != dimensions.height()
-                || source_description.Format != DXGI_FORMAT_B8G8R8A8_UNORM
-            {
+            if source_description.Format != DXGI_FORMAT_B8G8R8A8_UNORM {
                 return Err(WindowsAdapterError::StagingSourceMismatch);
             }
+            let copy_box = match area {
+                // A whole-texture copy needs a staging texture of exactly the source size.
+                None if source_description.Width != dimensions.width()
+                    || source_description.Height != dimensions.height() =>
+                {
+                    return Err(WindowsAdapterError::StagingSourceMismatch);
+                }
+                None => None,
+                Some(area) => {
+                    let right = area.x().checked_add(area.dimensions().width());
+                    let bottom = area.y().checked_add(area.dimensions().height());
+                    match (right, bottom) {
+                        (Some(right), Some(bottom))
+                            if right <= dimensions.width().min(source_description.Width)
+                                && bottom <= dimensions.height().min(source_description.Height) =>
+                        {
+                            Some(D3D11_BOX {
+                                left: area.x(),
+                                top: area.y(),
+                                front: 0,
+                                right,
+                                bottom,
+                                back: 1,
+                            })
+                        }
+                        _ => return Err(WindowsAdapterError::StagingSourceMismatch),
+                    }
+                }
+            };
+            let dimensions = area.map_or(dimensions, FrameRegion::dimensions);
 
             let context = self.context.clone();
             let staging = self.ensure_staging(dimensions)?;
-            // SAFETY: source and staging have matching dimensions and BGRA8
-            // format; both resources remain live through Map and row copy.
-            unsafe { context.CopyResource(staging, source) };
+            match copy_box {
+                // SAFETY: source and staging have matching dimensions and BGRA8
+                // format; both resources remain live through Map and row copy.
+                None => unsafe { context.CopyResource(staging, source) },
+                // SAFETY: the box lies inside the source texture and has the
+                // staging texture's dimensions; both resources share the BGRA8
+                // format and remain live through Map and row copy.
+                Some(copy_box) => unsafe {
+                    context.CopySubresourceRegion(staging, 0, 0, 0, 0, source, 0, Some(&copy_box))
+                },
+            }
             let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
             // SAFETY: staging was created with CPU read access and the output
             // mapping structure is valid for the duration of the call.
@@ -291,6 +330,7 @@ mod native {
                 captured_at_ms,
                 source,
                 dimensions,
+                None,
                 super::MAXIMUM_MAPPED_EDGE,
                 super::MAXIMUM_MAPPED_BYTES,
             )
@@ -308,6 +348,27 @@ mod native {
                 captured_at_ms,
                 source,
                 dimensions,
+                None,
+                MAXIMUM_FALLBACK_EDGE,
+                MAXIMUM_FALLBACK_BYTES,
+            )
+        }
+
+        /// Reads `area` of a `dimensions`-sized capture texture at its own resolution.
+        pub(crate) fn read_source_area(
+            &mut self,
+            monitor_id: MonitorId,
+            captured_at_ms: i64,
+            source: &ID3D11Texture2D,
+            dimensions: FrameDimensions,
+            area: FrameRegion,
+        ) -> Result<BgraFrame, WindowsAdapterError> {
+            self.read_with_limits(
+                monitor_id,
+                captured_at_ms,
+                source,
+                dimensions,
+                Some(area),
                 MAXIMUM_FALLBACK_EDGE,
                 MAXIMUM_FALLBACK_BYTES,
             )

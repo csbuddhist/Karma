@@ -51,7 +51,10 @@ fn process_prefer_gpu<P: ProcessingPaths>(paths: &mut P) -> Result<(P::Output, b
 
 #[cfg(windows)]
 mod native {
-    use karma_ai::{FrameError, FramePreparationConfig, FramePreparer, PreparedFrame};
+    use karma_ai::{
+        FrameDetailSource, FrameDimensions, FrameError, FramePreparationConfig, FramePreparer,
+        FrameRegion, PreparedFrame,
+    };
     use thiserror::Error;
 
     use super::{FrameProcessingHealth, ProcessingPaths, process_prefer_gpu};
@@ -114,12 +117,48 @@ mod native {
         }
     }
 
+    /// Bounds a region read from the capture; the model input is much smaller.
+    const DETAIL_MAXIMUM_EDGE: u32 = 640;
+
+    /// Reads parts of the capture behind the frame that was just prepared.
+    pub struct WindowsFrameDetail<'a> {
+        staging: &'a mut StagingTextureReader,
+        preparer: &'a FramePreparer,
+        texture: Option<NativeCaptureTexture<'a>>,
+    }
+
+    impl FrameDetailSource for WindowsFrameDetail<'_> {
+        fn capture_dimensions(&self) -> Option<FrameDimensions> {
+            self.texture.as_ref().map(NativeCaptureTexture::dimensions)
+        }
+
+        fn read(&mut self, frame: &PreparedFrame, region: FrameRegion) -> Option<PreparedFrame> {
+            let texture = self.texture.as_ref()?;
+            let area = region
+                .scaled(frame.dimensions(), texture.dimensions())
+                .ok()?;
+            let mapped = self
+                .staging
+                .read_source_area(
+                    frame.monitor_id().clone(),
+                    frame.captured_at_ms(),
+                    texture.texture(),
+                    texture.dimensions(),
+                    area,
+                )
+                .ok()?;
+            self.preparer.prepare(mapped).ok()
+        }
+    }
+
     pub struct WindowsFrameProcessor {
         gpu_scaler: Option<GpuFrameScaler>,
         staging: StagingTextureReader,
         preparer: FramePreparer,
         config: FramePreparationConfig,
         health: FrameProcessingHealth,
+        detail_staging: StagingTextureReader,
+        detail_preparer: FramePreparer,
     }
 
     impl WindowsFrameProcessor {
@@ -130,6 +169,21 @@ mod native {
                 preparer: FramePreparer::new(config),
                 config,
                 health: FrameProcessingHealth::default(),
+                detail_staging: StagingTextureReader::new(device),
+                detail_preparer: FramePreparer::new(
+                    FramePreparationConfig::new(DETAIL_MAXIMUM_EDGE)
+                        .expect("detail edge is non-zero"),
+                ),
+            }
+        }
+
+        /// Reads parts of `frame`, the capture last passed to `process`, at its own
+        /// resolution. A separate staging texture keeps the prepared-frame one intact.
+        pub fn detail<'a>(&'a mut self, frame: &'a CapturedGpuFrame) -> WindowsFrameDetail<'a> {
+            WindowsFrameDetail {
+                staging: &mut self.detail_staging,
+                preparer: &self.detail_preparer,
+                texture: NativeCaptureTexture::from_frame(frame).ok(),
             }
         }
 
@@ -191,7 +245,7 @@ mod native {
 }
 
 #[cfg(windows)]
-pub use native::{FrameProcessingError, WindowsFrameProcessor};
+pub use native::{FrameProcessingError, WindowsFrameDetail, WindowsFrameProcessor};
 
 #[cfg(test)]
 mod tests {

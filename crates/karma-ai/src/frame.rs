@@ -88,6 +88,67 @@ impl FrameRegion {
     pub fn dimensions(self) -> FrameDimensions {
         self.dimensions
     }
+
+    /// The smallest region of a `to`-sized frame that covers this region of a `from`-sized
+    /// frame showing the same picture.
+    pub fn scaled(self, from: FrameDimensions, to: FrameDimensions) -> Result<Self, FrameError> {
+        let start = |offset: u32, source: u32, target: u32| {
+            u64::from(offset) * u64::from(target) / u64::from(source)
+        };
+        let end = |offset: u32, length: u32, source: u32, target: u32| {
+            (u64::from(offset) + u64::from(length))
+                .checked_mul(u64::from(target))
+                .map(|scaled| scaled.div_ceil(u64::from(source)).min(u64::from(target)))
+        };
+        let right = self
+            .x
+            .checked_add(self.dimensions.width())
+            .ok_or(FrameError::ArithmeticOverflow)?;
+        let bottom = self
+            .y
+            .checked_add(self.dimensions.height())
+            .ok_or(FrameError::ArithmeticOverflow)?;
+        if right > from.width() || bottom > from.height() {
+            return Err(FrameError::RegionOutOfBounds);
+        }
+        let x = start(self.x, from.width(), to.width());
+        let y = start(self.y, from.height(), to.height());
+        let right = end(self.x, self.dimensions.width(), from.width(), to.width())
+            .ok_or(FrameError::ArithmeticOverflow)?;
+        let bottom = end(self.y, self.dimensions.height(), from.height(), to.height())
+            .ok_or(FrameError::ArithmeticOverflow)?;
+        let narrow = |value: u64| u32::try_from(value).map_err(|_| FrameError::ArithmeticOverflow);
+        Self::new(
+            narrow(x)?,
+            narrow(y)?,
+            narrow(right - x)?,
+            narrow(bottom - y)?,
+        )
+    }
+}
+
+/// Reads parts of the capture a prepared frame was scaled down from, so that small content can
+/// be classified from its own pixels rather than an enlarged copy of the prepared frame.
+pub trait FrameDetailSource {
+    /// Size of the capture behind the prepared frames, or `None` without one.
+    fn capture_dimensions(&self) -> Option<FrameDimensions>;
+
+    /// Reads `region` of the prepared `frame` from the capture.
+    fn read(&mut self, frame: &PreparedFrame, region: FrameRegion) -> Option<PreparedFrame>;
+}
+
+/// A detail source for frames that have no capture behind them.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NoFrameDetail;
+
+impl FrameDetailSource for NoFrameDetail {
+    fn capture_dimensions(&self) -> Option<FrameDimensions> {
+        None
+    }
+
+    fn read(&mut self, _frame: &PreparedFrame, _region: FrameRegion) -> Option<PreparedFrame> {
+        None
+    }
 }
 
 pub struct BgraFrame {
@@ -353,6 +414,49 @@ mod tests {
         assert_eq!(
             frame
                 .crop(FrameRegion::new(u32::MAX, 0, 1, 1).unwrap())
+                .unwrap_err(),
+            FrameError::ArithmeticOverflow
+        );
+    }
+
+    #[test]
+    fn scaled_region_covers_the_same_part_of_a_larger_capture() {
+        let prepared = FrameDimensions::new(640, 360).unwrap();
+        let capture = FrameDimensions::new(1920, 1080).unwrap();
+
+        assert_eq!(
+            FrameRegion::new(496, 272, 80, 48)
+                .unwrap()
+                .scaled(prepared, capture)
+                .unwrap(),
+            FrameRegion::new(1488, 816, 240, 144).unwrap()
+        );
+        // Uneven scales round outward and stay inside the capture.
+        let capture = FrameDimensions::new(1366, 768).unwrap();
+        let region = FrameRegion::new(633, 353, 7, 7)
+            .unwrap()
+            .scaled(prepared, capture)
+            .unwrap();
+        assert_eq!((region.x(), region.y()), (1351, 753));
+        assert_eq!(region.dimensions(), FrameDimensions::new(15, 15).unwrap());
+    }
+
+    #[test]
+    fn scaled_region_must_lie_inside_its_frame() {
+        let prepared = FrameDimensions::new(640, 360).unwrap();
+        let capture = FrameDimensions::new(1920, 1080).unwrap();
+
+        assert_eq!(
+            FrameRegion::new(600, 0, 41, 8)
+                .unwrap()
+                .scaled(prepared, capture)
+                .unwrap_err(),
+            FrameError::RegionOutOfBounds
+        );
+        assert_eq!(
+            FrameRegion::new(u32::MAX, 0, 1, 1)
+                .unwrap()
+                .scaled(prepared, capture)
                 .unwrap_err(),
             FrameError::ArithmeticOverflow
         );

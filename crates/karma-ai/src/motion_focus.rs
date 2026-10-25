@@ -3,7 +3,10 @@ use std::fmt;
 use karma_domain::MonitorId;
 use zeroize::Zeroizing;
 
-use crate::{FrameDimensions, FrameRegion, ImageClassifier, ImageInference, PreparedFrame};
+use crate::{
+    FrameDetailSource, FrameDimensions, FrameRegion, ImageClassifier, ImageInference,
+    NoFrameDetail, PreparedFrame,
+};
 
 /// Edge of a square motion cell, in prepared-frame pixels.
 const CELL_EDGE: usize = 8;
@@ -11,9 +14,13 @@ const CELL_EDGE: usize = 8;
 const CHANGE_THRESHOLD: u8 = 4;
 /// A cell is moving when it changed in at least this many of its last 16 samples.
 const MOTION_CHANGES: u32 = 2;
-/// Narrower or shorter motion is mostly avatars, emoji and icons, and too blurry to classify
-/// once enlarged to the model input.
-const MINIMUM_MOTION_EDGE: u32 = 56;
+/// Narrower or shorter motion, in capture pixels, is mostly avatars, emoji and icons.
+const MINIMUM_MOTION_EDGE: u32 = 64;
+/// Motion must also span this many cells of the prepared frame to be told apart from noise.
+const MINIMUM_MOTION_CELLS: usize = 2;
+/// Model inputs are 224 px square. A focus crop with a shorter edge in the prepared frame is
+/// read from the capture, when there is one, so that enlarging it to the input stays sharp.
+const DETAIL_BELOW_EDGE: u32 = 224;
 /// Larger motion is already legible in the whole-frame inference.
 const MAXIMUM_MOTION_AREA_PERCENT: u64 = 50;
 /// Moving cells must fill this share of their bounds, which rejects cursor trails and sparse UI.
@@ -53,11 +60,16 @@ struct MotionState {
 }
 
 impl MotionRegionTracker {
-    /// Records `frame` and returns its densest moving regions, largest first.
+    /// Records `frame` and returns its densest moving regions, largest first. Sizes are judged
+    /// in pixels of `capture`, the frame was scaled down from, or of the frame itself.
     ///
     /// A monitor or resolution change restarts the history, so the first frame of a new
     /// sequence has no regions.
-    pub fn observe(&mut self, frame: &PreparedFrame) -> Vec<FrameRegion> {
+    pub fn observe(
+        &mut self,
+        frame: &PreparedFrame,
+        capture: Option<FrameDimensions>,
+    ) -> Vec<FrameRegion> {
         let dimensions = frame.dimensions();
         let columns = (dimensions.width() as usize).div_ceil(CELL_EDGE);
         let rows = (dimensions.height() as usize).div_ceil(CELL_EDGE);
@@ -76,7 +88,7 @@ impl MotionRegionTracker {
                     *history = (*history << 1) | u16::from(changed);
                 }
                 state.lumas = lumas;
-                state.regions()
+                state.regions(capture.unwrap_or(dimensions))
             }
             _ => {
                 self.state = Some(MotionState {
@@ -116,7 +128,7 @@ fn cell_lumas(frame: &PreparedFrame, columns: usize, rows: usize) -> Zeroizing<V
 }
 
 impl MotionState {
-    fn regions(&self) -> Vec<FrameRegion> {
+    fn regions(&self, capture: FrameDimensions) -> Vec<FrameRegion> {
         let moving = self
             .history
             .iter()
@@ -160,7 +172,7 @@ impl MotionState {
                 }
             }
             if let Some(region) =
-                motion.and_then(|motion| self.focus_region(crop, motion, moving_cells))
+                motion.and_then(|motion| self.focus_region(crop, motion, moving_cells, capture))
             {
                 candidates.push((moving_cells, region));
             }
@@ -193,13 +205,22 @@ impl MotionState {
         crop: CellBounds,
         motion: CellBounds,
         moving_cells: usize,
+        capture: FrameDimensions,
     ) -> Option<FrameRegion> {
-        if moving_cells * 100 < motion.cells() * MINIMUM_MOTION_FILL_PERCENT {
+        if moving_cells * 100 < motion.cells() * MINIMUM_MOTION_FILL_PERCENT
+            || motion.columns().min(motion.rows()) < MINIMUM_MOTION_CELLS
+        {
             return None;
         }
         let (_, _, width, height) = self.pixels(motion);
         let short_edge = width.min(height);
-        if short_edge < MINIMUM_MOTION_EDGE
+        let capture_edge = |length: u32, frame: u32, capture: u32| {
+            u64::from(length) * u64::from(capture) / u64::from(frame)
+        };
+        let capture_short_edge = capture_edge(width, self.dimensions.width(), capture.width()).min(
+            capture_edge(height, self.dimensions.height(), capture.height()),
+        );
+        if capture_short_edge < u64::from(MINIMUM_MOTION_EDGE)
             || width.max(height) > short_edge * MAXIMUM_MOTION_ASPECT_RATIO
             || u64::from(width) * u64::from(height) * 100
                 > u64::from(self.dimensions.width())
@@ -248,8 +269,16 @@ impl CellBounds {
         self.bottom = self.bottom.max(row);
     }
 
+    fn columns(self) -> usize {
+        self.right - self.left + 1
+    }
+
+    fn rows(self) -> usize {
+        self.bottom - self.top + 1
+    }
+
     fn cells(self) -> usize {
-        (self.right - self.left + 1) * (self.bottom - self.top + 1)
+        self.columns() * self.rows()
     }
 }
 
@@ -258,7 +287,8 @@ impl CellBounds {
 ///
 /// The whole-frame inference shrinks a video that covers a quarter of the screen to a small patch
 /// of the model input among unrelated page content, which dilutes its score. Classifying the crop
-/// gives the model the video at its own scale.
+/// gives the model the video at its own scale. A small crop, such as a shrunken player window, is
+/// read from the full-resolution capture before it is enlarged to the model input.
 pub struct MotionFocusClassifier<C> {
     inner: C,
     motion: MotionRegionTracker,
@@ -277,12 +307,24 @@ impl<C: ImageClassifier> ImageClassifier for MotionFocusClassifier<C> {
     type Error = C::Error;
 
     fn classify(&mut self, frame: &PreparedFrame) -> Result<ImageInference, Self::Error> {
-        let regions = self.motion.observe(frame);
+        self.classify_with_detail(frame, &mut NoFrameDetail)
+    }
+
+    fn classify_with_detail(
+        &mut self,
+        frame: &PreparedFrame,
+        detail: &mut dyn FrameDetailSource,
+    ) -> Result<ImageInference, Self::Error> {
+        let regions = self.motion.observe(frame, detail.capture_dimensions());
         let mut riskiest = self.inner.classify(frame)?;
         for region in regions {
+            let dimensions = region.dimensions();
+            let detailed = (dimensions.width().min(dimensions.height()) < DETAIL_BELOW_EDGE)
+                .then(|| detail.read(frame, region))
+                .flatten();
             // A focus crop only adds evidence: when it cannot be classified, the whole-frame
             // result still stands.
-            let Ok(focus) = frame.crop(region) else {
+            let Some(focus) = detailed.or_else(|| frame.crop(region).ok()) else {
                 continue;
             };
             match self.inner.classify(&focus) {
@@ -370,7 +412,7 @@ mod tests {
                 .iter()
                 .map(|&(x, y, width, height)| patch(x, y, width, height, value))
                 .collect::<Vec<_>>();
-            regions = tracker.observe(&frame(&patches));
+            regions = tracker.observe(&frame(&patches), None);
         }
         regions
     }
@@ -403,16 +445,16 @@ mod tests {
     #[test]
     fn content_that_changed_only_once_is_not_motion() {
         let mut tracker = MotionRegionTracker::default();
-        tracker.observe(&frame(&[]));
+        tracker.observe(&frame(&[]), None);
 
         assert!(
             tracker
-                .observe(&frame(&[patch(320, 160, 160, 120, 40)]))
+                .observe(&frame(&[patch(320, 160, 160, 120, 40)]), None)
                 .is_empty()
         );
         assert!(
             tracker
-                .observe(&frame(&[patch(320, 160, 160, 120, 40)]))
+                .observe(&frame(&[patch(320, 160, 160, 120, 40)]), None)
                 .is_empty()
         );
     }
@@ -422,7 +464,7 @@ mod tests {
         let mut tracker = MotionRegionTracker::default();
         observe_moving(&mut tracker, &[(320, 160, 160, 120)]);
 
-        let regions = tracker.observe(&frame(&[patch(320, 160, 160, 120, 40)]));
+        let regions = tracker.observe(&frame(&[patch(320, 160, 160, 120, 40)]), None);
 
         assert_eq!(regions.len(), 1);
     }
@@ -440,6 +482,42 @@ mod tests {
     #[test]
     fn small_player_window_is_still_focused() {
         assert_eq!(fresh_moving_regions(&[(500, 280, 107, 60)]).len(), 1);
+    }
+
+    fn full_hd() -> Option<FrameDimensions> {
+        FrameDimensions::new(1920, 1080).ok()
+    }
+
+    /// Feeds three samples of a 1920x1080 capture prepared at 640x360.
+    fn observe_capture_moving(rectangles: &[(u32, u32, u32, u32)]) -> Vec<FrameRegion> {
+        let mut tracker = MotionRegionTracker::default();
+        let mut regions = Vec::new();
+        for value in [40, 200, 40] {
+            let patches = rectangles
+                .iter()
+                .map(|&(x, y, width, height)| patch(x, y, width, height, value))
+                .collect::<Vec<_>>();
+            regions = tracker.observe(&frame(&patches), full_hd());
+        }
+        regions
+    }
+
+    #[test]
+    fn shrunken_player_window_is_judged_at_capture_size() {
+        // A 202x115 player window on a 1920x1080 display.
+        let window = (500, 280, 67, 38);
+
+        assert!(fresh_moving_regions(&[window]).is_empty());
+        let regions = observe_capture_moving(&[window]);
+        assert_eq!(regions.len(), 1);
+        assert!(contains(regions[0], 500, 280, 67, 38));
+    }
+
+    #[test]
+    fn avatars_stay_ignored_at_capture_size() {
+        // About 48 capture pixels, and a single cell.
+        assert!(observe_capture_moving(&[(96, 96, 16, 16)]).is_empty());
+        assert!(observe_capture_moving(&[(200, 96, 8, 8)]).is_empty());
     }
 
     #[test]
@@ -480,13 +558,13 @@ mod tests {
         let moved = patch(320, 160, 160, 120, 200);
         assert!(
             tracker
-                .observe(&sized_frame("display-2", WIDTH, HEIGHT, &[moved]))
+                .observe(&sized_frame("display-2", WIDTH, HEIGHT, &[moved]), None)
                 .is_empty()
         );
         let moved = patch(320, 160, 160, 120, 40);
         assert!(
             tracker
-                .observe(&sized_frame("display-2", WIDTH, 400, &[moved]))
+                .observe(&sized_frame("display-2", WIDTH, 400, &[moved]), None)
                 .is_empty()
         );
     }
@@ -494,7 +572,7 @@ mod tests {
     #[test]
     fn tracker_debug_does_not_expose_screen_content() {
         let mut tracker = MotionRegionTracker::default();
-        tracker.observe(&frame(&[patch(0, 0, 8, 8, 77)]));
+        tracker.observe(&frame(&[patch(0, 0, 8, 8, 77)]), None);
 
         let debug = format!("{tracker:?}");
 
@@ -550,6 +628,81 @@ mod tests {
         assert_eq!(&scores[..2], &[83, 83]);
         assert!(scores[2] >= 750, "focused score {}", scores[2]);
         assert_eq!(classifier.inner.calls, 4);
+    }
+
+    /// A 1920x1080 capture whose every pixel scores as risky.
+    #[derive(Default)]
+    struct RedCapture {
+        reads: Vec<FrameRegion>,
+        unavailable: bool,
+    }
+
+    impl FrameDetailSource for RedCapture {
+        fn capture_dimensions(&self) -> Option<FrameDimensions> {
+            full_hd()
+        }
+
+        fn read(&mut self, frame: &PreparedFrame, region: FrameRegion) -> Option<PreparedFrame> {
+            self.reads.push(region);
+            if self.unavailable {
+                return None;
+            }
+            let dimensions = region.dimensions();
+            let red = sized_frame(
+                "display-1",
+                dimensions.width(),
+                dimensions.height(),
+                &[patch(0, 0, dimensions.width(), dimensions.height(), 40)],
+            );
+            assert_eq!(red.monitor_id(), frame.monitor_id());
+            Some(red)
+        }
+    }
+
+    fn classify_capture_frames(rectangle: (u32, u32, u32, u32), capture: &mut RedCapture) -> u16 {
+        let mut classifier = MotionFocusClassifier::new(RedShareClassifier::default());
+        let (x, y, width, height) = rectangle;
+        let mut score = 0;
+        for value in [40, 200, 40] {
+            score = classifier
+                .classify_with_detail(&frame(&[patch(x, y, width, height, value)]), capture)
+                .unwrap()
+                .score_millis;
+        }
+        score
+    }
+
+    #[test]
+    fn small_focus_crops_are_read_from_the_capture() {
+        let mut capture = RedCapture::default();
+
+        let score = classify_capture_frames((500, 280, 67, 38), &mut capture);
+
+        assert_eq!(score, 1_000);
+        assert_eq!(capture.reads.len(), 1);
+        assert!(contains(capture.reads[0], 500, 280, 67, 38));
+    }
+
+    #[test]
+    fn unreadable_capture_falls_back_to_the_prepared_crop() {
+        let mut capture = RedCapture {
+            unavailable: true,
+            ..Default::default()
+        };
+
+        let score = classify_capture_frames((500, 280, 67, 38), &mut capture);
+
+        assert_eq!(capture.reads.len(), 1);
+        assert!((250..1_000).contains(&score), "prepared crop score {score}");
+    }
+
+    #[test]
+    fn crops_that_fill_the_model_input_skip_the_capture() {
+        let mut capture = RedCapture::default();
+
+        classify_capture_frames((160, 60, 320, 240), &mut capture);
+
+        assert!(capture.reads.is_empty());
     }
 
     #[test]

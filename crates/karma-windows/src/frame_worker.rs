@@ -128,7 +128,7 @@ mod native {
         time::Instant,
     };
 
-    use karma_ai::{FrameMetadata, FrameScheduler, FrameWork, PreparedFrame};
+    use karma_ai::{FrameDetailSource, FrameMetadata, FrameScheduler, FrameWork, PreparedFrame};
     use thiserror::Error;
 
     use super::{
@@ -139,14 +139,26 @@ mod native {
     pub trait PreparedFrameConsumer: Send + 'static {
         fn begin_frame(&mut self) {}
 
-        fn consume(&mut self, frame: PreparedFrame, work: FrameWork);
+        /// `detail` reads parts of the capture behind `frame` at its own resolution.
+        fn consume(
+            &mut self,
+            frame: PreparedFrame,
+            work: FrameWork,
+            detail: &mut dyn FrameDetailSource,
+        );
     }
 
     #[derive(Default)]
     pub struct NoopFrameConsumer;
 
     impl PreparedFrameConsumer for NoopFrameConsumer {
-        fn consume(&mut self, _frame: PreparedFrame, _work: FrameWork) {}
+        fn consume(
+            &mut self,
+            _frame: PreparedFrame,
+            _work: FrameWork,
+            _detail: &mut dyn FrameDetailSource,
+        ) {
+        }
     }
 
     #[derive(Debug, Error)]
@@ -208,7 +220,11 @@ mod native {
                                 captured_at_ms: prepared.captured_at_ms(),
                                 fingerprint: prepared.fingerprint(),
                             });
-                            consumer.consume(prepared, work);
+                            {
+                                // The capture texture stays valid while `frame` is held.
+                                let mut detail = processor.detail(&frame);
+                                consumer.consume(prepared, work, &mut detail);
+                            }
                             let mut current = lock_report(&report);
                             current.processed_frames = current.processed_frames.saturating_add(1);
                             current.gpu_fallbacks = processor.health().gpu_fallbacks();

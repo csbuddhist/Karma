@@ -3,7 +3,7 @@ use std::fmt;
 use karma_domain::RiskCategory;
 use thiserror::Error;
 
-use crate::{ImageInference, PreparedFrame, VIDDEXA_LABELS};
+use crate::{FrameDetailSource, ImageInference, PreparedFrame, VIDDEXA_LABELS};
 
 #[derive(Clone, PartialEq)]
 pub struct ClassifierOutput {
@@ -77,6 +77,15 @@ pub trait ImageClassifier {
     type Error;
 
     fn classify(&mut self, frame: &PreparedFrame) -> Result<ImageInference, Self::Error>;
+
+    /// Classifies `frame`, which `detail` can read parts of from its capture.
+    fn classify_with_detail(
+        &mut self,
+        frame: &PreparedFrame,
+        _detail: &mut dyn FrameDetailSource,
+    ) -> Result<ImageInference, Self::Error> {
+        self.classify(frame)
+    }
 }
 
 /// Hentai at or above this probability counts fully toward the risk score.

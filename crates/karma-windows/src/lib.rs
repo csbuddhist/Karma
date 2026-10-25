@@ -24,7 +24,7 @@ pub use capture_state::{CaptureSessionEvent, CaptureSessionState, CaptureSession
 pub use d3d11_device::{CaptureDriver, D3d11CaptureDevice};
 pub use frame_processor::FrameProcessingHealth;
 #[cfg(windows)]
-pub use frame_processor::{FrameProcessingError, WindowsFrameProcessor};
+pub use frame_processor::{FrameProcessingError, WindowsFrameDetail, WindowsFrameProcessor};
 #[cfg(windows)]
 pub use frame_worker::{
     FrameWorkerError, NoopFrameConsumer, PreparedFrameConsumer, WindowsFrameWorker,
