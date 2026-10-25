@@ -37,7 +37,7 @@ mod agent {
     use karma_ai::MotionFocusClassifier;
     use karma_ipc::{ComponentState, MonitorHealth, RequestEnvelope, ResponseEnvelope};
     use karma_macos::{
-        CaptureError,
+        CaptureError, accessibility,
         capture::DisplayStream,
         display::{self, DisplaySnapshot},
     };
@@ -282,6 +282,14 @@ mod agent {
                 // user allows KarmaAgent in System Settings.
                 display::request_screen_capture();
             }
+            if !accessibility::is_trusted() {
+                // Website rules read browser address bars through the
+                // Accessibility API; title and image rules work without it.
+                eprintln!("status=degraded component=browser_host error=accessibility_not_allowed");
+                if running_from_bundle() {
+                    accessibility::request_trust();
+                }
+            }
             match self.client.fetch_policy() {
                 Ok(snapshot) => self.apply_policy(&snapshot.policy),
                 Err(error) => eprintln!("status=degraded component=service_ipc error={error}"),
@@ -290,7 +298,7 @@ mod agent {
                 Arc::clone(&self.client),
                 self.context_policy.clone(),
                 self.application_policy.clone(),
-                || Some(MacosForegroundContext),
+                || Some(MacosForegroundContext::default()),
             );
             let mut tick = 0_u32;
             loop {

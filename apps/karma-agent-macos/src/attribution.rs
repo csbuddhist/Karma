@@ -13,6 +13,7 @@ use karma_agent_core::{
 };
 use karma_ipc::{AgentContextObservation, ProcessIdentity};
 use karma_macos::{
+    accessibility,
     display::{self, WindowSnapshot},
     process,
 };
@@ -104,40 +105,57 @@ impl SourceIdentityProvider for MacosSourceIdentityProvider {
         })
     }
 
-    /// Reading browser address bars needs the Accessibility permission and
-    /// arrives in a later phase; title and image rules work without it.
-    fn browser_host(&mut self, _source: &SourceContext) -> Option<String> {
-        None
+    /// The Accessibility API reads the application's focused window, so a
+    /// host is reported only when that is the window the frame belongs to:
+    /// another window of the same browser on a second display may show a
+    /// different site.
+    fn browser_host(&mut self, source: &SourceContext) -> Option<String> {
+        let windows = display::front_to_back_windows();
+        let (pid, candidates) = foreground_windows(&windows)?;
+        (pid == source.identity.process_id
+            && candidates.first()?.number as isize == source.window_handle)
+            .then(|| accessibility::browser_host(pid))
+            .flatten()
     }
 }
 
 /// The frontmost window for the foreground-context monitor.
-pub struct MacosForegroundContext;
+#[derive(Default)]
+pub struct MacosForegroundContext {
+    /// The application whose window `observe` returned last.
+    last_pid: Option<u32>,
+}
 
 impl ForegroundContext for MacosForegroundContext {
     fn observe(
         &mut self,
         agent_instance_id: &str,
-        _context_policy: &ContextPolicy,
+        context_policy: &ContextPolicy,
     ) -> Option<AgentContextObservation> {
         let windows = display::front_to_back_windows();
         let (pid, candidates) = foreground_windows(&windows)?;
         let title = candidates.first()?.title.clone();
-        if title.is_empty() {
+        let source = identity(pid)?;
+        let browser_host = context_policy
+            .is_browser(&source.executable_name)
+            .then(|| accessibility::browser_host(pid))
+            .flatten();
+        if title.is_empty() && browser_host.is_none() {
             return None;
         }
+        self.last_pid = Some(pid);
         Some(AgentContextObservation {
             event_id: format!("context-{}", random_opaque()),
             agent_instance_id: agent_instance_id.into(),
             occurred_at_ms: unix_time_ms(),
-            source: identity(pid)?,
+            source,
             window_title: title,
-            browser_host: None,
+            browser_host,
         })
     }
 
     fn reread_browser_host(&mut self) -> Option<String> {
-        None
+        self.last_pid.and_then(accessibility::browser_host)
     }
 }
 

@@ -1,9 +1,11 @@
 //! macOS platform integration for Karma: process identity and control,
 //! the active graphical session, and (for the session agent) displays,
-//! windows, and screen capture.
+//! windows, screen capture, and browser address bars.
 
 use thiserror::Error;
 
+#[cfg(all(target_os = "macos", feature = "session-agent"))]
+pub mod accessibility;
 #[cfg(all(target_os = "macos", feature = "session-agent"))]
 pub mod capture;
 #[cfg(all(target_os = "macos", feature = "session-agent"))]
