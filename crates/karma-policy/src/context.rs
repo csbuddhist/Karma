@@ -731,6 +731,38 @@ mod tests {
     }
 
     #[test]
+    fn bundled_keywords_ignore_letters_spanning_ordinary_english_words() {
+        let default = ContextPolicy::default();
+        let enabled = ContextPolicy::from_value(&json!({
+            "recognition": {"ambiguousTitleKeywordsEnabled": true}
+        }))
+        .unwrap();
+        for title in [
+            // "journal(s & m)agazine" once matched a substring keyword.
+            "A Survey on Vision--Language--Action Models for Embodied AI | IEEE Journals & Magazine | IEEE Xplore",
+            "Meeting at 3pm",
+        ] {
+            assert_eq!(
+                default.evaluate(None, title),
+                ContextVerdict::None,
+                "{title}"
+            );
+        }
+        assert_eq!(
+            enabled.evaluate(None, "Meeting at 3pm"),
+            ContextVerdict::None
+        );
+        assert_eq!(
+            default.evaluate(None, "S&M gallery"),
+            ContextVerdict::TitleKeyword
+        );
+        assert_eq!(
+            enabled.evaluate(None, "3P video"),
+            ContextVerdict::TitleKeyword
+        );
+    }
+
+    #[test]
     fn title_matching_can_be_disabled() {
         let policy = ContextPolicy::from_value(&json!({
             "recognition": {"titleMatchingEnabled": false}

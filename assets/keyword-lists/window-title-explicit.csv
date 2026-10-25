@@ -3292,9 +3292,8 @@ ja,生殖器,organ,ambiguous,substring,LDNOOBW;censor-text
 ja,直腸,organ,ambiguous,substring,LDNOOBW;censor-text
 ja,肛門,organ,ambiguous,substring,LDNOOBW;censor-text
 ja,膣,organ,ambiguous,substring,LDNOOBW;censor-text
-ja,3p,sexual,strict,substring,LDNOOBW
+ja,3p,sexual,ambiguous,word,LDNOOBW
 ja,g スポット,sexual,strict,substring,LDNOOBW
-ja,s ＆ m,sexual,strict,substring,LDNOOBW
 ja,sm女王,sexual,strict,substring,LDNOOBW
 ja,ふたなり,sexual,strict,substring,LDNOOBW;censor-text
 ja,ぶっかけ,sexual,strict,substring,LDNOOBW;censor-text

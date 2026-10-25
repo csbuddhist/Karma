@@ -137,12 +137,12 @@ The unified engine supports:
 - Blocklists, allowlists, and a default policy.
 - Browser-domain allowlists and blocklists. An allowlisted domain always wins; a blocklisted
   domain closes immediately without waiting for an image-risk threshold.
-- Foreground-window title matching with a versioned explicit-content list of 2,543 terms in 26
+- Foreground-window title matching with a versioned explicit-content list of 2,542 terms in 26
   languages plus 1,809 adult video code prefixes (`assets/keyword-lists/`). Each term has a
   category (sexual activity, body parts, or video code), a match mode (whole word, contains, word
   prefix, or code pattern), and a confidence: strict terms are always active, while terms that
   also appear in ordinary titles (such as “奶” or “adult”) are off by default and can be turned
-  on. Among the ordinary terms, 1,592 are strict and 951 are prone to false positives. Administrators can add their own terms to the
+  on. Among the ordinary terms, 1,590 are strict and 952 are prone to false positives. Administrators can add their own terms to the
   built-in list with a language, category, and match mode; added terms are always active. Console
   custom high-risk and sensitive keywords also join matching, and exemption keywords suppress
   matches. The console keyword page filters the built-in list by language, category, and
