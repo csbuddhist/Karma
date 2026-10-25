@@ -39,6 +39,8 @@ const EVIDENCE_COOLDOWN_MS: i64 = 5000;
 const DISPOSITION_COOLDOWN_MS: i64 = 5000;
 const CONTEXT_POLL_INTERVAL: Duration = Duration::from_millis(750);
 const CONTEXT_RETRY_COOLDOWN_MS: i64 = 5000;
+const BROWSER_HOST_RETRIES: usize = 3;
+const BROWSER_HOST_RETRY_INTERVAL: Duration = Duration::from_millis(250);
 const JPEG_QUALITY: u8 = 80;
 
 /// Sends one request to the local service and waits for its response.
@@ -167,7 +169,7 @@ impl ContextPolicyHandle {
         }
     }
 
-    fn snapshot(&self) -> ContextPolicy {
+    pub fn snapshot(&self) -> ContextPolicy {
         self.0
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -212,7 +214,8 @@ pub trait SourceIdentityProvider: Send + 'static {
     /// The reliably attributed source window and process, if any.
     fn snapshot(&mut self) -> Option<SourceContext>;
 
-    /// The canonical host a supported browser window shows.
+    /// The canonical host the address bar of the source window shows. Only
+    /// called for windows of browsers (`ContextPolicy::is_browser`).
     fn browser_host(&mut self, source: &SourceContext) -> Option<String>;
 }
 
@@ -221,6 +224,7 @@ pub struct AgentInferenceSink<P> {
     observation_sender: Option<SyncSender<AgentObservation>>,
     evidence_sender: Option<SyncSender<EvidenceFrame>>,
     recognition_policy: RecognitionPolicyHandle,
+    context_policy: ContextPolicyHandle,
     source: P,
     monitor_name: String,
     last_disposition_at_ms: i64,
@@ -243,6 +247,7 @@ impl<P: SourceIdentityProvider> AgentInferenceSink<P> {
     pub fn new(
         client: Option<Arc<AgentServiceClient>>,
         recognition_policy: RecognitionPolicyHandle,
+        context_policy: ContextPolicyHandle,
         monitor_name: String,
         source: P,
     ) -> Self {
@@ -278,6 +283,7 @@ impl<P: SourceIdentityProvider> AgentInferenceSink<P> {
             observation_sender,
             evidence_sender,
             recognition_policy,
+            context_policy,
             source,
             monitor_name,
             last_disposition_at_ms: i64::MIN,
@@ -364,7 +370,12 @@ impl<P: SourceIdentityProvider> OcrSummarySink for AgentInferenceSink<P> {
             monitor_id: frame.monitor_id().0.clone(),
             risk_millis: inference.score_millis,
             reason_code: "image_immediate".into(),
-            browser_host: self.source.browser_host(&source),
+            browser_host: self
+                .context_policy
+                .snapshot()
+                .is_browser(&source.identity.executable_name)
+                .then(|| self.source.browser_host(&source))
+                .flatten(),
             source: Some(source.identity),
             evidence_pending,
             window_title: sendable_title(source.window_title),
@@ -544,9 +555,18 @@ impl AgentServiceClient {
 
 /// Reads the foreground window on the context monitor's thread.
 pub trait ForegroundContext {
-    /// The foreground window's process, title, and browser host, if it has a
-    /// title or host to evaluate.
-    fn observe(&mut self, agent_instance_id: &str) -> Option<AgentContextObservation>;
+    /// The foreground window's process, title, and (for browsers, per
+    /// `ContextPolicy::is_browser`) address bar host, if it has a title or
+    /// host to evaluate.
+    fn observe(
+        &mut self,
+        agent_instance_id: &str,
+        context_policy: &ContextPolicy,
+    ) -> Option<AgentContextObservation>;
+
+    /// Reads the address bar host of the window last returned by `observe`
+    /// again.
+    fn reread_browser_host(&mut self) -> Option<String>;
 }
 
 /// Polls the foreground window and submits it whenever policy, a ban, or a
@@ -569,24 +589,35 @@ pub fn start_context_monitor<C: ForegroundContext>(
             let mut last_submitted_at_ms = i64::MIN;
             loop {
                 thread::sleep(CONTEXT_POLL_INTERVAL);
-                let Some(observation) = foreground.observe(&client.instance_id) else {
+                let context_policy = policy.snapshot();
+                let Some(mut observation) =
+                    foreground.observe(&client.instance_id, &context_policy)
+                else {
                     continue;
                 };
-                let context_policy = policy.snapshot();
                 let effect = applications
                     .snapshot()
                     .effect_for(&observation.source.executable_name);
-                let verdict = context_policy.evaluate(
-                    observation.browser_host.as_deref(),
-                    &observation.window_title,
-                );
-                if !learned_enforcement_applies(
-                    &client.enforcement(),
-                    &context_policy,
-                    effect,
-                    &observation,
-                ) && !karma_policy::context_enforcement(verdict, effect)
-                {
+                let enforcement = client.enforcement();
+                let is_browser = context_policy.is_browser(&observation.source.executable_name);
+                if !requires_enforcement(
+                    &mut observation,
+                    is_browser,
+                    |observation| {
+                        let verdict = context_policy.evaluate(
+                            observation.browser_host.as_deref(),
+                            &observation.window_title,
+                        );
+                        learned_enforcement_applies(
+                            &enforcement,
+                            &context_policy,
+                            effect,
+                            observation,
+                        ) || karma_policy::context_enforcement(verdict, effect)
+                    },
+                    || foreground.reread_browser_host(),
+                    || thread::sleep(BROWSER_HOST_RETRY_INTERVAL),
+                ) {
                     continue;
                 }
                 let fingerprint = context_fingerprint(&observation);
@@ -605,6 +636,33 @@ pub fn start_context_monitor<C: ForegroundContext>(
             }
         })
         .expect("failed to start foreground context monitor")
+}
+
+/// Whether `observation` must be submitted for enforcement. When a browser's
+/// address bar could not be read, it is read again a few times first, so a
+/// momentary gap (the address bar being edited or not yet ready) does not
+/// leave the title alone to override an allowlisted website.
+fn requires_enforcement(
+    observation: &mut AgentContextObservation,
+    is_browser: bool,
+    enforces: impl Fn(&AgentContextObservation) -> bool,
+    mut read_host: impl FnMut() -> Option<String>,
+    mut pause: impl FnMut(),
+) -> bool {
+    if !enforces(observation) {
+        return false;
+    }
+    if !is_browser || observation.browser_host.is_some() {
+        return true;
+    }
+    for _ in 0..BROWSER_HOST_RETRIES {
+        pause();
+        if let Some(host) = read_host() {
+            observation.browser_host = Some(host);
+            return enforces(observation);
+        }
+    }
+    true
 }
 
 /// Mirrors the service: banned executables are closed unconditionally, and
@@ -755,6 +813,71 @@ mod tests {
                 Some("safe.example")
             ),
         ));
+    }
+
+    /// Runs `requires_enforcement` for a keyword-matching Gitee page whose
+    /// host is allowlisted, returning the decision and how often the address
+    /// bar was read again.
+    fn enforce_gitee_page(is_browser: bool, hosts: &[Option<&str>]) -> (bool, usize) {
+        let policy = ContextPolicy::from_value(&json!({
+            "websites": [{"id":"a","pattern":"gitee.com","action":"allow","enabled":true}]
+        }))
+        .unwrap();
+        let mut observation = observation(
+            r"C:\Program Files\Citro Labs\ego lite\Application\ego.exe",
+            "Karma: 免费的家庭色情防护软件 - ego",
+            None,
+        );
+        let mut reads = 0;
+        let mut pauses = 0;
+        let enforce = requires_enforcement(
+            &mut observation,
+            is_browser,
+            |observation| {
+                karma_policy::context_enforcement(
+                    policy.evaluate(
+                        observation.browser_host.as_deref(),
+                        &observation.window_title,
+                    ),
+                    ApplicationEffect::ContentOnly,
+                )
+            },
+            || {
+                reads += 1;
+                hosts.get(reads - 1).copied().flatten().map(str::to_owned)
+            },
+            || pauses += 1,
+        );
+        assert_eq!(reads, pauses);
+        (enforce, reads)
+    }
+
+    #[test]
+    fn unreadable_browser_host_is_retried_before_title_keywords_apply() {
+        assert_eq!(
+            enforce_gitee_page(true, &[None, Some("gitee.com")]),
+            (false, 2)
+        );
+        assert_eq!(enforce_gitee_page(true, &[Some("example.com")]), (true, 1));
+        assert_eq!(enforce_gitee_page(true, &[]), (true, BROWSER_HOST_RETRIES));
+        assert_eq!(enforce_gitee_page(false, &[Some("gitee.com")]), (true, 0));
+    }
+
+    #[test]
+    fn host_is_not_reread_when_nothing_would_be_enforced() {
+        let mut observation = observation("chrome.exe", "Homework - Google Chrome", None);
+        let mut reads = 0;
+        assert!(!requires_enforcement(
+            &mut observation,
+            true,
+            |_| false,
+            || {
+                reads += 1;
+                None
+            },
+            || {},
+        ));
+        assert_eq!(reads, 0);
     }
 
     #[test]

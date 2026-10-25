@@ -9,6 +9,7 @@ mod image_manifest;
 mod image_tensor;
 mod mailbox;
 mod manifest;
+mod motion_focus;
 mod observation;
 mod ocr_engine;
 mod ocr_geometry;
@@ -21,7 +22,7 @@ mod word_pack;
 
 pub use ctc::{CtcDecoder, CtcDictionary, CtcError, DecodedLine};
 pub use detection_map::{DetectionMap, DetectionMapError, DetectionMask};
-pub use frame::{BgraFrame, FrameDimensions, FrameError, PreparedFrame};
+pub use frame::{BgraFrame, FrameDimensions, FrameError, FrameRegion, PreparedFrame};
 pub use frame_pipeline::{FramePipeline, PreparedFrameConsumer, ScheduledFrame};
 pub use image_classifier::{
     ClassifierOutput, ClassifierOutputError, ImageClassifier, ViddexaRiskMapper,
@@ -34,6 +35,7 @@ pub use image_manifest::{
 pub use image_tensor::{ImageTensor, ImageTensorBuilder, ImageTensorError};
 pub use mailbox::LatestFrameMailbox;
 pub use manifest::{AssetKind, AssetManifest, ManifestError};
+pub use motion_focus::{MotionFocusClassifier, MotionRegionTracker};
 pub use observation::{ImageInference, ObservationAssembler, ObservationInput};
 pub use ocr_engine::OcrEngine;
 pub use ocr_geometry::{TextQuadrilateral, sort_and_limit_boxes};

@@ -77,11 +77,21 @@ export interface KeywordRule {
   enabled: boolean;
 }
 
+/** Categories every policy has; `custom` holds applications without a more specific one. */
+export type BuiltInApplicationCategory = "browser" | "player" | "game" | "custom";
+
+/** An administrator-defined application category. */
+export interface ApplicationCategory {
+  id: string;
+  name: string;
+}
+
 export interface ApplicationRule {
   id: string;
   name: string;
   executable: string;
-  category: "browser" | "player" | "game" | "custom";
+  /** A built-in category or the id of an `ApplicationCategory`. */
+  category: string;
   action: "allow" | "block" | "content_only";
   enabled: boolean;
 }
@@ -102,7 +112,11 @@ export interface WebsiteRule {
   enabled: boolean;
 }
 
-export type NetworkTarget = "browsers" | "applications" | "all_network";
+/** Rules saved before categories existed used `browsers`, which the console reads as the browser category. */
+export type NetworkTarget = "categories" | "applications" | "all_network";
+
+/** `block_launch` terminates the covered applications; `all_network` supports only `block_network`. */
+export type ScheduleAction = "block_network" | "block_launch";
 
 export interface ScheduleBlock {
   /** Monday = 0 through Sunday = 6. */
@@ -115,7 +129,10 @@ export interface ScheduleBlock {
 export interface ScheduleRule {
   id: string;
   name: string;
+  action: ScheduleAction;
   target: NetworkTarget;
+  /** Category ids covered when `target` is `categories`. */
+  categories: string[];
   applications: string[];
   blocks: ScheduleBlock[];
   enabled: boolean;
@@ -128,8 +145,9 @@ export interface NetworkStatus {
   restoredUntilMs: number | null;
 }
 
-export type TitleKeywordCategory = "organ" | "sexual";
-export type TitleKeywordMatch = "word" | "substring" | "prefix";
+/** "code" holds product-code prefixes such as "SSIS", which always use "code" matching. */
+export type TitleKeywordCategory = "organ" | "sexual" | "code";
+export type TitleKeywordMatch = "word" | "substring" | "prefix" | "code";
 
 export interface TitleKeywordAddition {
   id: string;
@@ -153,12 +171,24 @@ export interface EvidenceItem {
   originalAvailable: boolean;
 }
 
+/** Why the Service required a window to be closed. */
+export type ClosureReason = "image" | "remembered_title" | "blocked_website" | "title_keyword" | "blocked_application" | "repeat_offender_ban";
+
+/** Title-free context the Service records with some audit rows. */
+export interface AuditDetail {
+  executable?: string;
+  reason?: ClosureReason;
+  riskMillis?: number;
+  thresholdMillis?: number;
+}
+
 export interface AuditItem {
   id: string;
-  occurredAt: string;
+  occurredAtMs: number;
   kind: string;
-  detail: string;
-  outcome: "success" | "warning" | "denied";
+  /** Raw Service outcome, such as `success`, `denied`, or `terminated`. */
+  outcome: string;
+  detail: AuditDetail | null;
 }
 
 export interface UninstallStatus {
@@ -194,6 +224,7 @@ export interface ConsoleState extends AuthorizationStatus {
   /** Keywords administrators added to the built-in list. */
   titleKeywordAdditions: TitleKeywordAddition[];
   websites: WebsiteRule[];
+  applicationCategories: ApplicationCategory[];
   applications: ApplicationRule[];
   schedules: ScheduleRule[];
   evidence: EvidenceItem[];

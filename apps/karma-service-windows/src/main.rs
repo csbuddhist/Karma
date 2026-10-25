@@ -1,4 +1,6 @@
 #[cfg(any(windows, test))]
+mod launch_enforcement;
+#[cfg(any(windows, test))]
 mod network_enforcement;
 #[cfg(windows)]
 mod scm;

@@ -74,6 +74,9 @@ const TITLE_REASON_COLUMNS: [&str; 3] = [
     "risk_millis INTEGER",
     "threshold_millis INTEGER",
 ];
+/// Structured, title-free context for an audit row, such as the closed
+/// executable and why it was closed. Older builds ignore it.
+const AUDIT_DETAIL_COLUMN: &str = "detail TEXT";
 const MISJUDGED_TITLES_TABLE: &str = "
 CREATE TABLE IF NOT EXISTS misjudged_titles (
     id TEXT PRIMARY KEY NOT NULL,
@@ -98,6 +101,8 @@ pub(crate) struct AuditRecord {
     pub(crate) occurred_at_ms: i64,
     pub(crate) kind: String,
     pub(crate) outcome: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) detail: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -262,6 +267,28 @@ impl Store {
         Ok(())
     }
 
+    /// The newest `limit` audit rows, newest first, with their row ids.
+    pub(crate) fn recent_audit(&self, limit: u32) -> Result<Vec<(i64, AuditRecord)>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, occurred_at_ms, kind, outcome, detail FROM audit
+             ORDER BY id DESC LIMIT ?1",
+        )?;
+        let rows = statement
+            .query_map([i64::from(limit)], |row| {
+                Ok((
+                    row.get(0)?,
+                    AuditRecord {
+                        occurred_at_ms: row.get(1)?,
+                        kind: row.get(2)?,
+                        outcome: row.get(3)?,
+                        detail: row.get(4)?,
+                    },
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     fn migrate(&mut self) -> Result<(), StoreError> {
         let version: i64 = self
             .connection
@@ -288,6 +315,15 @@ impl Store {
                     "ALTER TABLE remembered_titles ADD COLUMN {column};"
                 ))?;
             }
+        }
+        let audit_columns = transaction
+            .prepare("SELECT name FROM pragma_table_info('audit')")?
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        if !audit_columns.iter().any(|existing| existing == "detail") {
+            transaction.execute_batch(&format!(
+                "ALTER TABLE audit ADD COLUMN {AUDIT_DETAIL_COLUMN};"
+            ))?;
         }
         transaction.execute_batch(MISJUDGED_TITLES_TABLE)?;
         transaction.commit()?;
@@ -575,8 +611,14 @@ fn write_changes(
             }
             Change::Audit(record) => {
                 transaction.execute(
-                    "INSERT INTO audit (occurred_at_ms, kind, outcome) VALUES (?1, ?2, ?3)",
-                    params![record.occurred_at_ms, record.kind, record.outcome],
+                    "INSERT INTO audit (occurred_at_ms, kind, outcome, detail)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![
+                        record.occurred_at_ms,
+                        record.kind,
+                        record.outcome,
+                        record.detail
+                    ],
                 )?;
                 audited = true;
             }
@@ -715,13 +757,14 @@ fn legacy_changes(legacy: &LegacyState) -> Vec<Change> {
 pub(crate) fn audit_records(path: &Path) -> Vec<AuditRecord> {
     Connection::open(path)
         .unwrap()
-        .prepare("SELECT occurred_at_ms, kind, outcome FROM audit ORDER BY id")
+        .prepare("SELECT occurred_at_ms, kind, outcome, detail FROM audit ORDER BY id")
         .unwrap()
         .query_map([], |row| {
             Ok(AuditRecord {
                 occurred_at_ms: row.get(0)?,
                 kind: row.get(1)?,
                 outcome: row.get(2)?,
+                detail: row.get(3)?,
             })
         })
         .unwrap()
@@ -832,6 +875,7 @@ mod tests {
                         occurred_at_ms: 1,
                         kind: "policy_updated".into(),
                         outcome: "success".into(),
+                        detail: None,
                     }),
                     Change::InsertEvidence(StoredEvidence {
                         id: "evidence-1".into(),
@@ -923,6 +967,48 @@ mod tests {
     }
 
     #[test]
+    fn audit_detail_column_is_added_to_existing_databases() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("state.db");
+        {
+            // A database written before the detail column existed.
+            let connection = Connection::open(&path).unwrap();
+            connection.execute_batch(SCHEMA_V1).unwrap();
+            connection
+                .execute(
+                    "INSERT INTO audit (occurred_at_ms, kind, outcome) VALUES (1, 'old', 'x')",
+                    [],
+                )
+                .unwrap();
+            connection
+                .pragma_update(None, "user_version", SCHEMA_VERSION)
+                .unwrap();
+        }
+        let (mut store, _) = Store::open(&path, &KEY).unwrap();
+        store
+            .apply(&[Change::Audit(AuditRecord {
+                occurred_at_ms: 2,
+                kind: "application_disposition".into(),
+                outcome: "terminated".into(),
+                detail: Some(r#"{"reason":"title_keyword"}"#.into()),
+            })])
+            .unwrap();
+
+        let recent = store.recent_audit(10).unwrap();
+        assert_eq!(recent.len(), 2);
+        assert_eq!(recent[0].1.kind, "application_disposition");
+        assert_eq!(
+            recent[0].1.detail.as_deref(),
+            Some(r#"{"reason":"title_keyword"}"#)
+        );
+        assert_eq!(recent[1].1.detail, None);
+        assert_eq!(store.recent_audit(1).unwrap().len(), 1);
+        drop(store);
+        // Reopening does not try to add the column twice.
+        Store::open(&path, &KEY).unwrap();
+    }
+
+    #[test]
     fn audit_log_is_capped_to_the_newest_rows() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("state.db");
@@ -933,6 +1019,7 @@ mod tests {
                     occurred_at_ms: index,
                     kind: "event".into(),
                     outcome: "success".into(),
+                    detail: None,
                 })
             })
             .collect();

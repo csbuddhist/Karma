@@ -7,12 +7,19 @@ use thiserror::Error;
 use unicode_normalization::UnicodeNormalization;
 use url::{Host, Url};
 
+use crate::{
+    application_category::{BROWSER_CATEGORY, category_members},
+    network_schedule::matches_browser,
+};
+
 const MAX_WEBSITE_RULES: usize = 256;
 const MAX_KEYWORD_RULES: usize = 256;
 /// Upper bound on keywords administrators add to the built-in list.
 pub const MAX_TITLE_KEYWORD_ADDITIONS: usize = 1024;
 /// Longest term accepted in the built-in list or as an addition to it.
 pub const MAX_TITLE_KEYWORD_TERM_CHARS: usize = 64;
+/// Longest product-code prefix, such as `SSIS`.
+const MAX_CODE_PREFIX_CHARS: usize = 16;
 const MAX_RULE_ID_CHARS: usize = 128;
 const MAX_RULE_VALUE_CHARS: usize = 2048;
 const BUNDLED_TITLE_KEYWORDS: &str =
@@ -57,6 +64,11 @@ pub enum KeywordMatch {
     /// Like `Word`, but the last title word only has to start with the
     /// keyword's last word.
     Prefix,
+    /// The keyword is a product-code prefix such as `SSIS`, matched when it
+    /// is followed by three or four digits and, optionally, a hyphen between
+    /// them with one space on either side: `SSIS-123`, `SSIS 123`, or
+    /// `SSIS123`.
+    Code,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,6 +95,8 @@ pub struct ContextPolicy {
     /// Custom high-risk and sensitive phrases plus additions to the built-in list.
     added_keywords: Vec<TitleKeyword>,
     exempt_keywords: Vec<String>,
+    /// Enabled console application rules categorized as browsers.
+    browser_members: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -119,11 +133,13 @@ enum KeywordCategory {
     Exemption,
 }
 
-#[derive(Deserialize, Clone, Copy)]
+#[derive(Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum TitleKeywordCategory {
     Organ,
     Sexual,
+    /// Product codes of adult videos, which always use `KeywordMatch::Code`.
+    Code,
 }
 
 #[derive(Deserialize, Clone, Copy, PartialEq, Eq)]
@@ -141,7 +157,6 @@ struct TitleKeywordAdditionInput {
     id: String,
     term: String,
     language: String,
-    #[allow(dead_code)]
     category: TitleKeywordCategory,
     #[serde(rename = "match")]
     mode: KeywordMatch,
@@ -165,7 +180,6 @@ struct LanguageKeywords {
 #[serde(deny_unknown_fields)]
 struct BundledKeyword {
     term: String,
-    #[allow(dead_code)]
     category: TitleKeywordCategory,
     confidence: KeywordConfidence,
     #[serde(rename = "match")]
@@ -256,6 +270,7 @@ impl ContextPolicy {
                 || addition.term.trim().is_empty()
                 || addition.term.chars().count() > MAX_TITLE_KEYWORD_TERM_CHARS
                 || !valid_language(&addition.language)
+                || !valid_code_usage(&addition.term, addition.category, addition.mode)
             {
                 return Err(ContextPolicyError::InvalidPolicy);
             }
@@ -271,6 +286,9 @@ impl ContextPolicy {
             bundled,
             added_keywords,
             exempt_keywords,
+            browser_members: category_members(policy)
+                .remove(BROWSER_CATEGORY)
+                .unwrap_or_default(),
         })
     }
 
@@ -348,6 +366,12 @@ impl ContextPolicy {
     pub fn allows_host(&self, browser_host: Option<&str>) -> bool {
         self.evaluate(browser_host, "") == ContextVerdict::Allowlisted
     }
+
+    /// Whether the address bar of `executable_path` is read for website
+    /// rules: known browsers and applications categorized as browsers.
+    pub fn is_browser(&self, executable_path: &str) -> bool {
+        matches_browser(Some(&self.browser_members), executable_path)
+    }
 }
 
 impl TitleKeyword {
@@ -382,6 +406,7 @@ impl TitleKeyword {
                     .all(|(left, right)| left == right)
                     && window[leading.len()].starts_with(last.as_str())
             }),
+            KeywordMatch::Code => code_matches(normalized_title, &self.term),
         }
     }
 }
@@ -401,6 +426,7 @@ fn load_bundled_keywords() -> Result<BundledTitleKeywords, ContextPolicyError> {
         for keyword in group.keywords {
             if keyword.term.trim().is_empty()
                 || keyword.term.chars().count() > MAX_TITLE_KEYWORD_TERM_CHARS
+                || !valid_code_usage(&keyword.term, keyword.category, keyword.mode)
             {
                 return Err(ContextPolicyError::InvalidBundledKeywords);
             }
@@ -412,6 +438,51 @@ fn load_bundled_keywords() -> Result<BundledTitleKeywords, ContextPolicyError> {
         }
     }
     Ok(BundledTitleKeywords { strict, ambiguous })
+}
+
+/// Only product codes use code matching, and their terms must be code
+/// prefixes: 2-16 ASCII letters and digits with at least one letter.
+fn valid_code_usage(term: &str, category: TitleKeywordCategory, mode: KeywordMatch) -> bool {
+    match (category, mode) {
+        (TitleKeywordCategory::Code, KeywordMatch::Code) => {
+            let prefix = normalize_text(term);
+            (2..=MAX_CODE_PREFIX_CHARS).contains(&prefix.len())
+                && prefix
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+                && prefix.bytes().any(|byte| byte.is_ascii_lowercase())
+        }
+        (TitleKeywordCategory::Code, _) | (_, KeywordMatch::Code) => false,
+        _ => true,
+    }
+}
+
+/// Whether `prefix` appears in the title, not preceded by an ASCII letter or
+/// digit, and is followed by a three- or four-digit number. A hyphen may
+/// separate the two, and one space may sit on either side of the hyphen or,
+/// without one, between them.
+fn code_matches(normalized_title: &str, prefix: &str) -> bool {
+    normalized_title.match_indices(prefix).any(|(start, _)| {
+        let starts_word = !normalized_title[..start]
+            .chars()
+            .next_back()
+            .is_some_and(|character| character.is_ascii_alphanumeric());
+        starts_word && code_number_follows(&normalized_title[start + prefix.len()..])
+    })
+}
+
+fn code_number_follows(rest: &str) -> bool {
+    let rest = rest.strip_prefix(char::is_whitespace).unwrap_or(rest);
+    let rest = rest.strip_prefix(is_dash).map_or(rest, |after| {
+        after.strip_prefix(char::is_whitespace).unwrap_or(after)
+    });
+    let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+    (3..=4).contains(&digits)
+}
+
+/// ASCII and Unicode hyphens and dashes. NFKC already folds full-width forms.
+fn is_dash(character: char) -> bool {
+    matches!(character, '-' | '\u{2010}'..='\u{2015}' | '\u{2212}')
 }
 
 /// A lowercase ISO 639 language code, such as `zh` or `fil`.
@@ -554,6 +625,33 @@ mod tests {
             }))
             .is_err()
         );
+    }
+
+    #[test]
+    fn applications_categorized_as_browsers_have_their_address_bar_read() {
+        let policy = ContextPolicy::from_value(&json!({
+            "applications": [
+                {"id":"ego","name":"ego","executable":r"C:\Program Files\Citro Labs\ego lite\Application\ego.exe","category":"browser","action":"content_only","enabled":true},
+                {"id":"off","name":"Off","executable":"oldbrowser.exe","category":"browser","action":"content_only","enabled":false},
+                {"id":"reader","name":"Reader","executable":"reader.exe","category":"custom","action":"allow","enabled":true}
+            ]
+        }))
+        .unwrap();
+        for browser in [
+            r"C:\Program Files\Citro Labs\ego lite\Application\EGO.EXE",
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files\Quark\quark.exe",
+        ] {
+            assert!(policy.is_browser(browser), "{browser}");
+        }
+        for other in [
+            r"D:\ego.exe",
+            r"C:\Tools\oldbrowser.exe",
+            r"C:\Tools\reader.exe",
+        ] {
+            assert!(!policy.is_browser(other), "{other}");
+        }
+        assert!(ContextPolicy::default().is_browser("msedge.exe"));
     }
 
     #[test]
@@ -744,15 +842,83 @@ mod tests {
     }
 
     #[test]
+    fn bundled_code_prefixes_match_three_or_four_digit_product_codes() {
+        let policy = ContextPolicy::default();
+        for title in [
+            "SSIS-001 新人出道",
+            "ssis001.mp4 - Player",
+            "SSIS 1234",
+            "SSIS - 123",
+            "SSIS -123",
+            "SSIS– 123",
+            "ＳＳＩＳ－１２３",
+            "三上悠亚SSIS-123中文字幕",
+            "[hhd800.com]SSIS-123C",
+            "Watch 300MIUM-456 online",
+            // JUL is a major label, so it stays strict despite month names.
+            "JUL-123",
+            "Sales report Jul 2024",
+        ] {
+            assert_eq!(
+                policy.evaluate(None, title),
+                ContextVerdict::TitleKeyword,
+                "{title}"
+            );
+        }
+        for title in [
+            "SSIS-12 meeting notes",
+            "SSIS-12345 build log",
+            "SSIS  123",
+            "SSIS_123",
+            "MSSIS-123",
+            "1SSIS-123",
+            "SSIS package designer",
+        ] {
+            assert_eq!(
+                policy.evaluate(None, title),
+                ContextVerdict::None,
+                "{title}"
+            );
+        }
+    }
+
+    #[test]
+    fn ambiguous_code_prefixes_apply_only_when_enabled() {
+        let default = ContextPolicy::default();
+        let enabled = ContextPolicy::from_value(&json!({
+            "recognition": {"ambiguousTitleKeywordsEnabled": true}
+        }))
+        .unwrap();
+        for title in ["Sales report Nov 2024", "NOV-123"] {
+            assert_eq!(
+                default.evaluate(None, title),
+                ContextVerdict::None,
+                "{title}"
+            );
+            assert_eq!(
+                enabled.evaluate(None, title),
+                ContextVerdict::TitleKeyword,
+                "{title}"
+            );
+        }
+    }
+
+    #[test]
     fn title_keyword_additions_are_enforced_with_their_match_mode() {
         let policy = ContextPolicy::from_value(&json!({
             "titleKeywordAdditions": [
                 {"id":"a1","term":"Spicyclip","language":"en","category":"sexual","match":"prefix"},
                 {"id":"a2","term":"nsfwzone","language":"en","category":"sexual","match":"substring"},
-                {"id":"a3","term":"露骨直播","language":"zh","category":"sexual","match":"word"}
+                {"id":"a3","term":"露骨直播","language":"zh","category":"sexual","match":"word"},
+                {"id":"a4","term":"QXYZ","language":"ja","category":"code","match":"code"}
             ]
         }))
         .unwrap();
+        assert_eq!(
+            policy.evaluate(None, "qxyz 0042 preview"),
+            ContextVerdict::TitleKeyword
+        );
+        assert_eq!(policy.evaluate(None, "QXYZ-42"), ContextVerdict::None);
         assert_eq!(
             policy.evaluate(None, "spicyclips daily"),
             ContextVerdict::TitleKeyword
@@ -782,6 +948,13 @@ mod tests {
             json!({"id":"a","term":"x1","language":"en","category":"violence","match":"word"}),
             json!({"id":"a","term":"x1","language":"en","category":"sexual","match":"regex"}),
             json!({"id":"a","term":"x1","language":"en","category":"sexual","match":"word","enabled":true}),
+            json!({"id":"a","term":"qxyz","language":"ja","category":"code","match":"word"}),
+            json!({"id":"a","term":"qxyz","language":"ja","category":"sexual","match":"code"}),
+            json!({"id":"a","term":"qx yz","language":"ja","category":"code","match":"code"}),
+            json!({"id":"a","term":"1234","language":"ja","category":"code","match":"code"}),
+            json!({"id":"a","term":"q","language":"ja","category":"code","match":"code"}),
+            json!({"id":"a","term":"番号","language":"zh","category":"code","match":"code"}),
+            json!({"id":"a","term":"q".repeat(17),"language":"ja","category":"code","match":"code"}),
         ] {
             assert!(
                 ContextPolicy::from_value(&addition(invalid.clone())).is_err(),

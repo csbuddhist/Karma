@@ -143,20 +143,43 @@ The shared core is written in Rust and produces native libraries for Windows and
 The unified engine supports:
 
 - Allowed and blocked time ranges for all seven days of the week at 15-minute granularity.
-- Browser, media player, game, and custom application categories.
+- Built-in Browser, Media player, Game, and Other application categories, plus administrator-defined categories (`policy.applicationCategories`); each application rule's `category` names one of them.
 - Rules based on application path, bundle ID, publisher signature, and file hash.
 - Blocklists, allowlists, and a default policy.
 - Browser-domain allowlists and blocklists. An allowlisted domain always wins; a blocklisted
   domain closes immediately without waiting for an image-risk threshold.
 - Foreground-window title matching with a versioned explicit-content list of 2,543 terms in 26
-  languages (`assets/keyword-lists/`). Each term has a category (sexual activity or body parts),
-  a match mode (whole word, contains, or word prefix), and a confidence: the 1,592 strict terms are
-  always active, while the 951 terms that also appear in ordinary titles (such as “奶” or
-  “adult”) are off by default and can be turned on. Administrators can add their own terms to the
+  languages plus 1,809 adult video code prefixes (`assets/keyword-lists/`). Each term has a
+  category (sexual activity, body parts, or video code), a match mode (whole word, contains, word
+  prefix, or code pattern), and a confidence: strict terms are always active, while terms that
+  also appear in ordinary titles (such as “奶” or “adult”) are off by default and can be turned
+  on. Among the ordinary terms, 1,592 are strict and 951 are prone to false positives. Administrators can add their own terms to the
   built-in list with a language, category, and match mode; added terms are always active. Console
   custom high-risk and sensitive keywords also join matching, and exemption keywords suppress
   matches. The console keyword page filters the built-in list by language, category, and
   confidence, and supports adding, editing, enabling, deleting, and searching custom keywords.
+  Video codes match titles in any language, so the page lists them in a group of their own, each
+  prefix followed by `-###` for its digits with matching examples on hover; adding a code does not
+  ask for a language.
+- The video-code category always uses code-pattern matching: the title must contain the prefix
+  (not directly preceded by an ASCII letter or digit), an optional hyphen (one space is allowed on
+  either side of it, or between prefix and digits when there is no hyphen), and exactly three or
+  four digits (not followed by another digit). `SSIS-123`, `SSIS 123`, `SSIS123`, `SSIS - 123`, and
+  `三上悠亚SSIS-123C` match; `SSIS-12`, `SSIS-12345`, and `XSSIS-123` do not. Titles are NFKC
+  normalized first, so full-width letters, digits, and hyphens match too. The bundled prefixes
+  come from MDCx's DMM series routing table and Chinese-subtitle code table, the OpenAver and
+  darkeye maker prefix tables, the webtor and dhtsearch adult-content filters, and the
+  popularity-ranked dan211 prefix list (only entries confirmed by the DMM series table or subtitle
+  table). The long tail of rarely released DMM series, out of about 11,000, and single-letter
+  prefixes are left out to limit collisions with ordinary abbreviations. The 167 prefixes most
+  likely to collide with ordinary titles are marked as prone to false positives: two-letter
+  prefixes (such as DV and BF), months and weekdays (such as NOV and WED), currencies and common
+  technical abbreviations (such as BTC, DPI, PMS, MFC, and SCP), and ordinary English words (such
+  as STAR, LOVE, and REAL). JUL, a major Madonna label, stays strict even though it is also a
+  month abbreviation. Strict prefixes can still collide with ordinary content, such as dates like
+  `Jul 2024` or `SSIS 2019` for SQL Server Integration Services; exemption keywords can suppress
+  such matches.
+  Sources and licenses are listed in `assets/keyword-lists/NOTICE.md`.
 - Remembered window titles: when explicit image detection closes an application, the Service
   remembers that window's title (the page title in browsers) and canonical host; the same
   application showing the same title again is closed on sight. The console's Content
@@ -197,6 +220,7 @@ Decision {
 - Each display maintains an independent sliding window.
 - Bounded frame preparation is capped at 4 frames per second and image inference at 2 frames per second, avoiding unbounded capture-callback work while keeping preparation admission latency within 250 ms.
 - Before inference, images are resized and very small regions are blurred to reduce false positives from text and avatars.
+- Motion focus: the whole-frame inference shrinks the full display into the 224×224 model input, so a video covering a quarter of the screen ends up a small patch among unrelated page content and its score is diluted. Every image inference therefore also compares the prepared frame (long edge at most 640 px) with the previous one on an 8 px grid. A cell moves when its mean luma changed by at least 4 in at least 2 of its last 16 samples. Moving cells are grown by one cell and grouped; a group is classified separately, cropped with a one-cell margin, when its moving cells are at least 56 px on the short edge, at most 4:1, at most half of the frame, and fill at least half of their bounds. This rejects avatars, cursor trails, tickers, and full-screen video that the whole-frame inference already sees. At most the 2 largest groups are classified per frame, and the highest score among the whole frame and its crops is used for enforcement and evidence (the evidence image is still the whole frame). Static content gets no crop. The motion grid holds only per-cell luma in zeroized memory and is never logged or sent.
 - Video and still images use the same continuous-frame state machine.
 
 Suggested decision rules:
@@ -211,6 +235,8 @@ Below threshold continuously for 10 seconds → Clear risk state
 ```
 
 Thresholds must be updatable through signed configuration. After a model match, first identify the foreground window on that display and its owning PID/Bundle ID, and then act on the source application to avoid terminating unrelated browsers or background processes.
+
+The image risk score is `porn + w × hentai + 0.35 × sexy`. `hentai` counts fully (`w = 1`) only when its probability is at least 0.95 or `porn` is at least as likely; otherwise `w = 0.5`. Dark, text-heavy screen UI such as GitHub pages is often misread by the model as line-art hentai, and this rule keeps those frames below the enforcement threshold.
 
 In the current Windows test build, saving the console risk threshold also updates the immediate-enforcement threshold, including migration of previously saved mismatched values. Disabling image recognition stops image classifier work and prevents image evidence or disposition events.
 
@@ -247,10 +273,15 @@ The current repository implements Windows frame input, image-inference and OCR-i
 
 Service state (administrator password hash, policy, up to 50,000 audit entries, evidence metadata, repeat-offender bans, and remembered titles) lives in a transactional SQLite database (WAL, `synchronous=FULL`, `secure_delete`). Every change commits atomically, so a crash or power loss cannot leave a half-written state file. Builds before v0.2.3 stored a JSON file; it is imported automatically on first start, in the same transaction that initializes the database, and kept as `service-state.json.migrated`. Downgrading to an earlier build is not supported: it would no longer find its JSON file and would start with first-time setup.
 
-Browser host discovery currently supports Chrome, Edge, Firefox, Brave, Opera/Opera GX,
-Vivaldi, and Arc on Windows through UI Automation. Rules are domain-level (including subdomains),
-not path-level. If a browser hides or does not expose its address bar to accessibility, Karma cannot
-identify an allowlisted or blocklisted host for that window; title and image rules continue to work.
+On Windows, browser host discovery reads the address bar through UI Automation for every known
+browser (`KNOWN_BROWSER_EXECUTABLES`: Chrome, Edge, Firefox, Brave, Opera/Opera GX, Vivaldi, Arc,
+360, QQ, Sogou, Quark, and others) and for every application rule in the “Browser” category, the
+same set the browser blocking schedule uses. When a title keyword or remembered title would close a
+browser whose address bar could not be read, the Agent reads it up to three more times, 250 ms
+apart, before acting, so a momentary gap (an address bar being edited or not yet exposed) does not
+override an allowlisted site. Rules are domain-level (including subdomains), not path-level. If a
+browser hides or does not expose its address bar to accessibility, Karma cannot identify an
+allowlisted or blocklisted host for that window; title and image rules continue to work.
 
 The management UI is located at [`apps/karma-ui/`](apps/karma-ui/). Windows builds connect to `KarmaService` through a native named pipe that supports concurrent clients. Administrator passwords, sessions, live Agent/display status, policy revisions, and evidence viewing are all controlled by the Service. The Event Evidence page shows each item's local capture date and time, newest first, and can be filtered by a start/end date-time range. System Settings can change the administrator password after re-verifying the current one, and can export the current policy to a JSON backup file or import a previously exported backup for review and restore; import validates the backup schema and policy before anything reaches the console. Service sessions are held in memory only: if `KarmaService` is stopped and started again, the console detects the invalid session and returns to the unlock screen, and unlocking once more restores the connection instead of leaving a permanent "service not connected" status. If the connection fails, the GUI shows an explicit Service connection error instead of presenting an unknown authentication state as a password-unlock screen. Non-Windows development builds continue to use an isolated local backend.
 
@@ -297,6 +328,8 @@ Application control borrows the idea of “continuous process monitoring, immedi
 After a browser match, the corresponding browser process group is closed by default. For browsers with multiple profiles, the implementation should identify the process owning the window whenever possible. Media players, image viewers, and games can be handled directly by their main processes.
 
 Repeat-offender cooldown (implemented on Windows): once the same executable is closed 5 times within 20 minutes (both configurable on the console's Application Control page: 1–1440 minutes and 2–20 closures), it is banned for one hour. Every successful closure counts, whether triggered by images, titles, URL rules, or remembered titles. During the ban, any foreground observation of that executable is terminated immediately with no grace period, superseding website allow rules and application allow rules. The Service publishes active bans and remembered titles to the Agent, which refreshes them right after each closure and with every heartbeat (about 10 seconds), so a relaunched program is closed even when its window shows nothing objectionable. Enforcement kills during a ban do not extend it. The ban is persisted in the service state, survives service restarts and reboots, is listed on the Application Control page, and is recorded in the audit log as `repeat_offender_banned`; turning protection off (`protectionEnabled`) suspends enforcement.
+
+Every closure is also written to the audit log as `application_disposition`, with the normalized executable, the reason (`image` with its risk score and threshold, `remembered_title`, `blocked_website`, `title_keyword`, `blocked_application`, or `repeat_offender_ban` for kills during a ban), and the outcome. Only image closures can produce evidence, so the audit log is where closures by other rules can be traced. The console's Audit Log page lists the newest 500 entries and can be filtered to application closures; each active ban on the Application Control page summarizes the reasons of the closures that established it. Audit details never contain window titles or URLs. Builds up to v0.3.9 kept audit entries but had no interface to read them, so the page stayed empty; their closure entries show the reason as not recorded.
 
 ### Windows Application Control
 
@@ -363,21 +396,11 @@ macOS:
 - MDM deploys PPPC, System Extension, Network Extension, and non-removable application policies.
 - FileVault and System Integrity Protection remain enabled.
 
-### Explicit Boundaries
-
-The following situations can only be detected or reported afterward; prevention cannot be guaranteed:
-
-- An administrator/root user intentionally disables or removes components.
-- Safe Mode, recovery environments, or offline disk modification.
-- The user revokes macOS Screen Recording permission.
-- Secure Boot/SIP is disabled, the operating system is reinstalled, or the startup disk is replaced.
-- Physical obstruction, external capture devices, or content played on another device.
-
 ## Network Schedule Control
 
 Network control governs only which applications may access the network and when. Pornographic-content detection remains the responsibility of the on-screen AI.
 
-Current status: the console's Network Schedules page configures any number of time blocks for each day from Monday to Sunday (blocks may cross midnight) and one of three targets per rule: browsers (common browsers plus applications categorized as browsers), selected applications, or all networked applications. Single-range rules saved by earlier builds are migrated automatically. `KarmaService` validates every schedule, evaluates it in the device's local time zone, reports whether a block is active and when it ends, and records the start and end of each restricted period in the audit log. During a block, network access can be restored early only from the console by entering the super password again (the administrator password if none is configured); the restore lasts until the current block ends, is persisted across Service restarts, and is audited. On Windows, the service now applies `ServiceCore::network_enforcement` through persistent WFP filters immediately on startup and every 60 seconds afterward. Schedule changes, policy changes, and early restore take effect at the next poll (up to about 60 seconds). Windows hardware acceptance is pending; see [the network enforcement checklist](docs/windows-network-enforcement-acceptance.md).
+Current status: the console's Blocking Schedules page configures any number of time blocks for each day from Monday to Sunday (blocks may cross midnight), with an action and targets per rule. The action blocks network access (`block_network`, the default) or running (`block_launch`). The targets are one or more application categories (the browser category always includes common browsers; the others consist of the enabled application rules assigned under Applications → Application types), selected applications, or all networked applications (network blocking only). The Service resolves categories to executable sets when it reads the policy, so moving an application out of a blocked category is detected as a weakening. Single-range rules and the browser target saved by earlier builds are migrated automatically and enforced the same way. `KarmaService` validates every schedule, evaluates it in the device's local time zone, reports whether a block is active and when it ends, and records the start and end of each restricted period in the audit log. During a block, network access can be restored early only from the console by entering the super password again (the administrator password if none is configured); the restore lasts until the current block ends, is persisted across Service restarts, and is audited. On Windows, the service now applies `ServiceCore::network_enforcement` through persistent WFP filters immediately on startup and every 60 seconds afterward. Schedule changes, policy changes, and early restore take effect at the next poll (up to about 60 seconds). Launch blocking runs on its own service thread: every 2 seconds it reads the current restriction, prefilters a process snapshot by file name, reads the full image path from the same process handle, and calls `TerminateProcess` only after confirming a match. Programs inside the Windows directory (`GetSystemWindowsDirectoryW`) or Karma's install directory are never terminated. Each executable is audited once per blocked period as `schedule_launch_blocked` (outcome `terminated` or `failed`, with only the image path as detail). Lifting a block early lifts both network and launch blocking. Windows hardware acceptance is pending; see [the network enforcement checklist](docs/windows-network-enforcement-acceptance.md).
 
 ### Windows
 

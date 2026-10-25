@@ -20,9 +20,12 @@ pub const MAX_TITLE_QUERY_CHARS: usize = 128;
 pub const MAX_EXECUTABLE_CHARS: usize = 260;
 /// Most evidence items one `DeleteEvidenceBatch` request may name.
 pub const MAX_EVIDENCE_BATCH: usize = 200;
+/// Evidence at or above this risk is critical: once a super password is
+/// configured, only it can delete such evidence.
+pub const CRITICAL_EVIDENCE_RISK_MILLIS: u16 = 950;
 /// The product version this build reports and updates from. Kept equal to the
 /// console's `tauri.conf.json` version by the installer contract test.
-pub const PRODUCT_VERSION: &str = "0.3.8";
+pub const PRODUCT_VERSION: &str = "0.3.18";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -104,20 +107,33 @@ pub enum ServiceRequest {
     ListEvidence {
         session_token: String,
     },
+    /// The newest audit entries, newest first, at most `MAX_AUDIT_PAGE`.
+    ListAudit {
+        session_token: String,
+        #[serde(default = "default_audit_page")]
+        limit: u32,
+    },
     RevealEvidence {
         session_token: String,
         password: String,
         evidence_id: String,
     },
+    /// Delete one evidence item. Critical evidence requires the super
+    /// password once one is configured.
     DeleteEvidence {
         session_token: String,
         evidence_id: String,
+        #[serde(default)]
+        super_password: Option<String>,
     },
     /// Delete several evidence items at once. Items that no longer exist are
-    /// skipped; the request fails only when none of them exists.
+    /// skipped; the request fails only when none of them exists. Naming any
+    /// critical evidence requires the super password once one is configured.
     DeleteEvidenceBatch {
         session_token: String,
         evidence_ids: Vec<String>,
+        #[serde(default)]
+        super_password: Option<String>,
     },
     /// One page of remembered window titles, newest first, optionally
     /// filtered by a case-insensitive query, plus active repeat-offender bans.
@@ -256,6 +272,7 @@ impl ServiceRequest {
             | Self::GetPolicy { .. }
             | Self::PutPolicy { .. }
             | Self::ListEvidence { .. }
+            | Self::ListAudit { .. }
             | Self::RevealEvidence { .. }
             | Self::DeleteEvidence { .. }
             | Self::DeleteEvidenceBatch { .. }
@@ -327,6 +344,14 @@ impl ServiceRequest {
                 super_password: Some(password),
                 ..
             }
+            | Self::DeleteEvidence {
+                super_password: Some(password),
+                ..
+            }
+            | Self::DeleteEvidenceBatch {
+                super_password: Some(password),
+                ..
+            }
             | Self::MarkTitleMisjudged {
                 super_password: Some(password),
                 ..
@@ -339,6 +364,7 @@ impl ServiceRequest {
             | Self::GetPolicy { session_token }
             | Self::PutPolicy { session_token, .. }
             | Self::ListEvidence { session_token }
+            | Self::ListAudit { session_token, .. }
             | Self::RevealEvidence { session_token, .. }
             | Self::DeleteEvidence { session_token, .. }
             | Self::DeleteEvidenceBatch { session_token, .. }
@@ -407,6 +433,11 @@ impl ServiceRequest {
                             || query.chars().any(char::is_control)
                     })
                 {
+                    return Err(ProtocolError::InvalidField);
+                }
+            }
+            Self::ListAudit { limit, .. } => {
+                if !(1..=MAX_AUDIT_PAGE).contains(limit) {
                     return Err(ProtocolError::InvalidField);
                 }
             }
@@ -681,6 +712,9 @@ pub enum ServiceResult {
     EvidenceList {
         items: Vec<EvidenceMetadata>,
     },
+    AuditList {
+        items: Vec<AuditEntry>,
+    },
     EvidenceImage {
         media_type: String,
         bytes_base64: String,
@@ -706,6 +740,26 @@ pub enum ServiceResult {
 
 fn default_title_page() -> u32 {
     50
+}
+
+/// Most audit entries one `ListAudit` request returns.
+pub const MAX_AUDIT_PAGE: u32 = 500;
+
+fn default_audit_page() -> u32 {
+    MAX_AUDIT_PAGE
+}
+
+/// One audit log row. `detail` is a JSON object without window titles, such
+/// as the executable an enforcement closed and the reason it was closed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuditEntry {
+    pub id: i64,
+    pub occurred_at_ms: i64,
+    pub kind: String,
+    pub outcome: String,
+    #[serde(default)]
+    pub detail: Option<String>,
 }
 
 /// Service-derived enforcement state the agent applies to foreground
@@ -996,6 +1050,7 @@ mod tests {
                 ServiceRequest::DeleteEvidenceBatch {
                     session_token: "session-1".into(),
                     evidence_ids: ids,
+                    super_password: None,
                 },
                 client,
             )
@@ -1025,6 +1080,39 @@ mod tests {
                 Err(ProtocolError::InvalidField)
             );
         }
+    }
+
+    #[test]
+    fn evidence_delete_accepts_an_optional_bounded_super_password() {
+        let delete = |super_password: Option<String>| {
+            request(
+                ServiceRequest::DeleteEvidence {
+                    session_token: "session-1".into(),
+                    evidence_id: "evidence-1".into(),
+                    super_password,
+                },
+                ClientKind::Ui,
+            )
+            .validate()
+        };
+        assert!(delete(Some("distinct-super-password".into())).is_ok());
+        assert_eq!(
+            delete(Some(String::new())),
+            Err(ProtocolError::InvalidField)
+        );
+        // Consoles from before the super password was accepted omit the field.
+        let legacy: ServiceRequest = serde_json::from_value(serde_json::json!({
+            "type": "delete_evidence_batch",
+            "payload": {"session_token": "session-1", "evidence_ids": ["evidence-1"]}
+        }))
+        .unwrap();
+        assert!(matches!(
+            legacy,
+            ServiceRequest::DeleteEvidenceBatch {
+                super_password: None,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1315,6 +1403,28 @@ mod tests {
             )
         };
         assert!(list(ClientKind::Ui, 50, Some("视频")).validate().is_ok());
+        let audit = |client, limit| {
+            request(
+                ServiceRequest::ListAudit {
+                    session_token: "session-1".into(),
+                    limit,
+                },
+                client,
+            )
+        };
+        assert!(audit(ClientKind::Ui, MAX_AUDIT_PAGE).validate().is_ok());
+        assert_eq!(
+            audit(ClientKind::Agent, 10).validate(),
+            Err(ProtocolError::ClientRoleDenied)
+        );
+        assert_eq!(
+            audit(ClientKind::Ui, 0).validate(),
+            Err(ProtocolError::InvalidField)
+        );
+        assert_eq!(
+            audit(ClientKind::Ui, MAX_AUDIT_PAGE + 1).validate(),
+            Err(ProtocolError::InvalidField)
+        );
         let mark = |client, title_id: &str| {
             request(
                 ServiceRequest::MarkTitleMisjudged {

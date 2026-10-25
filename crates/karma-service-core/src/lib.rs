@@ -16,20 +16,21 @@ use argon2::{
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use karma_evidence::EvidenceVault;
 use karma_ipc::{
-    ActiveBan, AgentEnforcement, BootstrapStatus, EnforcementSummary, EvidenceMetadata,
-    NetworkStatus, RememberedTitleMetadata, RequestEnvelope, ResponseEnvelope, ServiceErrorCode,
-    ServiceFailure, ServiceRequest, ServiceResult, ServiceStatus, TitleReasonMetadata,
-    UninstallStatus, UpdatePhase, UpdateStatus,
+    ActiveBan, AgentEnforcement, BootstrapStatus, CRITICAL_EVIDENCE_RISK_MILLIS,
+    EnforcementSummary, EvidenceMetadata, NetworkStatus, RememberedTitleMetadata, RequestEnvelope,
+    ResponseEnvelope, ServiceErrorCode, ServiceFailure, ServiceRequest, ServiceResult,
+    ServiceStatus, TitleReasonMetadata, UninstallStatus, UpdatePhase, UpdateStatus,
 };
 use karma_policy::{
-    ApplicationEffect, ApplicationPolicy, ContextPolicy, MAX_MISJUDGED_TITLES, MINUTES_PER_DAY,
-    MINUTES_PER_WEEK, NetworkRestriction, NetworkSchedulePolicy, RememberedTitle,
-    RepeatOffenderRule, TitleReason, active_bans, allow_application, is_banned,
-    is_browser_executable, normalize_executable, policy_weakenings, record_closure, remember_title,
-    remember_titles_enabled, rememberable_title_key, title_digest, title_key,
+    ApplicationCategories, ApplicationEffect, ApplicationPolicy, ContextPolicy, ContextVerdict,
+    MAX_MISJUDGED_TITLES, MINUTES_PER_DAY, MINUTES_PER_WEEK, NetworkRestriction,
+    NetworkSchedulePolicy, RememberedTitle, RepeatOffenderRule, TitleReason, active_bans,
+    allow_application, is_banned, is_browser_executable, normalize_executable, policy_weakenings,
+    record_closure, remember_title, remember_titles_enabled, rememberable_title_key, title_digest,
+    title_key,
 };
 use rand::{RngCore, rngs::OsRng};
-use serde_json::Value;
+use serde_json::{Value, json};
 use store::{
     AuditRecord, Change, MAX_AUDIT_ENTRIES, NetworkRestore, PersistedState, Store, StoredEvidence,
     UninstallRequest,
@@ -127,6 +128,9 @@ struct RuntimeState {
     pending_dispositions: HashMap<String, PendingDisposition>,
     network_restricted: Option<bool>,
     network_enforcement_succeeded: Option<bool>,
+    /// Normalized executables whose blocked launch was audited during the
+    /// current restricted period.
+    launch_blocks_audited: HashSet<String>,
     pending_update: Option<UpdateAction>,
     update_status: UpdateStatus,
     shutdown_authorized: bool,
@@ -138,6 +142,37 @@ struct PendingDisposition {
     target: karma_ipc::ProcessIdentity,
     /// Window title to remember once image-triggered enforcement succeeds.
     remember: Option<TitleCandidate>,
+    /// Why the window is closed; written to the audit log with the outcome.
+    reason: ClosureReason,
+}
+
+/// What required a disposition. Every closure counts toward a
+/// repeat-offender ban, but only image closures can carry evidence, so the
+/// audit log records the reason for each one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClosureReason {
+    Image {
+        risk_millis: u16,
+        threshold_millis: u16,
+    },
+    RememberedTitle,
+    BlockedWebsite,
+    TitleKeyword,
+    BlockedApplication,
+    RepeatOffenderBan,
+}
+
+impl ClosureReason {
+    fn code(self) -> &'static str {
+        match self {
+            Self::Image { .. } => "image",
+            Self::RememberedTitle => "remembered_title",
+            Self::BlockedWebsite => "blocked_website",
+            Self::TitleKeyword => "title_keyword",
+            Self::BlockedApplication => "blocked_application",
+            Self::RepeatOffenderBan => "repeat_offender_ban",
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -229,6 +264,7 @@ impl ServiceCore {
             pending_dispositions: HashMap::new(),
             network_restricted: None,
             network_enforcement_succeeded: None,
+            launch_blocks_audited: HashSet::new(),
             pending_update: None,
             update_status: UpdateStatus::default(),
             shutdown_authorized: false,
@@ -312,6 +348,7 @@ impl ServiceCore {
         refresh_uninstall_request(&mut runtime, now_ms);
         let (status, restriction) = self.evaluate_network(&mut runtime, now_ms);
         if runtime.network_restricted != Some(status.restricted) {
+            runtime.launch_blocks_audited.clear();
             let previous = runtime.network_restricted.replace(status.restricted);
             if previous.is_some() || status.restricted {
                 let kind = if status.restricted {
@@ -356,6 +393,35 @@ impl ServiceCore {
             );
             persist(&mut runtime).map_err(|_| CoreError::StorageUnavailable)?;
             runtime.network_enforcement_succeeded = Some(succeeded);
+        }
+        Ok(())
+    }
+
+    /// Records that the host terminated (or failed to terminate) a process a
+    /// schedule blocks from running. Each executable is audited once per
+    /// restricted period so a relaunching program cannot flood the log; the
+    /// detail holds only the image path.
+    pub fn record_launch_blocked(
+        &self,
+        executable_path: &str,
+        terminated: bool,
+        now_ms: i64,
+    ) -> Result<(), CoreError> {
+        let mut runtime = self
+            .runtime
+            .lock()
+            .map_err(|_| CoreError::LockUnavailable)?;
+        let executable = normalize_executable(executable_path);
+        let key = format!("{terminated}:{executable}");
+        if runtime.launch_blocks_audited.insert(key) {
+            audit_detail(
+                &mut runtime,
+                now_ms,
+                "schedule_launch_blocked",
+                if terminated { "terminated" } else { "failed" },
+                &json!({ "executable": executable }),
+            );
+            persist(&mut runtime).map_err(|_| CoreError::StorageUnavailable)?;
         }
         Ok(())
     }
@@ -614,6 +680,8 @@ impl ServiceCore {
                     return Err(ServiceErrorCode::RevisionConflict);
                 }
                 ContextPolicy::from_value(&policy).map_err(|_| ServiceErrorCode::InvalidRequest)?;
+                ApplicationCategories::from_value(&policy)
+                    .map_err(|_| ServiceErrorCode::InvalidRequest)?;
                 ApplicationPolicy::from_value(&policy)
                     .map_err(|_| ServiceErrorCode::InvalidRequest)?;
                 NetworkSchedulePolicy::from_value(&policy)
@@ -686,6 +754,7 @@ impl ServiceCore {
                         observation.event_id,
                         target,
                         None,
+                        ClosureReason::RepeatOffenderBan,
                     ));
                 }
                 let context_policy = ContextPolicy::from_value(&runtime.stored.policy)
@@ -703,6 +772,10 @@ impl ServiceCore {
                 if !protection_enabled || !image_enabled || observation.risk_millis < threshold {
                     return Ok(ServiceResult::Acknowledged);
                 }
+                let closure = ClosureReason::Image {
+                    risk_millis: observation.risk_millis,
+                    threshold_millis: threshold,
+                };
                 let reason = TitleReason {
                     reason_code: observation.reason_code,
                     risk_millis: observation.risk_millis,
@@ -724,6 +797,7 @@ impl ServiceCore {
                     observation.event_id,
                     target,
                     remember,
+                    closure,
                 ))
             }
             ServiceRequest::AgentContextObservation {
@@ -751,6 +825,7 @@ impl ServiceCore {
                         observation.event_id,
                         observation.source,
                         None,
+                        ClosureReason::RepeatOffenderBan,
                     ));
                 }
                 let context_policy = ContextPolicy::from_value(&runtime.stored.policy)
@@ -773,6 +848,7 @@ impl ServiceCore {
                         observation.event_id,
                         observation.source,
                         None,
+                        ClosureReason::RememberedTitle,
                     ));
                 }
                 let verdict = context_policy.evaluate(
@@ -784,11 +860,19 @@ impl ServiceCore {
                 if !karma_policy::context_enforcement(verdict, application_effect) {
                     return Ok(ServiceResult::Acknowledged);
                 }
+                let reason = match verdict {
+                    ContextVerdict::Blocklisted => ClosureReason::BlockedWebsite,
+                    ContextVerdict::TitleKeyword => ClosureReason::TitleKeyword,
+                    ContextVerdict::Allowlisted | ContextVerdict::None => {
+                        ClosureReason::BlockedApplication
+                    }
+                };
                 Ok(disposition_required(
                     runtime,
                     observation.event_id,
                     observation.source,
                     None,
+                    reason,
                 ))
             }
             ServiceRequest::SubmitEvidence {
@@ -885,6 +969,26 @@ impl ServiceCore {
                         .collect(),
                 })
             }
+            ServiceRequest::ListAudit {
+                session_token,
+                limit,
+            } => {
+                authorize(runtime, &session_token, now_ms)?;
+                let items = runtime
+                    .store
+                    .recent_audit(limit.min(karma_ipc::MAX_AUDIT_PAGE))
+                    .map_err(|_| ServiceErrorCode::StorageUnavailable)?
+                    .into_iter()
+                    .map(|(id, record)| karma_ipc::AuditEntry {
+                        id,
+                        occurred_at_ms: record.occurred_at_ms,
+                        kind: record.kind,
+                        outcome: record.outcome,
+                        detail: record.detail,
+                    })
+                    .collect();
+                Ok(ServiceResult::AuditList { items })
+            }
             ServiceRequest::RevealEvidence {
                 session_token,
                 password,
@@ -910,16 +1014,18 @@ impl ServiceCore {
             ServiceRequest::DeleteEvidence {
                 session_token,
                 evidence_id,
+                super_password,
             } => {
                 authorize(runtime, &session_token, now_ms)?;
-                self.delete_evidence(runtime, &[evidence_id], now_ms)
+                self.delete_evidence(runtime, &[evidence_id], super_password, now_ms)
             }
             ServiceRequest::DeleteEvidenceBatch {
                 session_token,
                 evidence_ids,
+                super_password,
             } => {
                 authorize(runtime, &session_token, now_ms)?;
-                self.delete_evidence(runtime, &evidence_ids, now_ms)
+                self.delete_evidence(runtime, &evidence_ids, super_password, now_ms)
             }
             ServiceRequest::ListEnforcement {
                 session_token,
@@ -1227,12 +1333,24 @@ impl ServiceCore {
 
     /// Deletes the named evidence items, skipping ids that no longer exist. An
     /// item whose encrypted original is already gone still loses its record.
+    /// Once a super password is configured, only it can delete critical
+    /// evidence; without it nothing in the request is deleted.
     fn delete_evidence(
         &self,
         runtime: &mut RuntimeState,
         evidence_ids: &[String],
+        super_password: Option<String>,
         now_ms: i64,
     ) -> Result<ServiceResult, ServiceErrorCode> {
+        let critical = runtime.stored.evidence.iter().any(|item| {
+            item.risk_millis >= CRITICAL_EVIDENCE_RISK_MILLIS && evidence_ids.contains(&item.id)
+        });
+        if critical && runtime.stored.super_password_hash.is_some() {
+            if let Err(error) = self.authenticate_super(runtime, super_password, now_ms) {
+                audit(runtime, now_ms, "evidence_deleted", "denied");
+                return Err(error);
+            }
+        }
         let mut deleted = false;
         for evidence_id in evidence_ids {
             let Some(index) = runtime
@@ -1667,10 +1785,39 @@ fn persist(runtime: &mut RuntimeState) -> Result<(), ServiceErrorCode> {
 }
 
 fn audit(runtime: &mut RuntimeState, occurred_at_ms: i64, kind: &str, outcome: &str) {
+    push_audit(runtime, occurred_at_ms, kind, outcome, None);
+}
+
+/// An audit row with a structured detail object. Callers must never put
+/// window titles or other browsing content into `detail`.
+fn audit_detail(
+    runtime: &mut RuntimeState,
+    occurred_at_ms: i64,
+    kind: &str,
+    outcome: &str,
+    detail: &Value,
+) {
+    push_audit(
+        runtime,
+        occurred_at_ms,
+        kind,
+        outcome,
+        Some(detail.to_string()),
+    );
+}
+
+fn push_audit(
+    runtime: &mut RuntimeState,
+    occurred_at_ms: i64,
+    kind: &str,
+    outcome: &str,
+    detail: Option<String>,
+) {
     runtime.pending.push(Change::Audit(AuditRecord {
         occurred_at_ms,
         kind: kind.into(),
         outcome: outcome.into(),
+        detail,
     }));
     runtime.stored.audit_count = runtime
         .stored
@@ -1781,12 +1928,14 @@ fn disposition_required(
     event_id: String,
     target: karma_ipc::ProcessIdentity,
     remember: Option<TitleCandidate>,
+    reason: ClosureReason,
 ) -> ServiceResult {
     runtime.pending_dispositions.insert(
         event_id.clone(),
         PendingDisposition {
             target: target.clone(),
             remember,
+            reason,
         },
     );
     ServiceResult::DispositionRequired {
@@ -1809,8 +1958,11 @@ fn record_disposition(
     if expected.process_id != report.process_id || expected.started_at_ms != report.started_at_ms {
         return Err(ServiceErrorCode::InvalidRequest);
     }
-    let Some(PendingDisposition { target, remember }) =
-        runtime.pending_dispositions.remove(&report.event_id)
+    let Some(PendingDisposition {
+        target,
+        remember,
+        reason,
+    }) = runtime.pending_dispositions.remove(&report.event_id)
     else {
         return Err(ServiceErrorCode::InvalidRequest);
     };
@@ -1822,7 +1974,19 @@ fn record_disposition(
         karma_ipc::DispositionOutcome::AccessDenied => "access_denied",
         karma_ipc::DispositionOutcome::SourceUncertain => "source_uncertain",
     };
-    audit(runtime, now_ms, "application_disposition", outcome);
+    let mut detail = json!({
+        "executable": normalize_executable(&executable_name),
+        "reason": reason.code(),
+    });
+    if let ClosureReason::Image {
+        risk_millis,
+        threshold_millis,
+    } = reason
+    {
+        detail["riskMillis"] = json!(risk_millis);
+        detail["thresholdMillis"] = json!(threshold_millis);
+    }
+    audit_detail(runtime, now_ms, "application_disposition", outcome, &detail);
     if matches!(
         report.outcome,
         karma_ipc::DispositionOutcome::ClosedGracefully | karma_ipc::DispositionOutcome::Terminated
@@ -1857,7 +2021,13 @@ fn record_disposition(
             runtime.stored.repeat_offenders.clone(),
         ));
         if banned {
-            audit(runtime, now_ms, "repeat_offender_banned", &executable);
+            audit_detail(
+                runtime,
+                now_ms,
+                "repeat_offender_banned",
+                "success",
+                &json!({ "executable": executable }),
+            );
         }
     }
     Ok(())
@@ -2123,6 +2293,15 @@ mod tests {
     }
 
     fn submit_test_evidence(core: &ServiceCore, evidence_id: &str, application_name: &str) {
+        submit_test_evidence_at_risk(core, evidence_id, application_name, 980);
+    }
+
+    fn submit_test_evidence_at_risk(
+        core: &ServiceCore,
+        evidence_id: &str,
+        application_name: &str,
+        risk_millis: u16,
+    ) {
         let image = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3];
         assert!(matches!(
             success(core.handle(
@@ -2138,7 +2317,7 @@ mod tests {
                             monitor_name: "显示器 1".into(),
                             application_name: application_name.into(),
                             reason_code: "image_immediate".into(),
-                            risk_millis: 980,
+                            risk_millis,
                             media_type: "image/png".into(),
                             bytes_base64: BASE64.encode(image),
                         },
@@ -2148,6 +2327,129 @@ mod tests {
             )),
             ServiceResult::Acknowledged
         ));
+    }
+
+    fn delete_evidence_items(
+        core: &ServiceCore,
+        session: &str,
+        nonce: &str,
+        evidence_ids: &[&str],
+        super_password: Option<&str>,
+    ) -> Result<ServiceResult, ServiceErrorCode> {
+        let super_password = super_password.map(str::to_owned);
+        let request_body = match evidence_ids {
+            [evidence_id] => ServiceRequest::DeleteEvidence {
+                session_token: session.into(),
+                evidence_id: (*evidence_id).into(),
+                super_password,
+            },
+            _ => ServiceRequest::DeleteEvidenceBatch {
+                session_token: session.into(),
+                evidence_ids: evidence_ids.iter().map(|id| (*id).to_owned()).collect(),
+                super_password,
+            },
+        };
+        core.handle(request(nonce, nonce, request_body), 20_010)
+            .result
+            .map_err(|failure| failure.code)
+    }
+
+    fn listed_evidence_ids(core: &ServiceCore, session: &str, nonce: &str) -> Vec<String> {
+        match success(core.handle(
+            request(
+                nonce,
+                nonce,
+                ServiceRequest::ListEvidence {
+                    session_token: session.into(),
+                },
+            ),
+            20_020,
+        )) {
+            ServiceResult::EvidenceList { items } => {
+                let mut ids = items.into_iter().map(|item| item.id).collect::<Vec<_>>();
+                ids.sort();
+                ids
+            }
+            _ => panic!("unexpected response"),
+        }
+    }
+
+    #[test]
+    fn critical_evidence_deletion_requires_super_password_once_configured() {
+        let directory = tempfile::tempdir().unwrap();
+        let core = open_core(directory.path(), 0);
+        configure_policy(
+            &core,
+            json!({
+                "protectionEnabled": true,
+                "recognition": {"evidenceEnabled": true, "immediateThreshold": 82}
+            }),
+        );
+        for (evidence_id, risk_millis) in [
+            ("evidence-a-before-super", 990),
+            ("evidence-b-high", 949),
+            ("evidence-c-high", 900),
+            ("evidence-d-critical", 950),
+            ("evidence-e-critical", 990),
+        ] {
+            submit_test_evidence_at_risk(&core, evidence_id, "game.exe", risk_millis);
+        }
+        let session = authenticate_ui(&core, "auth-delete-critical", 20_000);
+        let delete = |nonce: &str, ids: &[&str], super_password: Option<&str>| {
+            delete_evidence_items(&core, &session, nonce, ids, super_password)
+        };
+
+        // Without a super password the administrator is the only role.
+        assert!(matches!(
+            delete("before-super", &["evidence-a-before-super"], None),
+            Ok(ServiceResult::Acknowledged)
+        ));
+        set_super(&core, &session, 20_001);
+        assert!(matches!(
+            delete("high", &["evidence-b-high"], None),
+            Ok(ServiceResult::Acknowledged)
+        ));
+        for (nonce, ids) in [
+            ("critical-one", &["evidence-d-critical"][..]),
+            ("mixed", &["evidence-c-high", "evidence-d-critical"][..]),
+        ] {
+            assert_eq!(
+                delete(nonce, ids, None).err(),
+                Some(ServiceErrorCode::SuperPasswordRequired)
+            );
+        }
+        assert_eq!(
+            delete(
+                "wrong-super",
+                &["evidence-e-critical"],
+                Some("long-test-password")
+            )
+            .err(),
+            Some(ServiceErrorCode::AuthenticationFailed)
+        );
+        // A refused request deletes nothing, not even its high-risk items.
+        assert_eq!(
+            listed_evidence_ids(&core, &session, "list-refused"),
+            [
+                "evidence-c-high",
+                "evidence-d-critical",
+                "evidence-e-critical"
+            ]
+        );
+
+        assert!(matches!(
+            delete(
+                "with-super",
+                &[
+                    "evidence-c-high",
+                    "evidence-d-critical",
+                    "evidence-e-critical"
+                ],
+                Some("distinct-super-password")
+            ),
+            Ok(ServiceResult::Acknowledged)
+        ));
+        assert!(listed_evidence_ids(&core, &session, "list-deleted").is_empty());
     }
 
     fn allow_evidence(
@@ -2583,8 +2885,8 @@ mod tests {
                 .audit
                 .iter()
                 .find(|record| record.kind == "repeat_offender_banned")
-                .map(|record| record.outcome.as_str()),
-            Some(r"c:\browser\chrome.exe")
+                .and_then(|record| record.detail.as_deref()),
+            Some(r#"{"executable":"c:\\browser\\chrome.exe"}"#)
         );
         assert!(
             state
@@ -2766,6 +3068,125 @@ mod tests {
             now_ms + 1,
         )
         .unwrap();
+    }
+
+    fn list_audit(core: &ServiceCore, nonce: &str, now_ms: i64) -> Vec<karma_ipc::AuditEntry> {
+        let session = authenticate_ui(core, nonce, now_ms);
+        match success(core.handle(
+            request(
+                &format!("audit-{nonce}"),
+                &format!("audit-{nonce}-nonce"),
+                ServiceRequest::ListAudit {
+                    session_token: session,
+                    limit: karma_ipc::MAX_AUDIT_PAGE,
+                },
+            ),
+            now_ms + 1,
+        )) {
+            ServiceResult::AuditList { items } => items,
+            _ => panic!("expected the audit list"),
+        }
+    }
+
+    fn closure_details(entries: &[karma_ipc::AuditEntry]) -> Vec<Value> {
+        entries
+            .iter()
+            .filter(|entry| entry.kind == "application_disposition")
+            .map(|entry| serde_json::from_str(entry.detail.as_deref().unwrap()).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn every_closure_reason_is_audited_without_window_titles() {
+        let directory = tempfile::tempdir().unwrap();
+        let core = open_core(directory.path(), 0);
+        configure_policy(&core, remembered_title_policy());
+        close_by_image(&core, "image-1", Some(PORN_TITLE), 42, 1_000);
+        let relaunch =
+            context_observation_at("relaunch", 2_000, "hot video 123 - GOOGLE chrome", None, 43);
+        assert!(matches!(
+            submit_context_at(&core, "relaunch-nonce", relaunch, 2_001),
+            ServiceResult::DispositionRequired { .. }
+        ));
+        core.record_disposition(
+            &DispositionReport {
+                event_id: "relaunch".into(),
+                process_id: 43,
+                started_at_ms: 77,
+                outcome: DispositionOutcome::ClosedGracefully,
+            },
+            2_002,
+        )
+        .unwrap();
+
+        let entries = list_audit(&core, "closures", 3_000);
+        // Newest first.
+        assert!(entries.windows(2).all(|pair| pair[0].id > pair[1].id));
+        let closures = closure_details(&entries);
+        assert_eq!(
+            closures,
+            vec![
+                json!({"executable": r"c:\browser\chrome.exe", "reason": "remembered_title"}),
+                json!({
+                    "executable": r"c:\browser\chrome.exe",
+                    "reason": "image",
+                    "riskMillis": 990,
+                    "thresholdMillis": 600
+                }),
+            ]
+        );
+        assert!(entries.iter().all(|entry| {
+            entry
+                .detail
+                .as_deref()
+                .is_none_or(|detail| !detail.contains("hot video"))
+        }));
+    }
+
+    #[test]
+    fn repeat_offender_strikes_are_audited_with_their_reason() {
+        let directory = tempfile::tempdir().unwrap();
+        let core = open_core(directory.path(), 0);
+        configure_policy(&core, repeat_offender_policy());
+        establish_repeat_offender_ban(&core, 10_000);
+
+        let entries = list_audit(&core, "strikes", 20_000);
+        let closures = closure_details(&entries);
+        assert_eq!(closures.len(), DEFAULT_STRIKES as usize);
+        assert!(closures.iter().all(|detail| {
+            *detail == json!({"executable": r"c:\browser\chrome.exe", "reason": "blocked_website"})
+        }));
+        let ban = entries
+            .iter()
+            .find(|entry| entry.kind == "repeat_offender_banned")
+            .unwrap();
+        assert_eq!(ban.outcome, "success");
+        assert_eq!(
+            ban.detail.as_deref(),
+            Some(r#"{"executable":"c:\\browser\\chrome.exe"}"#)
+        );
+    }
+
+    #[test]
+    fn audit_list_requires_a_session() {
+        let directory = tempfile::tempdir().unwrap();
+        let core = open_core(directory.path(), 0);
+        configure_policy(&core, remembered_title_policy());
+        assert!(
+            core.handle(
+                request(
+                    "audit-anon",
+                    "audit-anon-nonce",
+                    ServiceRequest::ListAudit {
+                        session_token: "not-a-session".into(),
+                        limit: 10,
+                    },
+                ),
+                100,
+            )
+            .result
+            .is_err()
+        );
     }
 
     #[test]
@@ -4230,6 +4651,7 @@ mod tests {
                     ServiceRequest::DeleteEvidenceBatch {
                         session_token: session.clone(),
                         evidence_ids: ids.iter().map(|id| (*id).to_owned()).collect(),
+                        super_password: None,
                     },
                 ),
                 3,
@@ -4372,16 +4794,15 @@ mod tests {
         assert!(inside.status.restricted);
         assert_eq!(inside.status.active_rule_ids, vec!["homework"]);
         assert_eq!(inside.status.restricted_until_ms, Some(local_ms(0, 21, 0)));
-        assert!(inside.restriction.block_browsers);
         assert!(
             inside
                 .restriction
-                .blocks_executable(r"C:\Program Files\Mozilla Firefox\firefox.exe")
+                .blocks_network(r"C:\Program Files\Mozilla Firefox\firefox.exe")
         );
         assert!(
             !inside
                 .restriction
-                .blocks_executable(r"C:\Windows\System32\svchost.exe")
+                .blocks_network(r"C:\Windows\System32\svchost.exe")
         );
 
         assert!(
@@ -4543,6 +4964,96 @@ mod tests {
             response.result.unwrap_err().code,
             ServiceErrorCode::InvalidRequest
         );
+    }
+
+    #[test]
+    fn launch_blocking_schedules_reach_the_host_and_audit_once_per_period() {
+        let directory = tempfile::tempdir().unwrap();
+        let policy = json!({
+            "applicationCategories": [{"id": "cat-games", "name": "游戏平台"}],
+            "applications": [
+                {"id":"s","name":"Steam","executable":"steam.exe","category":"cat-games","action":"content_only","enabled":true}
+            ],
+            "schedules": [{
+                "id": "games", "name": "游戏", "action": "block_launch",
+                "target": "categories", "categories": ["cat-games"],
+                "blocks": [{"day": 0, "start": "19:00", "end": "21:00"}],
+                "enabled": true
+            }]
+        });
+        let start = local_ms(0, 19, 30);
+        let (core, _) = network_core(directory.path(), policy, start);
+        let enforcement = core.network_enforcement(start).unwrap();
+        assert!(enforcement.status.restricted);
+        assert!(enforcement.restriction.blocks_launch(r"C:\Steam\Steam.exe"));
+        assert!(
+            !enforcement
+                .restriction
+                .blocks_network(r"C:\Steam\Steam.exe")
+        );
+
+        for offset in 0..3 {
+            core.record_launch_blocked(r"C:\Steam\Steam.exe", true, start + offset)
+                .unwrap();
+        }
+        // A later period audits the executable again.
+        core.network_enforcement(local_ms(0, 21, 30)).unwrap();
+        core.network_enforcement(local_ms(1, 19, 30)).unwrap();
+        let next_week = local_ms(0, 19, 30) + 7 * 24 * 60 * MS_PER_MINUTE;
+        core.network_enforcement(next_week).unwrap();
+        core.record_launch_blocked(r"C:\Steam\Steam.exe", true, next_week)
+            .unwrap();
+
+        let blocked: Vec<_> = disk_state(directory.path())
+            .audit
+            .into_iter()
+            .filter(|record| record.kind == "schedule_launch_blocked")
+            .collect();
+        assert_eq!(blocked.len(), 2);
+        assert_eq!(blocked[0].outcome, "terminated");
+        assert_eq!(
+            serde_json::from_str::<Value>(blocked[0].detail.as_deref().unwrap()).unwrap(),
+            json!({"executable": r"c:\steam\steam.exe"})
+        );
+    }
+
+    #[test]
+    fn unknown_application_categories_are_rejected() {
+        let directory = tempfile::tempdir().unwrap();
+        let start = local_ms(0, 12, 0);
+        let (core, session) = network_core(directory.path(), json!({}), start);
+        for (nonce, policy) in [
+            (
+                "dup-category",
+                json!({"applicationCategories": [{"id": "game", "name": "Game"}]}),
+            ),
+            (
+                "missing-category",
+                json!({"schedules": [{
+                    "id": "x", "name": "x", "target": "categories", "categories": ["cat-gone"],
+                    "blocks": [{"day": 0, "start": "08:00", "end": "09:00"}], "enabled": true
+                }]}),
+            ),
+        ] {
+            let response = core.handle(
+                request(
+                    nonce,
+                    nonce,
+                    ServiceRequest::PutPolicy {
+                        super_password: None,
+                        session_token: session.clone(),
+                        expected_revision: 1,
+                        policy,
+                    },
+                ),
+                start,
+            );
+            assert_eq!(
+                response.result.unwrap_err().code,
+                ServiceErrorCode::InvalidRequest,
+                "{nonce}"
+            );
+        }
     }
 
     #[test]

@@ -16,6 +16,7 @@ use karma_macos::{
     display::{self, WindowSnapshot},
     process,
 };
+use karma_policy::ContextPolicy;
 
 /// The foreground application's windows, frontmost first.
 fn foreground_windows(windows: &[WindowSnapshot]) -> Option<(u32, Vec<&WindowSnapshot>)> {
@@ -114,7 +115,11 @@ impl SourceIdentityProvider for MacosSourceIdentityProvider {
 pub struct MacosForegroundContext;
 
 impl ForegroundContext for MacosForegroundContext {
-    fn observe(&mut self, agent_instance_id: &str) -> Option<AgentContextObservation> {
+    fn observe(
+        &mut self,
+        agent_instance_id: &str,
+        _context_policy: &ContextPolicy,
+    ) -> Option<AgentContextObservation> {
         let windows = display::front_to_back_windows();
         let (pid, candidates) = foreground_windows(&windows)?;
         let title = candidates.first()?.title.clone();
@@ -129,6 +134,10 @@ impl ForegroundContext for MacosForegroundContext {
             window_title: title,
             browser_host: None,
         })
+    }
+
+    fn reread_browser_host(&mut self) -> Option<String> {
+        None
     }
 }
 

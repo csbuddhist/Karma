@@ -95,6 +95,7 @@ fn parse_import_document(bytes: &[u8]) -> Option<serde_json::Value> {
     strip_runtime_state(&mut policy);
     // Reject backups whose policy cannot be enforced before the webview sees them.
     karma_policy::ContextPolicy::from_value(&policy).ok()?;
+    karma_policy::ApplicationCategories::from_value(&policy).ok()?;
     karma_policy::NetworkSchedulePolicy::from_value(&policy).ok()?;
     karma_policy::RepeatOffenderRule::from_value(&policy).ok()?;
     Some(policy)
@@ -137,7 +138,7 @@ mod tests {
             "misjudgedTitleTotal": 1,
             "activeBans": [],
             "superPasswordSet": true,
-            "productVersion": "0.3.8",
+            "productVersion": "0.3.18",
             "uninstall": {"requestedAtMs": 1, "effectiveAtMs": 2, "expiresAtMs": 3},
             "update": {"phase": "checking"},
             "updates": {"autoInstall": false}
@@ -185,6 +186,10 @@ mod tests {
         let invalid_schedule = br#"{"schema":"karma-policy-export","version":1,"exported_at_ms":1,
             "policy":{"schedules":[{"id":"s","name":"s","target":"browsers","blocks":[{"day":9,"start":"08:00","end":"09:00"}],"enabled":true}]}}"#;
         assert!(parse_import_document(invalid_schedule).is_none());
+        let duplicate_category =
+            br#"{"schema":"karma-policy-export","version":1,"exported_at_ms":1,
+            "policy":{"applicationCategories":[{"id":"browser","name":"Browsers again"}]}}"#;
+        assert!(parse_import_document(duplicate_category).is_none());
         let invalid_repeat_offender =
             br#"{"schema":"karma-policy-export","version":1,"exported_at_ms":1,
             "policy":{"repeatOffender":{"windowMinutes":20,"strikeLimit":100}}}"#;
@@ -376,6 +381,7 @@ mod local_backend {
             "keywords": [],
             "titleKeywordAdditions": [],
             "websites": [],
+            "applicationCategories": [],
             "applications": [
                 {
                     "id": "browser",
@@ -695,9 +701,10 @@ mod local_backend {
         runtime: State<'_, ConsoleRuntime>,
         session_token: String,
         evidence_ids: Vec<String>,
+        super_password: Option<String>,
     ) -> Result<(), ConsoleError> {
         authorize(&runtime, &session_token)?;
-        let _ = evidence_ids;
+        let _ = (evidence_ids, super_password.map(Zeroizing::new));
         Err(ConsoleError::EvidenceUnavailable)
     }
 
@@ -1054,8 +1061,8 @@ mod service_backend {
     use std::{collections::HashMap, fmt::Write as _, sync::Mutex};
 
     use karma_ipc::{
-        BootstrapStatus, ComponentState, MAX_EVIDENCE_BATCH, RequestEnvelope, ServiceErrorCode,
-        ServiceFailure, ServiceRequest, ServiceResult,
+        BootstrapStatus, CRITICAL_EVIDENCE_RISK_MILLIS, ComponentState, MAX_EVIDENCE_BATCH,
+        RequestEnvelope, ServiceErrorCode, ServiceFailure, ServiceRequest, ServiceResult,
     };
     #[cfg(target_os = "macos")]
     use karma_macos_ipc::send_request;
@@ -1137,6 +1144,7 @@ mod service_backend {
             "keywords": [],
             "titleKeywordAdditions": [],
             "websites": [],
+            "applicationCategories": [],
             "applications": [
                 {"id":"browser","name":"浏览器","executable":"受支持浏览器","category":"browser","action":"content_only","enabled":true},
                 {"id":"player","name":"播放器","executable":"受支持播放器","category":"player","action":"content_only","enabled":true}
@@ -1335,6 +1343,13 @@ mod service_backend {
             ServiceResult::Enforcement(summary) => summary,
             _ => return Err(ConsoleError::InvalidResponse),
         };
+        let audit = match request(ServiceRequest::ListAudit {
+            session_token: session_token.clone(),
+            limit: karma_ipc::MAX_AUDIT_PAGE,
+        })? {
+            ServiceResult::AuditList { items } => items,
+            _ => return Err(ConsoleError::InvalidResponse),
+        };
         if !runtime_only.unwrap_or(false) {
             runtime
                 .0
@@ -1399,6 +1414,10 @@ mod service_backend {
             ),
         );
         object.insert(
+            "audit".into(),
+            Value::Array(audit.into_iter().map(audit_entry_json).collect()),
+        );
+        object.insert(
             "evidence".into(),
             Value::Array(
                 evidence
@@ -1410,7 +1429,7 @@ mod service_backend {
                             "monitorName": item.monitor_name,
                             "applicationName": item.application_name,
                             "reason": item.reason_code,
-                            "risk": if item.risk_millis >= 950 { "critical" } else { "high" },
+                            "risk": if item.risk_millis >= CRITICAL_EVIDENCE_RISK_MILLIS { "critical" } else { "high" },
                             "riskMillis": item.risk_millis,
                             "originalAvailable": item.original_available
                         })
@@ -1419,6 +1438,24 @@ mod service_backend {
             ),
         );
         Ok(state)
+    }
+
+    /// An audit row for the console. The service writes `detail` as a JSON
+    /// object; anything else is dropped rather than shown raw.
+    fn audit_entry_json(entry: karma_ipc::AuditEntry) -> Value {
+        let detail = entry
+            .detail
+            .as_deref()
+            .and_then(|detail| serde_json::from_str::<Value>(detail).ok())
+            .filter(Value::is_object)
+            .unwrap_or(Value::Null);
+        json!({
+            "id": entry.id.to_string(),
+            "occurredAtMs": entry.occurred_at_ms,
+            "kind": entry.kind,
+            "outcome": entry.outcome,
+            "detail": detail
+        })
     }
 
     fn component_state(
@@ -1509,11 +1546,13 @@ mod service_backend {
     }
 
     /// Deletes evidence items in Service-sized batches. The Service skips items
-    /// that are already gone.
+    /// that are already gone, and refuses a batch with critical evidence unless
+    /// the super password is configured and given.
     #[tauri::command]
     fn delete_evidence(
         session_token: String,
         evidence_ids: Vec<String>,
+        super_password: Option<String>,
     ) -> Result<(), ConsoleError> {
         if evidence_ids.is_empty() {
             return Ok(());
@@ -1522,6 +1561,7 @@ mod service_backend {
             match request(ServiceRequest::DeleteEvidenceBatch {
                 session_token: session_token.clone(),
                 evidence_ids: chunk.to_vec(),
+                super_password: super_password.clone(),
             })? {
                 ServiceResult::Acknowledged => {}
                 _ => return Err(ConsoleError::InvalidResponse),

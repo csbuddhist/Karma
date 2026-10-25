@@ -100,7 +100,8 @@ Windows Agent 依赖两个 crate，但策略层不依赖 ONNX。
 统一图像分数：
 
 ```text
-explicit = porn + hentai
+hentai_weight = 1.0 if hentai >= 0.95 or porn >= hentai else 0.5
+explicit = porn + hentai_weight × hentai
 suggestive = sexy
 risk = clamp(explicit + 0.35 × suggestive, 0, 1)
 score_millis = round(risk × 1000)

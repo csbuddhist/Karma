@@ -79,9 +79,27 @@ impl StartupProbe {
     }
 }
 
+/// Workers are bound to the monitors enumerated at startup, so any added,
+/// removed, or moved display requires a restart to be monitored correctly.
+pub fn monitor_topology_changed<M: PartialEq>(started: &[M], current: &[M]) -> bool {
+    started.len() != current.len() || current.iter().any(|monitor| !started.contains(monitor))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn monitor_added_after_startup_changes_topology() {
+        assert!(monitor_topology_changed(&[1], &[1, 2]));
+        assert!(monitor_topology_changed(&[1, 2], &[1]));
+        assert!(monitor_topology_changed(&[1, 2], &[1, 3]));
+    }
+
+    #[test]
+    fn reordered_monitors_keep_topology() {
+        assert!(!monitor_topology_changed(&[1, 2], &[2, 1]));
+    }
 
     struct FakeInventory {
         monitors: Result<Vec<u8>, ()>,

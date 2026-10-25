@@ -34,6 +34,7 @@ mod agent {
             RecognitionPolicyHandle, inference_state, start_context_monitor,
         },
     };
+    use karma_ai::MotionFocusClassifier;
     use karma_ipc::{ComponentState, MonitorHealth, RequestEnvelope, ResponseEnvelope};
     use karma_macos::{
         CaptureError,
@@ -420,12 +421,13 @@ mod agent {
                 .compile()
                 .map_err(|_| CaptureError::StreamFailed)?;
             let mut consumer = ScheduledInferenceConsumer::new(
-                classifier,
+                MotionFocusClassifier::new(classifier),
                 ocr_engine,
                 word_pack,
                 AgentInferenceSink::new(
                     Some(Arc::clone(&self.client)),
                     self.recognition_policy.clone(),
+                    self.context_policy.clone(),
                     monitor_name(index),
                     MacosSourceIdentityProvider::new(snapshot.bounds),
                 ),

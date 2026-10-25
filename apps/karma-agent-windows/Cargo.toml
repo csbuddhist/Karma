@@ -11,6 +11,7 @@ karma-ai = { path = "../../crates/karma-ai" }
 karma-onnx = { path = "../../crates/karma-onnx" }
 karma-windows = { path = "../../crates/karma-windows" }
 karma-ipc = { path = "../../crates/karma-ipc" }
+karma-policy = { path = "../../crates/karma-policy" }
 karma-windows-ipc = { path = "../../crates/karma-windows-ipc" }
 zeroize = "1"
 

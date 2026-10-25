@@ -1,0 +1,595 @@
+--- a/sync_releases.py
++++ b/sync_releases.py
+@@ -1,13 +1,15 @@
+ import glob
+ import os
+-import ssl
++import tempfile
++from pathlib import Path
++from urllib.parse import quote
+ import logging
+ 
+ import requests
+ from tqdm import tqdm
+ from tqdm.contrib.logging import logging_redirect_tqdm
+ 
+-from gitee_release import Gitee, get_environment_variable, set_action_output
++from gitee_release import Gitee, get_environment_variable, set_action_output, request_json
+ 
+ 
+ # GitHub Releases API 基础 URL
+@@ -15,12 +17,9 @@
+ # Gitee Releases API 基础 URL
+ GITEE_RELEASES_API_BASE_URL = "https://gitee.com/api/v5/repos"
+ 
+-# 禁用 SSL 警告和验证
+-requests.packages.urllib3.disable_warnings()
+-ssl._create_default_https_context = ssl._create_unverified_context
+ 
+ # 从环境变量获取调试模式设置，默认关闭
+-debug_mode = get_environment_variable('debug', False)
++debug_mode = str(get_environment_variable('debug', False)).strip().lower() == 'true'
+ # 从环境变量获取 Gitee 访问令牌
+ gitee_access_token = get_environment_variable('gitee_token')
+ 
+@@ -30,105 +29,31 @@
+ 
+ 
+ def fetch_github_releases(owner, repository):
+-    """
+-    获取 GitHub 仓库的所有 Release 信息
+-    
+-    Args:
+-        owner (str): GitHub 仓库所有者
+-        repository (str): GitHub 仓库名称
+-    
+-    Returns:
+-        tuple: (releases_data, request_url)
+-               - releases_data (list): Release 数据列表
+-               - request_url (str): 请求的 URL
+-    """
+-    request_url = f'{GITHUB_RELEASES_API_BASE_URL}/{owner}/{repository}/releases'
+-    response = requests.get(request_url, verify=False)
+-    
+-    if debug_mode:
+-        logger.debug(f'请求 {request_url} , 返回数据: {response.text}')
+-        
+-    return response.json(), request_url
++    url = f'{GITHUB_RELEASES_API_BASE_URL}/{owner}/{repository}/releases'
++    return fetch_pages(url), url
+ 
+ 
+ def fetch_gitee_releases(owner, repository):
+-    """
+-    获取 Gitee 仓库的所有 Release 信息
+-    
+-    Args:
+-        owner (str): Gitee 仓库所有者
+-        repository (str): Gitee 仓库名称
+-    
+-    Returns:
+-        tuple: (releases_dict, request_url)
+-               - releases_dict (dict): 以 tag_name 为键的 Release 字典
+-               - request_url (str): 请求的 URL
+-    """
+-    request_url = f'{GITEE_RELEASES_API_BASE_URL}/{owner}/{repository}/releases'
+-    response = requests.get(request_url, verify=False, data={'access_token': gitee_access_token})
+-    
+-    if debug_mode:
+-        logger.debug(f'请求 {request_url} , 返回数据: {response.text}')
+-        
+-    response_json = response.json()
+-    # 构建以 tag_name 为键的字典
+-    releases_dict = {release_item['tag_name']: release_item for release_item in response_json}
+-    return releases_dict, request_url
++    url = f'{GITEE_RELEASES_API_BASE_URL}/{owner}/{repository}/releases'
++    releases = fetch_pages(url, gitee=True)
++    return {item['tag_name']: item for item in releases}, url
+ 
+ 
+ def fetch_github_release_details(owner, repository, release_id):
+-    """
+-    获取 GitHub 特定 Release 的详细信息
+-    
+-    Args:
+-        owner (str): GitHub 仓库所有者
+-        repository (str): GitHub 仓库名称
+-        release_id (int): Release ID
+-    
+-    Returns:
+-        tuple: (release_info, assets_dict, request_url)
+-               - release_info (dict): Release 详细信息
+-               - assets_dict (dict): 以文件名为键的附件字典
+-               - request_url (str): 请求的 URL
+-    """
+-    request_url = f'{GITHUB_RELEASES_API_BASE_URL}/{owner}/{repository}/releases/{release_id}'
+-    response = requests.get(request_url, verify=False)
+-    
+-    if debug_mode:
+-        logger.debug(f'请求 {request_url} , 返回数据: {response.text}')
+-        
+-    release_info = response.json()
+-    # 构建以文件名为键的附件字典
+-    assets_dict = {asset['name']: asset
+-                   for asset in release_info['assets']} \
+-        if 'assets' in release_info and len(release_info['assets']) > 0 \
+-        else {}
+-    return release_info, assets_dict, request_url
++    url = f'{GITHUB_RELEASES_API_BASE_URL}/{owner}/{repository}/releases/{release_id}'
++    info = request_json('get', url, headers=github_headers())
++    if not isinstance(info, dict):
++        raise RuntimeError('Invalid GitHub release response')
++    assets = fetch_pages(url + '/assets')
++    return info, {asset['name']: asset for asset in assets}, url
+ 
+ 
+ def fetch_github_commit_message(owner, repository, commit_sha):
+-    """
+-    获取 GitHub 特定 commit 的信息和 message
+-    
+-    Args:
+-        owner (str): GitHub 仓库所有者
+-        repository (str): GitHub 仓库名称
+-        commit_sha (str): Commit SHA
+-        
+-    Returns:
+-        tuple: (commit_message, request_url)
+-               - commit_message (str): Commit message
+-               - request_url (str): 请求的 URL
+-    """
+-    request_url = f'{GITHUB_RELEASES_API_BASE_URL}/{owner}/{repository}/commits/{commit_sha}'
+-    response = requests.get(request_url, verify=False)
+-    
+-    if debug_mode:
+-        logger.debug(f'请求 {request_url} , 返回数据: {response.text}')
+-        
+-    commit_info = response.json()
+-    commit_message = commit_info.get('commit', {}).get('message', '') if isinstance(commit_info, dict) else ''
+-    return commit_message, request_url
++    url = f'{GITHUB_RELEASES_API_BASE_URL}/{owner}/{repository}/commits/{quote(commit_sha, safe="")}'
++    info = request_json('get', url, headers=github_headers())
++    if not isinstance(info, dict):
++        raise RuntimeError('Invalid GitHub commit response')
++    return info.get('commit', {}).get('message', ''), url
+ 
+ 
+ def upload_release_assets(asset_files, gitee_client, gitee_repository, gitee_release_id):
+@@ -171,25 +96,25 @@
+             if file_path in uploaded_file_paths or os.path.isdir(file_path):
+                 continue
+         
+-        # 上传单个文件
+-        success, message = gitee_client.upload_asset(
+-            gitee_repository, 
+-            gitee_release_id,
+-            file_name=os.path.basename(file_path), 
+-            file_path=file_path
+-        )
+-        
+-        if not success:
+-            raise Exception("上传文件附件失败: " + message)
+-            
+-        upload_results.append(message)
+-        uploaded_file_paths.add(file_path)
+-        
++            # 上传单个文件
++            success, message = gitee_client.upload_asset(
++                gitee_repository,
++                gitee_release_id,
++                file_name=os.path.basename(file_path),
++                file_path=file_path
++            )
++
++            if not success:
++                raise Exception("上传文件附件失败: " + message)
++
++            upload_results.append(message)
++            uploaded_file_paths.add(file_path)
++
+     return upload_results
+ 
+ 
+ def create_gitee_release(gitee_owner, gitee_token, gitee_repository, 
+-                         release_tag_name, release_name, release_body, target_commitish):
++                         release_tag_name, release_name, release_body, target_commitish, prerelease=False):
+     """
+     在 Gitee 上创建新的 Release
+     
+@@ -211,7 +136,7 @@
+         tag_name=release_tag_name, 
+         name=release_name,
+         body=release_body, 
+-        target_commitish=target_commitish
++        target_commitish=target_commitish, prerelease=prerelease
+     )
+     
+     if success:
+@@ -219,62 +144,36 @@
+         set_action_output("release-id", release_id)
+         return release_id
+     else:
+-        logger.error("创建 Release 失败: " + release_id)
+-        return None
++        raise RuntimeError("Gitee release creation failed: " + str(release_id))
+ 
+ 
+ def download_file_from_url(url, local_directory, filename):
+-    """
+-    从 URL 下载文件到本地
+-    
+-    Args:
+-        url (str): 文件下载地址
+-        local_directory (str): 本地存储目录
+-        filename (str): 保存的文件名
+-    
+-    Returns:
+-        str or None: 下载成功返回文件路径，失败返回 None
+-    """
++    if not filename or filename in ('.', '..') or '/' in filename or '\\' in filename:
++        raise ValueError('Unsafe release asset filename')
++    if not url.startswith('https://github.com/'):
++        raise ValueError('Expected an HTTPS GitHub asset URL')
++    directory = Path(local_directory).resolve()
++    directory.mkdir(parents=True, exist_ok=True)
++    destination = directory / filename
++    logger.info('Downloading asset %r', filename)
++    downloaded_bytes = 0
++    next_report = 16 * 1024 * 1024
+     try:
+-        # 构建完整的本地目录路径
+-        full_directory_path = os.path.join(os.getcwd(), local_directory)
+-        
+-        # 如果目录不存在则创建
+-        if not os.path.exists(full_directory_path):
+-            os.mkdir(full_directory_path)
+-            
+-        # 构建完整的文件路径
+-        full_file_path = os.path.join(full_directory_path, filename)
+-        logger.info(f"准备从 {url} 下载文件到 {full_file_path}")
+-        
+-        # 发送 GET 请求，使用流式下载
+-        response = requests.get(url, stream=True, verify=False)
+-        
+-        # 检查响应状态码
+-        if response.status_code == 200:
+-            # 获取文件总大小
+-            total_size = int(response.headers.get('content-length', 0))
+-            
+-            # 打开本地文件进行写入
+-            with open(full_file_path, 'wb') as file_handle:
+-                # 使用 tqdm 显示进度条
+-                with logging_redirect_tqdm():
+-                    with tqdm(total=total_size, unit='B', unit_scale=True, desc=filename) as pbar:
+-                        # 分块读取文件内容，每次读取 1KB
+-                        for data_chunk in response.iter_content(chunk_size=1024):
+-                            if data_chunk:  # 确保有数据可写入
+-                                file_handle.write(data_chunk)  # 将数据块写入本地文件
+-                                file_handle.flush()  # 刷新缓冲区，确保数据写入磁盘
+-                                pbar.update(len(data_chunk))  # 更新进度条
+-            logger.info(f'文件 {filename} 下载完成！')
+-            return full_file_path
+-        else:
+-            logger.error('下载失败，状态码：%s', response.status_code)
+-    except requests.exceptions.RequestException as e:  # 处理网络连接问题和其他HTTP请求错误
+-        logger.error('请求错误：%s', str(e))
+-    except FileNotFoundError as e:  # 处理文件写入错误
+-        logger.error('文件写入错误：%s', str(e))
+-    return None
++        with requests.get(url, stream=True, verify=True, timeout=(15, 180)) as response:
++            if response.status_code != 200:
++                raise RuntimeError(f'Asset download failed (HTTP {response.status_code})')
++            with destination.open('wb') as handle:
++                for chunk in response.iter_content(chunk_size=1024 * 1024):
++                    if chunk:
++                        handle.write(chunk)
++                        downloaded_bytes += len(chunk)
++                        if downloaded_bytes >= next_report:
++                            logger.info('Downloaded %s bytes for %r', downloaded_bytes, filename)
++                            next_report += 16 * 1024 * 1024
++    except requests.RequestException:
++        raise RuntimeError('Asset download failed; retry the workflow') from None
++    logger.info('Download complete: %r (%s bytes)', filename, downloaded_bytes)
++    return str(destination)
+ 
+ 
+ def sync_github_releases_to_gitee():
+@@ -308,11 +207,16 @@
+         tqdm.write(f'gitee_repo : {gitee_repo}')
+         tqdm.write(f'github_owner : {github_owner}')
+         tqdm.write(f'github_repo : {github_repo}')
+-        tqdm.write(f'gitee_token : {gitee_token[0:9] + len(gitee_token[9:]) * "*"}')
+         
+     # 获取 Gitee 和 GitHub 的 Release 信息
+     gitee_releases, gitee_request_url = fetch_gitee_releases(gitee_owner, gitee_repo)
+     github_releases, github_request_url = fetch_github_releases(github_owner, github_repo)
++    github_releases = [release for release in github_releases if not release.get('draft', False)]
++    if github_releases:
++        tags_url = f'{GITEE_RELEASES_API_BASE_URL}/{gitee_owner}/{gitee_repo}/tags'
++        mirrored_tags = {tag['name'] for tag in fetch_pages(tags_url, gitee=True)}
++        if any(release['tag_name'] not in mirrored_tags for release in github_releases):
++            raise RuntimeError('Gitee tags are not fully mirrored yet; retry after repository synchronization')
+     
+     tqdm.write(f"获取到 {len(github_releases)} 个 GitHub Release 和 {len(gitee_releases)} 个 Gitee Release")
+     
+@@ -339,7 +243,10 @@
+                 
+             # 如果 Gitee 上已存在相同标签的 Release，则跳过创建
+             if release_tag_name in gitee_releases:
+-                tqdm.write(f'Release {release_tag_name} 已存在，跳过创建')
++                current = gitee_releases[release_tag_name]
++                if current.get('prerelease', False) != github_release.get('prerelease', False):
++                    url = f"{GITEE_RELEASES_API_BASE_URL}/{gitee_owner}/{gitee_repo}/releases/{current['id']}"
++                    request_json('patch', url, data={'access_token': gitee_token, 'tag_name': release_tag_name, 'name': current.get('name') or github_release.get('name') or release_tag_name, 'body': current.get('body') or '-', 'prerelease': str(github_release.get('prerelease', False)).lower()})
+                 continue
+                 
+             tqdm.write(f'成功获取 GitHub Release URL {github_release_url} , 标签为 {github_release_info["tag_name"]}')
+@@ -360,10 +267,11 @@
+                 gitee_owner, gitee_token, gitee_repo, release_tag_name,
+                 github_release['name'],
+                 release_body,
+-                github_release['target_commitish'])
++                github_release['target_commitish'],
++                prerelease=github_release.get('prerelease', False))
+                 
+     # 第二步：按照时间倒序（从新到旧）上传附件
+-    github_releases_reverse_sorted = sorted(github_releases, key=lambda x: x.get('created_at', x.get('published_at', '')), reverse=True)
++    github_releases_reverse_sorted = sorted(github_releases, key=lambda x: x.get('published_at') or x.get('created_at') or '', reverse=True)[:1]
+     
+     with logging_redirect_tqdm():
+         for github_release in tqdm(github_releases_reverse_sorted, desc="上传附件", unit="release"):
+@@ -384,8 +292,7 @@
+                 if release_tag_name in updated_gitee_releases:
+                     gitee_release_info = updated_gitee_releases[release_tag_name]
+                 else:
+-                    tqdm.write(f'警告: 未找到 Gitee 上的 Release {release_tag_name}')
+-                    continue
++                    raise RuntimeError('Created Gitee release was not returned by the API')
+             else:
+                 gitee_release_info = gitee_releases[release_tag_name]
+                 
+@@ -396,50 +303,51 @@
+ 
+ 
+ def sync_release_assets_only(gitee_client, github_release_assets, release_tag_name, gitee_release_info, gitee_repo):
+-    """
+-    同步 Release 的附件文件
+-    
+-    Args:
+-        gitee_client (Gitee): Gitee 客户端实例
+-        github_release_assets (dict): GitHub Release 附件字典
+-        release_tag_name (str): Release 标签名
+-        gitee_release_info (dict): Gitee Release 信息
+-        gitee_repo (str): Gitee 仓库名称
+-    """
+-    # 构建 Gitee Release 附件字典
+-    gitee_release_assets = {
+-        asset['name']: asset for asset in gitee_release_info['assets']
+-    } if 'assets' in gitee_release_info else {}
+-    
+-    tqdm.write(f"开始同步 {release_tag_name} 的附件，共 {len(github_release_assets)} 个文件")
+-    
+-    # 遍历 GitHub Release 的每个附件
+-    with logging_redirect_tqdm():
+-        for github_asset_filename in tqdm(github_release_assets, desc=f"同步 {release_tag_name} 附件", unit="file"):
+-            # 如果 Gitee 上已存在同名附件，则跳过
+-            if github_asset_filename in gitee_release_assets:
+-                tqdm.write(f"附件 {github_asset_filename} 已存在，跳过")
+-                continue
+-                
+-            github_asset_info = github_release_assets[github_asset_filename]
+-            download_url = github_asset_info['browser_download_url']
+-            
+-            # 跳过没有下载链接的附件
+-            if download_url is None:
+-                continue
+-                
+-            # 从 GitHub 下载附件
+-            downloaded_file_path = download_file_from_url(
+-                download_url, f'{release_tag_name}', github_asset_filename)
+-                
+-            # 如果下载失败则跳过
+-            if downloaded_file_path is None:
+-                continue
+-                
+-            # 上传附件到 Gitee Release
+-            upload_result = upload_release_assets(
+-                [downloaded_file_path], gitee_client, gitee_repo, gitee_release_info['id'])
+-            set_action_output("download-url", upload_result)
++    existing = fetch_gitee_release_assets(gitee_client.owner, gitee_repo, gitee_release_info['id'])
++    for filename, asset in github_release_assets.items():
++        if filename in existing:
++            continue
++        url = asset.get('browser_download_url')
++        if not url:
++            raise RuntimeError('GitHub asset has no download URL')
++        # One temporary directory per asset bounds disk usage during history backfills.
++        with tempfile.TemporaryDirectory(prefix='release-sync-') as directory:
++            downloaded = download_file_from_url(url, directory, filename)
++            if Path(downloaded).stat().st_size != asset['size']:
++                raise RuntimeError('Downloaded asset size does not match GitHub metadata')
++            results = upload_release_assets([downloaded], gitee_client, gitee_repo, gitee_release_info['id'])
++            set_action_output('download-url', results)
++
++
++
++def github_headers():
++    headers = {'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28'}
++    token = os.environ.get('GITHUB_TOKEN')
++    if token:
++        headers['Authorization'] = f'Bearer {token}'
++    return headers
++
++
++def fetch_pages(url, gitee=False):
++    items = []
++    page = 1
++    while page <= 1000:
++        params = {'page': page, 'per_page': 100}
++        if gitee:
++            params['access_token'] = gitee_access_token
++        payload = request_json('get', url, params=params, headers={} if gitee else github_headers())
++        if not isinstance(payload, list):
++            raise RuntimeError('Expected an API list response')
++        items.extend(payload)
++        if len(payload) < 100:
++            return items
++        page += 1
++    raise RuntimeError('Pagination limit exceeded')
++
++
++def fetch_gitee_release_assets(owner, repository, release_id):
++    url = f'{GITEE_RELEASES_API_BASE_URL}/{owner}/{repository}/releases/{release_id}/attach_files'
++    return {asset['name']: asset for asset in fetch_pages(url, gitee=True)}
+ 
+ 
+ if __name__ == '__main__':
+--- a/gitee_release.py
++++ b/gitee_release.py
+@@ -6,6 +6,7 @@
+ """
+ 
+ import os
++from contextlib import ExitStack
+ import time
+ import logging
+ from functools import wraps
+@@ -141,7 +142,7 @@
+         self.owner = owner
+         self.token = token
+ 
+-    def create_release(self, repo, tag_name, name, body='-', target_commitish='master'):
++    def create_release(self, repo, tag_name, name, body='-', target_commitish='master', prerelease=False):
+         """
+         在 Gitee 仓库中创建一个新的 Release
+         
+@@ -164,14 +165,12 @@
+             'name': name,
+             'body': body,
+             'target_commitish': target_commitish,
++            'prerelease': str(prerelease).lower(),
+         }
+-        response = requests.post(url, data=data)
+-        response_data = response.json()
+-        
+-        # 检查响应状态码是否表示成功（HTTP 2xx）
+-        if response.status_code < 200 or response.status_code > 300:
+-            error_message = response_data["message"] if "message" in response_data else f"响应状态码: {response.status_code}"
+-            return False, error_message
++        try:
++            response_data = request_json('post', url, data=data)
++        except RuntimeError as error:
++            return False, str(error)
+ 
+         # 检查响应中是否包含 ID 字段
+         if "id" in response_data:
+@@ -196,61 +195,46 @@
+                    - success (bool): 是否成功
+                    - result (str): 成功时为文件下载链接，失败时为错误信息
+         """
+-        # 处理多个文件的情况
+-        if files:
++        with ExitStack() as stack:
++            paths = files or [file_path]
++            if not paths or not all(path and os.path.isfile(path) for path in paths):
++                raise ValueError('Upload file does not exist')
+             fields = [('access_token', self.token)]
+-            for file_path_item in files:
+-                file_path_item = file_path_item.strip()
+-                if not os.path.isfile(file_path_item):
+-                    raise ValueError('文件不存在: ' + file_path_item)
+-                file_field = ('file', (os.path.basename(file_path_item),
+-                                       open(file_path_item, 'rb'), 'application/octet-stream'))
+-                fields.append(file_field)
+-        # 处理单个文件的情况
+-        elif file_name and file_path:
+-            file_size = os.path.getsize(file_path)
+-            fields = {
+-                'access_token': self.token,
+-                'file': (file_name, open(file_path, 'rb'), 'application/octet-stream'),
+-            }
+-        # 参数校验失败
+-        else:
+-            raise ValueError('必须提供 files 或同时提供 file_name 和 file_path 参数')
+-            
+-        multipart_encoder = MultipartEncoder(fields=fields)
+-        url = f"https://gitee.com/api/v5/repos/{self.owner}/{repo}/releases/{release_id}/attach_files"
+-        
+-        # 创建带进度条的上传包装器
+-        with logging_redirect_tqdm():
+-            with tqdm(total=multipart_encoder.len, unit='B', unit_scale=True, desc=f"上传 {file_name}") as pbar:
+-                class ProgressAdapter:
+-                    def __init__(self, encoder, progress_bar):
+-                        self.encoder = encoder
+-                        self.progress_bar = progress_bar
+-                        self.monitor = MultipartEncoderMonitor(encoder, self.update_progress)
+-                    
+-                    def update_progress(self, monitor):
+-                        progress = monitor.bytes_read
+-                        self.progress_bar.update(progress - self.progress_bar.n)
+-                    
+-                    def __getattr__(self, item):
+-                        return getattr(self.monitor, item)
+-                
+-                progress_monitor = ProgressAdapter(multipart_encoder, pbar)
+-                response = requests.post(url, data=progress_monitor,
+-                                         headers={'Content-Type': multipart_encoder.content_type})
+-        response_data = response.json()
+-        
+-        # 检查响应状态码是否表示成功（HTTP 2xx）
+-        if response.status_code < 200 or response.status_code > 300:
+-            error_message = response_data["message"] if "message" in response_data else f"响应状态码: {response.status_code}"
+-            return False, error_message
+-
+-        # 检查响应中是否包含下载链接
+-        if "browser_download_url" in response_data:
+-            return True, response_data["browser_download_url"]
+-        else:
+-            return False, "响应中未包含 'browser_download_url' 字段"
++            for path in paths:
++                handle = stack.enter_context(open(path, 'rb'))
++                name = file_name if len(paths) == 1 and file_name else os.path.basename(path)
++                fields.append(('file', (name, handle, 'application/octet-stream')))
++            encoder = MultipartEncoder(fields=fields)
++            logging.info('Uploading %r (%s multipart bytes)', file_name, encoder.len)
++            next_report = [16 * 1024 * 1024]
++            def report_progress(monitor):
++                if monitor.bytes_read >= next_report[0]:
++                    logging.info('Uploaded %s of %s multipart bytes for %r', monitor.bytes_read, monitor.len, file_name)
++                    next_report[0] += 16 * 1024 * 1024
++            monitor = MultipartEncoderMonitor(encoder, report_progress)
++            url = f'https://gitee.com/api/v5/repos/{self.owner}/{repo}/releases/{release_id}/attach_files'
++            result = request_json('post', url, data=monitor, headers={'Content-Type': encoder.content_type}, timeout=(15, 900))
++            if not isinstance(result, dict) or not result.get('browser_download_url'):
++                raise RuntimeError('Gitee upload response has no download URL')
++            logging.info('Upload complete: %r', file_name)
++            return True, result['browser_download_url']
++
++
++
++def request_json(method, url, **kwargs):
++    """Keep TLS checks enabled and never log credential-bearing URLs or bodies."""
++    kwargs.setdefault('timeout', (15, 120))
++    kwargs['verify'] = True
++    kwargs['allow_redirects'] = False
++    try:
++        response = getattr(requests, method)(url, **kwargs)
++        if not 200 <= response.status_code < 300:
++            raise RuntimeError(f'API request failed (HTTP {response.status_code}); check permissions, mirror state, or rate limits')
++        return response.json()
++    except requests.RequestException:
++        raise RuntimeError('API network request failed; retry the workflow') from None
++    except ValueError:
++        raise RuntimeError('API returned invalid JSON') from None
+ 
+ 
+ def get_environment_variable(key, default_value=None):
+--- a/action.yml
++++ b/action.yml
+@@ -48,7 +48,6 @@
+         github_repo: ${{ inputs.github_repo }}
+         gitee_upload_retry_times: ${{ inputs.gitee_upload_retry_times }}
+       run: |
+-        python -m pip install --upgrade pip
+         pip install -r "${{ github.action_path }}/requirements.txt"
+         python "${{ github.action_path }}/sync_releases.py"
+ 

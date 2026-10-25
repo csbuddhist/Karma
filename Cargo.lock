@@ -2131,6 +2131,7 @@ dependencies = [
  "karma-macos",
  "karma-macos-ipc",
  "karma-onnx",
+ "karma-policy",
  "libc",
  "serde_json",
  "zeroize",
@@ -2144,6 +2145,7 @@ dependencies = [
  "karma-ai",
  "karma-ipc",
  "karma-onnx",
+ "karma-policy",
  "karma-windows",
  "karma-windows-ipc",
  "windows 0.62.2",
@@ -2323,7 +2325,7 @@ dependencies = [
 
 [[package]]
 name = "karma-ui"
-version = "0.3.8"
+version = "0.3.18"
 dependencies = [
  "argon2",
  "karma-ipc",

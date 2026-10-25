@@ -1,10 +1,13 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Deserialize;
 use serde_json::Value;
 use thiserror::Error;
 
-use crate::application_policy::{path_components, trailing_components_match};
+use crate::{
+    application_category::{ApplicationCategories, BROWSER_CATEGORY, category_members},
+    application_policy::{path_components, trailing_components_match},
+};
 
 pub const MINUTES_PER_DAY: u16 = 1440;
 pub const MINUTES_PER_WEEK: u16 = 7 * MINUTES_PER_DAY;
@@ -12,11 +15,12 @@ pub const MINUTES_PER_WEEK: u16 = 7 * MINUTES_PER_DAY;
 const MAX_SCHEDULE_RULES: usize = 64;
 const MAX_BLOCKS_PER_RULE: usize = 96;
 const MAX_APPLICATIONS_PER_RULE: usize = 64;
+const MAX_CATEGORIES_PER_RULE: usize = 32;
 const MAX_RULE_ID_CHARS: usize = 128;
 const MAX_RULE_NAME_CHARS: usize = 128;
 const MAX_EXECUTABLE_CHARS: usize = 2048;
 
-/// Browser executables that the `browsers` target always covers, in addition
+/// Browser executables that the `browser` category always covers, in addition
 /// to console application rules categorized as `browser`. Entries are the
 /// lowercase final path component of the process image.
 pub const KNOWN_BROWSER_EXECUTABLES: &[&str] = &[
@@ -71,16 +75,31 @@ pub const KNOWN_BROWSER_EXECUTABLES: &[&str] = &[
     "yandex",
 ];
 
-/// Which applications lose network access while a schedule block is active.
+/// Which applications a schedule rule covers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NetworkTarget {
-    /// Known browsers plus console applications categorized as browsers.
+    /// Saved by consoles before categories existed; the same as
+    /// `categories: ["browser"]`.
     Browsers,
+    /// Members of the listed application categories.
+    Categories,
     /// Only the executables listed on the schedule rule.
     Applications,
-    /// Every application that is not part of the operating system.
+    /// Every application that is not part of the operating system. Only
+    /// network blocking supports this target.
     AllNetwork,
+}
+
+/// What a schedule rule does to the applications it covers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScheduleAction {
+    /// The applications lose network access.
+    #[default]
+    BlockNetwork,
+    /// Running instances of the applications are terminated.
+    BlockLaunch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
@@ -89,22 +108,24 @@ pub enum NetworkScheduleError {
     InvalidPolicy,
 }
 
-/// The console-managed weekly network schedules (`policy.schedules`).
+/// The console-managed weekly blocking schedules (`policy.schedules`).
 ///
 /// Days are numbered Monday = 0 through Sunday = 6 and times are local wall
 /// clock minutes. A block whose end is not after its start continues into the
 /// following day, so `22:00–06:00` on Sunday ends at 06:00 on Monday.
+/// Category targets resolve to the enabled application rules of each category
+/// when the policy is read.
 #[derive(Debug, Clone, Default)]
 pub struct NetworkSchedulePolicy {
     rules: Vec<StoredRule>,
-    browser_rules: Vec<Vec<String>>,
 }
 
 #[derive(Debug, Clone)]
 struct StoredRule {
     id: String,
-    target: NetworkTarget,
-    executables: Vec<String>,
+    action: ScheduleAction,
+    block_all: bool,
+    executables: BTreeSet<String>,
     ranges: Vec<WeekRange>,
 }
 
@@ -123,18 +144,17 @@ impl WeekRange {
     }
 }
 
-/// The network restriction in force at one instant.
+/// The blocking in force at one instant.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NetworkRestriction {
-    /// Block every non-system application.
+    /// Block network access for every non-system application.
     pub block_all: bool,
-    /// Block known browsers and console applications categorized as browsers.
-    pub block_browsers: bool,
-    /// Additional executables (file names or full paths, lowercase) to block.
-    pub executables: Vec<String>,
+    /// Executables (lowercase file names or paths) that lose network access.
+    pub network_executables: Vec<String>,
+    /// Executables (lowercase file names or paths) that must not run.
+    pub launch_executables: Vec<String>,
     /// Identifiers of the schedule rules that are currently active.
     pub rule_ids: Vec<String>,
-    browser_rules: Vec<Vec<String>>,
 }
 
 impl NetworkRestriction {
@@ -142,56 +162,49 @@ impl NetworkRestriction {
         !self.rule_ids.is_empty()
     }
 
-    /// Browser executables (file names or full paths, lowercase) that the
-    /// enforcement layer must block when `block_browsers` is set.
-    pub fn browser_executables(&self) -> Vec<String> {
-        KNOWN_BROWSER_EXECUTABLES
-            .iter()
-            .map(|name| (*name).to_owned())
-            .chain(
-                self.browser_rules
-                    .iter()
-                    .map(|components| components.join("\\")),
-            )
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect()
-    }
-
     /// Whether an application image path loses network access. `block_all`
     /// covers every path; enforcement must still exempt operating-system
     /// components and Karma itself.
-    pub fn blocks_executable(&self, executable_path: &str) -> bool {
-        if self.block_all {
-            return true;
-        }
-        let observed = path_components(executable_path);
-        if self.block_browsers && is_browser(&observed, &self.browser_rules) {
-            return true;
-        }
-        self.executables
-            .iter()
-            .any(|rule| trailing_components_match(&observed, &path_components(rule)))
+    pub fn blocks_network(&self, executable_path: &str) -> bool {
+        self.block_all || matches_any(&self.network_executables, executable_path)
     }
+
+    /// Whether an application image path must not run. Enforcement must still
+    /// exempt operating-system components and Karma itself.
+    pub fn blocks_launch(&self, executable_path: &str) -> bool {
+        matches_any(&self.launch_executables, executable_path)
+    }
+}
+
+fn matches_any(rules: &[String], executable_path: &str) -> bool {
+    let observed = path_components(executable_path);
+    rules
+        .iter()
+        .any(|rule| trailing_components_match(&observed, &path_components(rule)))
 }
 
 /// Whether `executable_path` is a known browser or matches an enabled console
 /// application rule categorized as a browser.
 pub fn is_browser_executable(policy: &Value, executable_path: &str) -> bool {
-    is_browser(
-        &path_components(executable_path),
-        &browser_application_rules(policy),
+    matches_browser(
+        category_members(policy).get(BROWSER_CATEGORY),
+        executable_path,
     )
 }
 
-fn is_browser(observed: &[String], browser_rules: &[Vec<String>]) -> bool {
+/// Whether `executable_path` is a known browser or matches one of the
+/// browser-category `members` from `category_members`.
+pub(crate) fn matches_browser(members: Option<&BTreeSet<String>>, executable_path: &str) -> bool {
+    let observed = path_components(executable_path);
     observed.last().is_some_and(|file_name| {
         KNOWN_BROWSER_EXECUTABLES
             .iter()
             .any(|browser| file_name == browser)
-    }) || browser_rules
-        .iter()
-        .any(|rule| trailing_components_match(observed, rule))
+    }) || members.is_some_and(|members| {
+        members
+            .iter()
+            .any(|rule| trailing_components_match(&observed, &path_components(rule)))
+    })
 }
 
 #[derive(Deserialize)]
@@ -206,7 +219,11 @@ enum ScheduleRuleInput {
 struct BlockRuleInput {
     id: String,
     name: String,
+    #[serde(default)]
+    action: ScheduleAction,
     target: NetworkTarget,
+    #[serde(default)]
+    categories: Vec<String>,
     #[serde(default)]
     applications: Vec<String>,
     blocks: Vec<BlockInput>,
@@ -243,10 +260,15 @@ enum LegacyTarget {
     AllRestricted,
 }
 
-#[derive(Deserialize)]
-struct ApplicationInput {
-    executable: String,
-    category: String,
+/// A rule after its shape-specific fields are read, before validation.
+struct ParsedRule {
+    id: String,
+    name: String,
+    action: ScheduleAction,
+    target: NetworkTarget,
+    categories: Vec<String>,
+    applications: Vec<String>,
+    ranges: Vec<WeekRange>,
     enabled: bool,
 }
 
@@ -261,16 +283,16 @@ impl NetworkSchedulePolicy {
         if raw_rules.len() > MAX_SCHEDULE_RULES {
             return Err(NetworkScheduleError::InvalidPolicy);
         }
+        let categories = ApplicationCategories::from_value(policy)
+            .map_err(|_| NetworkScheduleError::InvalidPolicy)?;
+        let members = category_members(policy);
         let mut rules = Vec::new();
         for raw in raw_rules {
-            if let Some(rule) = parse_rule(raw)? {
+            if let Some(rule) = resolve_rule(parse_rule(raw)?, &categories, &members)? {
                 rules.push(rule);
             }
         }
-        Ok(Self {
-            rules,
-            browser_rules: browser_application_rules(policy),
-        })
+        Ok(Self { rules })
     }
 
     pub fn is_empty(&self) -> bool {
@@ -281,7 +303,8 @@ impl NetworkSchedulePolicy {
     pub fn restriction_at(&self, minute_of_week: u16) -> NetworkRestriction {
         let minute = minute_of_week % MINUTES_PER_WEEK;
         let mut restriction = NetworkRestriction::default();
-        let mut executables = BTreeSet::new();
+        let mut network = BTreeSet::new();
+        let mut launch = BTreeSet::new();
         for rule in &self.rules {
             if !rule
                 .ranges
@@ -291,16 +314,14 @@ impl NetworkSchedulePolicy {
                 continue;
             }
             restriction.rule_ids.push(rule.id.clone());
-            match rule.target {
-                NetworkTarget::AllNetwork => restriction.block_all = true,
-                NetworkTarget::Browsers => restriction.block_browsers = true,
-                NetworkTarget::Applications => executables.extend(rule.executables.iter().cloned()),
+            restriction.block_all |= rule.block_all;
+            match rule.action {
+                ScheduleAction::BlockNetwork => network.extend(rule.executables.iter().cloned()),
+                ScheduleAction::BlockLaunch => launch.extend(rule.executables.iter().cloned()),
             }
         }
-        if restriction.block_browsers {
-            restriction.browser_rules = self.browser_rules.clone();
-        }
-        restriction.executables = executables.into_iter().collect();
+        restriction.network_executables = network.into_iter().collect();
+        restriction.launch_executables = launch.into_iter().collect();
         restriction
     }
 
@@ -336,8 +357,8 @@ impl NetworkSchedulePolicy {
     }
 }
 
-fn parse_rule(raw: ScheduleRuleInput) -> Result<Option<StoredRule>, NetworkScheduleError> {
-    let (id, name, target, applications, ranges, enabled) = match raw {
+fn parse_rule(raw: ScheduleRuleInput) -> Result<ParsedRule, NetworkScheduleError> {
+    match raw {
         ScheduleRuleInput::Blocks(rule) => {
             if rule.blocks.len() > MAX_BLOCKS_PER_RULE {
                 return Err(NetworkScheduleError::InvalidPolicy);
@@ -347,14 +368,16 @@ fn parse_rule(raw: ScheduleRuleInput) -> Result<Option<StoredRule>, NetworkSched
                 .iter()
                 .map(|block| week_range(block.day, &block.start, &block.end))
                 .collect::<Result<Vec<_>, _>>()?;
-            (
-                rule.id,
-                rule.name,
-                rule.target,
-                rule.applications,
+            Ok(ParsedRule {
+                id: rule.id,
+                name: rule.name,
+                action: rule.action,
+                target: rule.target,
+                categories: rule.categories,
+                applications: rule.applications,
                 ranges,
-                rule.enabled,
-            )
+                enabled: rule.enabled,
+            })
         }
         ScheduleRuleInput::Legacy(rule) => {
             if rule.days.len() > 7 {
@@ -369,35 +392,83 @@ fn parse_rule(raw: ScheduleRuleInput) -> Result<Option<StoredRule>, NetworkSched
                 LegacyTarget::BrowserPlayer => NetworkTarget::Browsers,
                 LegacyTarget::Internet | LegacyTarget::AllRestricted => NetworkTarget::AllNetwork,
             };
-            (rule.id, rule.name, target, Vec::new(), ranges, rule.enabled)
+            Ok(ParsedRule {
+                id: rule.id,
+                name: rule.name,
+                action: ScheduleAction::BlockNetwork,
+                target,
+                categories: Vec::new(),
+                applications: Vec::new(),
+                ranges,
+                enabled: rule.enabled,
+            })
         }
-    };
-    if id.is_empty()
-        || id.chars().count() > MAX_RULE_ID_CHARS
-        || name.chars().count() > MAX_RULE_NAME_CHARS
-        || applications.len() > MAX_APPLICATIONS_PER_RULE
+    }
+}
+
+fn resolve_rule(
+    rule: ParsedRule,
+    categories: &ApplicationCategories,
+    members: &BTreeMap<String, BTreeSet<String>>,
+) -> Result<Option<StoredRule>, NetworkScheduleError> {
+    if rule.id.is_empty()
+        || rule.id.chars().count() > MAX_RULE_ID_CHARS
+        || rule.name.chars().count() > MAX_RULE_NAME_CHARS
+        || rule.applications.len() > MAX_APPLICATIONS_PER_RULE
+        || rule.categories.len() > MAX_CATEGORIES_PER_RULE
+        || rule
+            .categories
+            .iter()
+            .any(|category| !categories.contains(category))
     {
         return Err(NetworkScheduleError::InvalidPolicy);
     }
-    let mut executables = Vec::new();
-    for executable in &applications {
+    let mut applications = BTreeSet::new();
+    for executable in &rule.applications {
         let components = path_components(executable);
         if executable.chars().count() > MAX_EXECUTABLE_CHARS || components.is_empty() {
             return Err(NetworkScheduleError::InvalidPolicy);
         }
-        executables.push(components.join("\\"));
+        applications.insert(components.join("\\"));
     }
-    if target == NetworkTarget::Applications && executables.is_empty() {
+    let covered_categories = match rule.target {
+        NetworkTarget::Browsers => vec![BROWSER_CATEGORY.to_owned()],
+        NetworkTarget::Categories => rule.categories,
+        NetworkTarget::Applications | NetworkTarget::AllNetwork => Vec::new(),
+    };
+    let block_all = rule.target == NetworkTarget::AllNetwork;
+    if (rule.target == NetworkTarget::Applications && applications.is_empty())
+        || (rule.target == NetworkTarget::Categories && covered_categories.is_empty())
+        || (block_all && rule.action == ScheduleAction::BlockLaunch)
+    {
         return Err(NetworkScheduleError::InvalidPolicy);
     }
-    if !enabled || ranges.is_empty() {
+    if !rule.enabled || rule.ranges.is_empty() {
         return Ok(None);
     }
+    let mut executables = if rule.target == NetworkTarget::Applications {
+        applications
+    } else {
+        BTreeSet::new()
+    };
+    for category in &covered_categories {
+        if category == BROWSER_CATEGORY {
+            executables.extend(
+                KNOWN_BROWSER_EXECUTABLES
+                    .iter()
+                    .map(|name| (*name).to_owned()),
+            );
+        }
+        if let Some(category_members) = members.get(category) {
+            executables.extend(category_members.iter().cloned());
+        }
+    }
     Ok(Some(StoredRule {
-        id,
-        target,
+        id: rule.id,
+        action: rule.action,
+        block_all,
         executables,
-        ranges,
+        ranges: rule.ranges,
     }))
 }
 
@@ -436,26 +507,6 @@ fn parse_clock(value: &str) -> Result<u16, NetworkScheduleError> {
     Ok(hours * 60 + minutes)
 }
 
-/// Console application rules categorized as browsers extend the `browsers`
-/// target. Malformed entries are ignored here because `ApplicationPolicy`
-/// validates the application list on its own.
-fn browser_application_rules(policy: &Value) -> Vec<Vec<String>> {
-    let Some(applications) = policy.get("applications").and_then(Value::as_array) else {
-        return Vec::new();
-    };
-    applications
-        .iter()
-        .filter_map(|value| serde_json::from_value::<ApplicationInput>(value.clone()).ok())
-        .filter(|application| application.enabled && application.category == "browser")
-        .map(|application| path_components(&application.executable))
-        .filter(|components| {
-            components
-                .last()
-                .is_some_and(|file_name| file_name.ends_with(".exe"))
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -483,7 +534,11 @@ mod tests {
             ],
             "enabled": true
         }]));
-        assert!(value.restriction_at(at(0, 9, 0)).block_browsers);
+        assert!(
+            value
+                .restriction_at(at(0, 9, 0))
+                .blocks_network("chrome.exe")
+        );
         assert!(!value.restriction_at(at(0, 12, 0)).is_restricted());
         assert!(!value.restriction_at(at(0, 13, 59)).is_restricted());
         assert!(value.restriction_at(at(0, 17, 29)).is_restricted());
@@ -518,11 +573,12 @@ mod tests {
             "enabled": true
         }]));
         let restriction = value.restriction_at(at(4, 19, 0));
-        assert!(!restriction.block_all && !restriction.block_browsers);
-        assert!(restriction.blocks_executable(r"C:\Program Files (x86)\Steam\steam.exe"));
-        assert!(restriction.blocks_executable(r"d:\games\launcher\LAUNCHER.EXE"));
-        assert!(!restriction.blocks_executable(r"C:\Other\launcher.exe"));
-        assert!(!restriction.blocks_executable(r"C:\Program Files\Google\Chrome\chrome.exe"));
+        assert!(!restriction.block_all);
+        assert!(restriction.blocks_network(r"C:\Program Files (x86)\Steam\steam.exe"));
+        assert!(restriction.blocks_network(r"d:\games\launcher\LAUNCHER.EXE"));
+        assert!(!restriction.blocks_network(r"C:\Other\launcher.exe"));
+        assert!(!restriction.blocks_network(r"C:\Program Files\Google\Chrome\chrome.exe"));
+        assert!(!restriction.blocks_launch(r"C:\Program Files (x86)\Steam\steam.exe"));
     }
 
     #[test]
@@ -543,14 +599,64 @@ mod tests {
         .unwrap();
         let restriction = value.restriction_at(at(1, 10, 0));
         assert!(
-            restriction.blocks_executable(r"C:\Program Files\Google\Chrome\Application\chrome.exe")
+            restriction.blocks_network(r"C:\Program Files\Google\Chrome\Application\chrome.exe")
         );
-        assert!(restriction.blocks_executable(r"C:\Tools\MyBrowser.exe"));
-        assert!(!restriction.blocks_executable(r"C:\Windows\System32\svchost.exe"));
-        let executables = restriction.browser_executables();
+        assert!(restriction.blocks_network(r"C:\Tools\MyBrowser.exe"));
+        assert!(!restriction.blocks_network(r"C:\Windows\System32\svchost.exe"));
+        let executables = &restriction.network_executables;
         assert!(executables.contains(&"msedge.exe".to_owned()));
         assert!(executables.contains(&r"c:\tools\mybrowser.exe".to_owned()));
         assert!(!executables.iter().any(|name| name.contains("受支持")));
+    }
+
+    #[test]
+    fn category_target_covers_enabled_members_of_each_category() {
+        let value = NetworkSchedulePolicy::from_value(&json!({
+            "applicationCategories": [{"id": "cat-chat", "name": "聊天"}],
+            "applications": [
+                {"id":"a","name":"WeChat","executable":r"C:\Apps\WeChat.exe","category":"cat-chat","action":"content_only","enabled":true},
+                {"id":"b","name":"QQ","executable":"qq.exe","category":"cat-chat","action":"allow","enabled":true},
+                {"id":"c","name":"Off","executable":"old.exe","category":"cat-chat","action":"content_only","enabled":false},
+                {"id":"d","name":"Game","executable":"game.exe","category":"game","action":"content_only","enabled":true}
+            ],
+            "schedules": [{
+                "id": "s", "name": "s", "target": "categories",
+                "categories": ["cat-chat", "browser"],
+                "blocks": [{"day": 1, "start": "08:00", "end": "12:00"}],
+                "enabled": true
+            }]
+        }))
+        .unwrap();
+        let restriction = value.restriction_at(at(1, 9, 0));
+        for blocked in [r"c:\apps\wechat.exe", r"D:\QQ\QQ.exe", "msedge.exe"] {
+            assert!(restriction.blocks_network(blocked), "{blocked}");
+        }
+        for open in ["old.exe", "game.exe", r"D:\Other\WeChat.exe"] {
+            assert!(!restriction.blocks_network(open), "{open}");
+        }
+    }
+
+    #[test]
+    fn block_launch_rules_list_executables_that_must_not_run() {
+        let value = NetworkSchedulePolicy::from_value(&json!({
+            "applications": [
+                {"id":"g","name":"Game","executable":r"D:\Games\game.exe","category":"game","action":"content_only","enabled":true}
+            ],
+            "schedules": [
+                {"id":"launch","name":"游戏","action":"block_launch","target":"categories","categories":["game"],
+                 "blocks":[{"day":5,"start":"09:00","end":"18:00"}],"enabled":true},
+                {"id":"net","name":"浏览器","target":"applications","applications":["steam.exe"],
+                 "blocks":[{"day":5,"start":"10:00","end":"11:00"}],"enabled":true}
+            ]
+        }))
+        .unwrap();
+        let morning = value.restriction_at(at(5, 9, 30));
+        assert_eq!(morning.rule_ids, vec!["launch"]);
+        assert!(morning.blocks_launch(r"d:\games\GAME.exe"));
+        assert!(!morning.blocks_network(r"d:\games\game.exe"));
+        let both = value.restriction_at(at(5, 10, 30));
+        assert!(both.blocks_launch(r"d:\games\game.exe"));
+        assert!(both.blocks_network("steam.exe") && !both.blocks_launch("steam.exe"));
     }
 
     #[test]
@@ -582,8 +688,8 @@ mod tests {
         ]));
         let restriction = value.restriction_at(at(3, 10, 46));
         assert_eq!(restriction.rule_ids, vec!["a", "b"]);
-        assert!(restriction.block_browsers && !restriction.block_all);
-        assert_eq!(restriction.executables, vec!["game.exe"]);
+        assert!(!restriction.block_all);
+        assert!(restriction.blocks_network("chrome.exe") && restriction.blocks_network("game.exe"));
     }
 
     #[test]
@@ -637,8 +743,16 @@ mod tests {
             "target": "browser_player",
             "enabled": true
         }]));
-        assert!(value.restriction_at(at(4, 23, 0)).block_browsers);
-        assert!(value.restriction_at(at(5, 6, 0)).block_browsers);
+        assert!(
+            value
+                .restriction_at(at(4, 23, 0))
+                .blocks_network("firefox.exe")
+        );
+        assert!(
+            value
+                .restriction_at(at(5, 6, 0))
+                .blocks_network("firefox.exe")
+        );
         assert!(!value.restriction_at(at(5, 21, 0)).is_restricted());
     }
 
@@ -649,13 +763,18 @@ mod tests {
             json!([{"id":"x","name":"x","target":"browsers","blocks":[{"day":1,"start":"24:00","end":"09:00"}],"enabled":true}]),
             json!([{"id":"x","name":"x","target":"browsers","blocks":[{"day":1,"start":"8:00","end":"09:00"}],"enabled":true}]),
             json!([{"id":"x","name":"x","target":"applications","applications":[],"blocks":[{"day":1,"start":"08:00","end":"09:00"}],"enabled":true}]),
+            json!([{"id":"x","name":"x","target":"categories","categories":[],"blocks":[],"enabled":true}]),
+            json!([{"id":"x","name":"x","target":"categories","categories":["cat-missing"],"blocks":[],"enabled":true}]),
+            json!([{"id":"x","name":"x","action":"block_launch","target":"all_network","blocks":[],"enabled":true}]),
+            json!([{"id":"x","name":"x","action":"uninstall","target":"browsers","blocks":[],"enabled":true}]),
             json!([{"id":"","name":"x","target":"browsers","blocks":[],"enabled":true}]),
             json!([{"id":"x","name":"x","target":"everything","blocks":[],"enabled":true}]),
             json!([{"id":"x","name":"x","target":"browsers","blocks":[],"enabled":true,"extra":1}]),
         ] {
             assert_eq!(
                 NetworkSchedulePolicy::from_value(&json!({ "schedules": schedules })).unwrap_err(),
-                NetworkScheduleError::InvalidPolicy
+                NetworkScheduleError::InvalidPolicy,
+                "{schedules}"
             );
         }
     }

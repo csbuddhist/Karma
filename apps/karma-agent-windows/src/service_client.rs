@@ -17,6 +17,7 @@ use karma_ipc::{
     AgentContextObservation, ComponentState, MonitorHealth, ProcessIdentity, RequestEnvelope,
     ResponseEnvelope,
 };
+use karma_policy::ContextPolicy;
 use karma_windows::{
     AttributionResult, FrameWorkerReport, FrameWorkerStatus, MonitorSnapshot, Rect,
     SourceAttributor, WindowCandidate, WindowsRuntimeApartment, browser_host, foreground_window,
@@ -118,20 +119,30 @@ impl SourceIdentityProvider for WindowsSourceIdentityProvider {
     }
 
     fn browser_host(&mut self, source: &SourceContext) -> Option<String> {
-        is_supported_browser(&source.identity.executable_name)
-            .then(|| browser_host(source.window_handle))
-            .flatten()
+        browser_host(source.window_handle)
     }
 }
 
 /// UI Automation needs a multithreaded apartment on the monitor thread.
 struct WindowsForegroundContext {
     _runtime: WindowsRuntimeApartment,
+    last_window: Option<isize>,
 }
 
 impl ForegroundContext for WindowsForegroundContext {
-    fn observe(&mut self, agent_instance_id: &str) -> Option<AgentContextObservation> {
-        foreground_context_observation(agent_instance_id)
+    fn observe(
+        &mut self,
+        agent_instance_id: &str,
+        context_policy: &ContextPolicy,
+    ) -> Option<AgentContextObservation> {
+        let (observation, window) =
+            foreground_context_observation(agent_instance_id, context_policy)?;
+        self.last_window = Some(window);
+        Some(observation)
+    }
+
+    fn reread_browser_host(&mut self) -> Option<String> {
+        self.last_window.and_then(browser_host)
     }
 }
 
@@ -142,7 +153,10 @@ pub fn start_context_monitor(
 ) -> thread::JoinHandle<()> {
     service::start_context_monitor(client, policy, applications, || {
         match WindowsRuntimeApartment::initialize_mta() {
-            Ok(runtime) => Some(WindowsForegroundContext { _runtime: runtime }),
+            Ok(runtime) => Some(WindowsForegroundContext {
+                _runtime: runtime,
+                last_window: None,
+            }),
             Err(_) => {
                 eprintln!("status=degraded component=foreground_context error=runtime_unavailable");
                 None
@@ -151,7 +165,11 @@ pub fn start_context_monitor(
     })
 }
 
-fn foreground_context_observation(agent_instance_id: &str) -> Option<AgentContextObservation> {
+/// The foreground context and the window it was read from.
+fn foreground_context_observation(
+    agent_instance_id: &str,
+    context_policy: &ContextPolicy,
+) -> Option<(AgentContextObservation, isize)> {
     let foreground = foreground_window().ok().flatten()?;
     let title = window_title(foreground.handle);
     let process = inspect_process(foreground.pid).ok().flatten()?;
@@ -161,39 +179,24 @@ fn foreground_context_observation(agent_instance_id: &str) -> Option<AgentContex
         executable_name: process.executable_name,
         executable_sha256: None,
     };
-    let browser_host = is_supported_browser(&source.executable_name)
+    let browser_host = context_policy
+        .is_browser(&source.executable_name)
         .then(|| browser_host(foreground.handle))
         .flatten();
     if title.is_empty() && browser_host.is_none() {
         return None;
     }
-    Some(AgentContextObservation {
-        event_id: format!("context-{}", random_opaque()),
-        agent_instance_id: agent_instance_id.into(),
-        occurred_at_ms: unix_time_ms(),
-        source,
-        window_title: title,
-        browser_host,
-    })
-}
-
-fn is_supported_browser(executable_name: &str) -> bool {
-    let file_name = executable_name
-        .rsplit(['\\', '/'])
-        .next()
-        .unwrap_or(executable_name);
-    [
-        "chrome.exe",
-        "msedge.exe",
-        "firefox.exe",
-        "brave.exe",
-        "opera.exe",
-        "opera_gx.exe",
-        "vivaldi.exe",
-        "arc.exe",
-    ]
-    .iter()
-    .any(|browser| file_name.eq_ignore_ascii_case(browser))
+    Some((
+        AgentContextObservation {
+            event_id: format!("context-{}", random_opaque()),
+            agent_instance_id: agent_instance_id.into(),
+            occurred_at_ms: unix_time_ms(),
+            source,
+            window_title: title,
+            browser_host,
+        },
+        foreground.handle,
+    ))
 }
 
 pub fn monitor_health(

@@ -9,6 +9,7 @@ license.workspace = true
 karma-agent-core = { path = "../../crates/karma-agent-core" }
 karma-ai = { path = "../../crates/karma-ai" }
 karma-ipc = { path = "../../crates/karma-ipc" }
+karma-policy = { path = "../../crates/karma-policy" }
 karma-macos = { path = "../../crates/karma-macos", features = ["session-agent"] }
 karma-macos-ipc = { path = "../../crates/karma-macos-ipc" }
 karma-onnx = { path = "../../crates/karma-onnx" }

@@ -126,7 +126,10 @@ fn scale_bgra(input: &BgraFrame, target: FrameDimensions) -> Result<Vec<u8>, Fra
     Ok(output)
 }
 
-fn difference_hash(pixels: &[u8], dimensions: FrameDimensions) -> Result<u64, FrameError> {
+pub(crate) fn difference_hash(
+    pixels: &[u8],
+    dimensions: FrameDimensions,
+) -> Result<u64, FrameError> {
     let stride = dimensions.tight_stride()?;
     let mut hash = 0u64;
 

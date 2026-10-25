@@ -34,13 +34,13 @@ import {
   ListChecks,
   Lock,
   LockKeyhole,
-  LogOut,
   Monitor,
   Pencil,
   Power,
   Plus,
   Save,
   Search,
+  Tags,
   Settings,
   ShieldCheck,
   RotateCcw,
@@ -70,6 +70,11 @@ import {
   isBrowserExecutable,
   allowApplications,
   applicationEffect,
+  assignApplicationsToCategory,
+  applicationCategoryOf,
+  knownBrowserExecutables,
+  isPlaceholderApplication,
+  removeFromCategory,
   listInstalledApplications,
   getAppVersion,
   importSettings,
@@ -101,6 +106,7 @@ import {
   bundledStrictCount,
   coveredByStrictKeyword,
   defaultMatchFor,
+  isCodePrefix,
   maxTitleKeywordAdditions,
   maxTitleKeywordTermChars,
   normalizeKeyword,
@@ -109,13 +115,18 @@ import type { BundledKeyword } from "./bundledKeywords";
 import {
   createTranslator,
   getInitialLocale,
+  isMessageKey,
   isSessionExpiredError,
   localizeError,
   persistLocale,
 } from "./i18n";
 import type { Locale, MessageKey, Translate } from "./i18n";
 import type {
+  ActiveBan,
   ApplicationRule,
+  AuditDetail,
+  BuiltInApplicationCategory,
+  AuditItem,
   AuthMode,
   ConsoleState,
   EvidenceItem,
@@ -129,6 +140,7 @@ import type {
   PageKey,
   RememberedTitlePage,
   TitleReason,
+  ScheduleAction,
   ScheduleBlock,
   ScheduleRule,
   WebsiteRule,
@@ -363,6 +375,7 @@ function ServiceConnectionError({ detail, onRetry }: { detail: string; onRetry: 
 
 function Overview({ state, update, sessionToken, onNetworkChange }: { state: ConsoleState; update: (next: ConsoleState) => void; sessionToken: string; onNetworkChange: (network: NetworkStatus) => void }) {
   const { t } = useI18n();
+  const auditDateTime = useAuditDateTime();
   const healthyMonitors = state.monitors.filter((monitor) => monitor.state === "healthy").length;
   const criticalEvents = state.evidence.filter((item) => item.risk === "critical").length;
   return (
@@ -395,7 +408,7 @@ function Overview({ state, update, sessionToken, onNetworkChange }: { state: Con
         </Card>
         <Card>
           <div className="card-heading"><div><span className="eyebrow">RECENT</span><h2>{t("overview.recentActivity")}</h2></div></div>
-          {state.audit.length ? <div className="compact-list">{state.audit.slice(0, 5).map((item) => <div key={item.id}><span className={`event-mark ${item.outcome}`} /><div><strong>{item.detail}</strong><small>{item.occurredAt}</small></div></div>)}</div> : <EmptyState icon={<FileClock />} title={t("overview.noAuditEvents")} text={t("overview.noAuditEventsDescription")} />}
+          {state.audit.length ? <div className="compact-list">{state.audit.slice(0, 5).map((item) => <div key={item.id}><span className={`event-mark ${auditLevel(item)}`} /><div><strong>{auditText(item, t).title}</strong><small>{auditDateTime.format(item.occurredAtMs)}</small></div></div>)}</div> : <EmptyState icon={<FileClock />} title={t("overview.noAuditEvents")} text={t("overview.noAuditEventsDescription")} />}
         </Card>
       </div>
     </div>
@@ -526,6 +539,9 @@ function useLanguageLabel(): (language: string) => string {
   }, [locale]);
 }
 
+/** Group key for video codes; it cannot collide with an ISO 639 language code. */
+const codeGroupKey = "#code";
+
 type BuiltInEntry = { term: string; category: TitleKeywordCategory; match: TitleKeywordMatch; confidence: BundledKeyword["confidence"] | "added"; addition?: TitleKeywordAddition };
 
 function BuiltInKeywordsCard({ state, update }: { state: ConsoleState; update: (state: ConsoleState) => void }) {
@@ -543,36 +559,43 @@ function BuiltInKeywordsCard({ state, update }: { state: ConsoleState; update: (
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const additions = state.titleKeywordAdditions;
   const ambiguousEnabled = state.recognition.ambiguousTitleKeywordsEnabled;
-  const categoryLabel = (value: TitleKeywordCategory) => t(value === "organ" ? "keywords.categoryOrgan" : "keywords.categorySexual");
-  const matchLabel = (value: TitleKeywordMatch) => t(value === "word" ? "keywords.matchWord" : value === "substring" ? "keywords.matchSubstring" : "keywords.matchPrefix");
+  const categoryLabel = (value: TitleKeywordCategory) => t(value === "organ" ? "keywords.categoryOrgan" : value === "code" ? "keywords.categoryCode" : "keywords.categorySexual");
+  const matchLabel = (value: TitleKeywordMatch) => t(value === "word" ? "keywords.matchWord" : value === "substring" ? "keywords.matchSubstring" : value === "prefix" ? "keywords.matchPrefix" : "keywords.matchCode");
   const confidenceLabel = (value: BuiltInEntry["confidence"]) => t(value === "strict" ? "keywords.confidenceStrict" : value === "ambiguous" ? "keywords.confidenceAmbiguous" : "keywords.confidenceAdded");
-  const languages = useMemo(() => [...bundledLanguages, ...additions.map((item) => item.language).filter((code) => !bundledLanguages.includes(code))], [additions]);
+  const languages = useMemo(() => [...bundledLanguages, ...additions.filter((item) => item.category !== "code").map((item) => item.language).filter((code) => !bundledLanguages.includes(code))], [additions]);
   const groups = useMemo(() => {
     const needle = normalizeKeyword(search);
     const keep = (entry: BuiltInEntry) => (!needle || normalizeKeyword(entry.term).includes(needle)) && (!categoryFilter || entry.category === categoryFilter) && (!confidenceFilter || entry.confidence === confidenceFilter);
-    return languages
+    const addedEntry = (item: TitleKeywordAddition): BuiltInEntry => ({ term: item.term, category: item.category, match: item.match, confidence: "added", addition: item });
+    // Video codes match in titles of any language, so they form one group of their own.
+    const languageGroups = languages
       .filter((code) => !languageFilter || code === languageFilter)
       .map((code) => {
-        const added: BuiltInEntry[] = additions.filter((item) => item.language === code).map((item) => ({ term: item.term, category: item.category, match: item.match, confidence: "added", addition: item }));
-        const bundled: BuiltInEntry[] = bundledKeywordGroups.find((group) => group.language === code)?.keywords ?? [];
+        const added = additions.filter((item) => item.language === code && item.category !== "code").map(addedEntry);
+        const bundled: BuiltInEntry[] = (bundledKeywordGroups.find((group) => group.language === code)?.keywords ?? []).filter((entry) => entry.category !== "code");
         const all = [...added, ...bundled];
-        return { language: code, total: all.length, entries: all.filter(keep) };
-      })
-      .filter((group) => group.entries.length > 0);
+        return { key: code, total: all.length, entries: all.filter(keep) };
+      });
+    const codes: BuiltInEntry[] = [...additions.filter((item) => item.category === "code").map(addedEntry), ...bundledKeywordGroups.flatMap((group) => group.keywords.filter((entry) => entry.category === "code"))];
+    const codeGroups = languageFilter ? [] : [{ key: codeGroupKey, total: codes.length, entries: codes.filter(keep) }];
+    return [...languageGroups, ...codeGroups].filter((group) => group.entries.length > 0);
   }, [languages, additions, search, languageFilter, categoryFilter, confidenceFilter]);
   const filtering = Boolean(search.trim() || languageFilter || categoryFilter || confidenceFilter);
-  function chooseLanguage(code: string) { setLanguage(code); setMatch(defaultMatchFor(code)); setAddError(""); }
+  function chooseLanguage(code: string) { setLanguage(code); if (category !== "code") setMatch(defaultMatchFor(code)); setAddError(""); }
+  // Product codes, and only they, use code matching.
+  function chooseCategory(value: TitleKeywordCategory) { setCategory(value); setMatch(value === "code" ? "code" : defaultMatchFor(language)); setAddError(""); }
   function add() {
     const trimmed = term.trim();
     if (!trimmed) return;
     if ([...trimmed].length > maxTitleKeywordTermChars) return setAddError(t("keywords.additionTooLong", { count: maxTitleKeywordTermChars }));
+    if (category === "code" && !isCodePrefix(trimmed)) return setAddError(t("keywords.additionInvalidCode"));
     if (additions.length >= maxTitleKeywordAdditions) return setAddError(t("keywords.additionLimit", { count: maxTitleKeywordAdditions }));
     const normalized = normalizeKeyword(trimmed);
     if (coveredByStrictKeyword(trimmed, match) || additions.some((item) => normalizeKeyword(item.term) === normalized && item.match === match)) return setAddError(t("keywords.additionDuplicate"));
     update({ ...state, titleKeywordAdditions: [...additions, { id: crypto.randomUUID(), term: trimmed, language, category, match }] });
     setTerm("");
     setAddError("");
-    setExpanded((current) => new Set(current).add(language));
+    setExpanded((current) => new Set(current).add(category === "code" ? codeGroupKey : language));
   }
   function remove(id: string) { update({ ...state, titleKeywordAdditions: additions.filter((item) => item.id !== id) }); }
   function toggleGroup(code: string) { setExpanded((current) => { const next = new Set(current); if (next.has(code)) next.delete(code); else next.add(code); return next; }); }
@@ -593,9 +616,9 @@ function BuiltInKeywordsCard({ state, update }: { state: ConsoleState; update: (
       <strong>{t("keywords.additionTitle")}</strong>
       <div className="toolbar">
         <div className="input-with-icon"><Plus size={17} /><input placeholder={t("keywords.additionPlaceholder")} value={term} maxLength={maxTitleKeywordTermChars * 2} onChange={(event) => { setTerm(event.target.value); setAddError(""); }} onKeyDown={(event) => event.key === "Enter" && add()} /></div>
-        <select aria-label={t("keywords.language")} value={language} onChange={(event) => chooseLanguage(event.target.value)}>{bundledLanguages.map((code) => <option value={code} key={code}>{languageLabel(code)}</option>)}</select>
-        <select aria-label={t("keywords.category")} value={category} onChange={(event) => setCategory(event.target.value as TitleKeywordCategory)}><option value="sexual">{categoryLabel("sexual")}</option><option value="organ">{categoryLabel("organ")}</option></select>
-        <select aria-label={t("keywords.matchMode")} value={match} onChange={(event) => { setMatch(event.target.value as TitleKeywordMatch); setAddError(""); }}><option value="word">{matchLabel("word")}</option><option value="substring">{matchLabel("substring")}</option><option value="prefix">{matchLabel("prefix")}</option></select>
+        {category !== "code" && <select aria-label={t("keywords.language")} value={language} onChange={(event) => chooseLanguage(event.target.value)}>{bundledLanguages.map((code) => <option value={code} key={code}>{languageLabel(code)}</option>)}</select>}
+        <select aria-label={t("keywords.category")} value={category} onChange={(event) => chooseCategory(event.target.value as TitleKeywordCategory)}><option value="sexual">{categoryLabel("sexual")}</option><option value="organ">{categoryLabel("organ")}</option><option value="code">{categoryLabel("code")}</option></select>
+        <select aria-label={t("keywords.matchMode")} value={match} disabled={category === "code"} onChange={(event) => { setMatch(event.target.value as TitleKeywordMatch); setAddError(""); }}>{category === "code" ? <option value="code">{matchLabel("code")}</option> : <><option value="word">{matchLabel("word")}</option><option value="substring">{matchLabel("substring")}</option><option value="prefix">{matchLabel("prefix")}</option></>}</select>
         <button className="primary-button" onClick={add}><Plus size={17} />{t("keywords.additionAdd")}</button>
       </div>
       {addError && <div className="form-error keyword-error"><CircleAlert size={16} />{addError}</div>}
@@ -604,25 +627,26 @@ function BuiltInKeywordsCard({ state, update }: { state: ConsoleState; update: (
     <div className="toolbar keyword-filters">
       <div className="input-with-icon"><Search size={16} /><input placeholder={t("keywords.searchPlaceholder")} value={search} onChange={(event) => setSearch(event.target.value)} /></div>
       <select aria-label={t("keywords.language")} value={languageFilter} onChange={(event) => setLanguageFilter(event.target.value)}><option value="">{t("keywords.allLanguages")}</option>{languages.map((code) => <option value={code} key={code}>{languageLabel(code)}</option>)}</select>
-      <select aria-label={t("keywords.category")} value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value as "" | TitleKeywordCategory)}><option value="">{t("keywords.allCategories")}</option><option value="sexual">{categoryLabel("sexual")}</option><option value="organ">{categoryLabel("organ")}</option></select>
+      <select aria-label={t("keywords.category")} value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value as "" | TitleKeywordCategory)}><option value="">{t("keywords.allCategories")}</option><option value="sexual">{categoryLabel("sexual")}</option><option value="organ">{categoryLabel("organ")}</option><option value="code">{categoryLabel("code")}</option></select>
       <select aria-label={t("keywords.confidence")} value={confidenceFilter} onChange={(event) => setConfidenceFilter(event.target.value as "" | BuiltInEntry["confidence"])}><option value="">{t("keywords.allConfidences")}</option><option value="strict">{confidenceLabel("strict")}</option><option value="ambiguous">{confidenceLabel("ambiguous")}</option><option value="added">{confidenceLabel("added")}</option></select>
     </div>
     {groups.length ? (
       <div className="keyword-groups">
         {groups.map((group) => {
-          const open = filtering || expanded.has(group.language);
-          return <div className="keyword-group" key={group.language}>
-            <button type="button" className="keyword-group-head" aria-expanded={open} onClick={() => toggleGroup(group.language)}>
+          const open = filtering || expanded.has(group.key);
+          return <div className="keyword-group" key={group.key}>
+            <button type="button" className="keyword-group-head" aria-expanded={open} onClick={() => toggleGroup(group.key)}>
               {open ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-              <strong>{languageLabel(group.language)}</strong>
+              <strong>{group.key === codeGroupKey ? categoryLabel("code") : languageLabel(group.key)}</strong>
               <small>{filtering ? t("keywords.filteredCount", { shown: group.entries.length, total: group.total }) : t("keywords.count", { count: group.total })}</small>
             </button>
             {open && <div className="keyword-chips">{group.entries.map((entry) => {
               const inactive = entry.confidence === "ambiguous" && !ambiguousEnabled;
-              const detail = `${categoryLabel(entry.category)} · ${matchLabel(entry.match)} · ${confidenceLabel(entry.confidence)}${inactive ? ` · ${t("keywords.notEnforced")}` : ""}`;
+              const detail = `${categoryLabel(entry.category)} · ${matchLabel(entry.match)} · ${confidenceLabel(entry.confidence)}${inactive ? ` · ${t("keywords.notEnforced")}` : ""}${entry.match === "code" ? `\n${t("keywords.codeChipHint", { prefix: entry.term })}` : ""}`;
               return <span className={`keyword-chip ${entry.confidence}${inactive ? " inactive" : ""}`} key={entry.addition?.id ?? `${entry.match}:${entry.term}`} title={detail}>
                 {entry.term}
                 {entry.match === "prefix" && <i>…</i>}
+                {entry.match === "code" && <i>-###</i>}
                 {entry.addition && <button type="button" aria-label={t("keywords.delete", { name: entry.term })} onClick={() => remove(entry.addition!.id)}><X size={12} /></button>}
               </span>;
             })}</div>}
@@ -787,7 +811,7 @@ function RepeatOffenderCard({ state, update, sessionToken, onBannedAllowed }: { 
     </div>
     <div className="learned-list">
       <span className="learned-heading">{t("applications.activeBans")}</span>
-      {state.activeBans.length ? state.activeBans.map((ban) => <div className="app-rule" key={ban.executable}><div className="app-avatar"><AppWindow /></div><div className="app-main"><strong>{executableFileName(ban.executable)}</strong><small>{ban.executable}</small></div><StatusPill tone="danger">{t("applications.bannedUntil", { time: dateTime.format(ban.bannedUntilMs) })}</StatusPill><button className="secondary-button" disabled={busyExecutable !== undefined || !state.serviceConnected || isBrowserExecutable(state.applications, ban.executable)} title={t(isBrowserExecutable(state.applications, ban.executable) ? "applications.allowBannedBrowser" : "applications.allowBannedHint")} onClick={() => void allow(ban.executable)}><Check size={16} />{t(busyExecutable === ban.executable ? "common.saving" : "applications.allowBanned")}</button></div>) : <p className="learned-empty">{t("applications.noActiveBans")}</p>}
+      {state.activeBans.length ? state.activeBans.map((ban) => <div className="app-rule" key={ban.executable}><div className="app-avatar"><AppWindow /></div><div className="app-main"><strong>{executableFileName(ban.executable)}</strong><small>{ban.executable}</small><small>{banStrikeSummary(state.audit, ban, settings.windowMinutes, t)}</small></div><StatusPill tone="danger">{t("applications.bannedUntil", { time: dateTime.format(ban.bannedUntilMs) })}</StatusPill><button className="secondary-button" disabled={busyExecutable !== undefined || !state.serviceConnected || isBrowserExecutable(state.applications, ban.executable)} title={t(isBrowserExecutable(state.applications, ban.executable) ? "applications.allowBannedBrowser" : "applications.allowBannedHint")} onClick={() => void allow(ban.executable)}><Check size={16} />{t(busyExecutable === ban.executable ? "common.saving" : "applications.allowBanned")}</button></div>) : <p className="learned-empty">{t("applications.noActiveBans")}</p>}
       {error && <div className="form-error"><CircleAlert size={16} />{error}</div>}
     </div>
   </Card>;
@@ -866,6 +890,163 @@ function BatchAllowApplications({ state, update, sessionToken, onClose }: { stat
   </Modal>;
 }
 
+const builtInCategories: Array<{ id: BuiltInApplicationCategory; label: MessageKey }> = [
+  { id: "browser", label: "applications.browser" },
+  { id: "player", label: "applications.player" },
+  { id: "game", label: "applications.game" },
+  { id: "custom", label: "applications.custom" },
+];
+
+/** Mirror the Service's application category limits. */
+const maxApplicationCategories = 64;
+const maxCategoryNameChars = 64;
+
+type CategoryOption = { id: string; name: string; builtIn: boolean };
+
+function categoryOptions(state: ConsoleState, t: Translate): CategoryOption[] {
+  return [
+    ...builtInCategories.map((category) => ({ id: category.id, name: t(category.label), builtIn: true })),
+    ...state.applicationCategories.map((category) => ({ ...category, builtIn: false })),
+  ];
+}
+
+function categoryName(state: ConsoleState, id: string, t: Translate): string {
+  return categoryOptions(state, t).find((category) => category.id === id)?.name ?? id;
+}
+
+function CategorySelect({ state, value, onChange, disabled = false, label }: { state: ConsoleState; value: string; onChange: (value: string) => void; disabled?: boolean; label?: string }) {
+  const { t } = useI18n();
+  const options = categoryOptions(state, t);
+  return <select value={value} disabled={disabled} aria-label={label} onChange={(event) => onChange(event.target.value)}>
+    {options.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
+    {!options.some((category) => category.id === value) && <option value={value}>{value}</option>}
+  </select>;
+}
+
+/** Lists and edits the programs in one category; changes join the unsaved draft. */
+function CategoryMembersModal({ state, update, sessionToken, categoryId, onClose }: { state: ConsoleState; update: (state: ConsoleState) => void; sessionToken: string; categoryId: string; onClose: () => void }) {
+  const { t } = useI18n();
+  const [source, setSource] = useState<"installed" | "manual">("installed");
+  const [installed, setInstalled] = useState<InstalledApplication[]>();
+  const [installedError, setInstalledError] = useState("");
+  const [draft, setDraft] = useState({ name: "", executable: "" });
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let current = true;
+    listInstalledApplications(sessionToken)
+      .then((applications) => { if (current) setInstalled(applications); })
+      .catch((reason) => { if (current) { setInstalled([]); setInstalledError(localizeError(reason, t)); } });
+    return () => { current = false; };
+  }, [sessionToken]);
+  const name = categoryName(state, categoryId, t);
+  const members = state.applications.filter((rule) => rule.category === categoryId);
+  const memberExecutables = new Set(members.map((rule) => normalizeExecutable(rule.executable)));
+  const candidates = installed?.filter((application) => !memberExecutables.has(normalizeExecutable(application.executable)));
+  function add(applications: Array<{ name: string; executable: string }>) {
+    const next = assignApplicationsToCategory(state.applications, applications, categoryId);
+    if (next.length > maxApplicationRules) { setError(t("applications.batchTooMany", { max: maxApplicationRules })); return; }
+    update({ ...state, applications: next });
+    setError("");
+  }
+  function addManual() {
+    if (!draft.executable.trim()) { setError(t("categories.errorExecutable")); return; }
+    add([{ name: draft.name.trim() || executableFileName(draft.executable.trim()), executable: draft.executable.trim() }]);
+    setDraft({ name: "", executable: "" });
+  }
+  return <Modal title={t("categories.membersTitle", { name })} onClose={onClose} wide>
+    <p className="modal-description">{t(categoryId === "browser" ? "categories.membersBrowserDescription" : "categories.membersDescription")}</p>
+    <div className="learned-list">
+      <span className="learned-heading">{t("categories.members", { count: members.filter((rule) => !isPlaceholderApplication(rule)).length })}</span>
+      {members.length ? members.map((rule) => {
+        const ruleName = localizedApplicationName(rule, t);
+        return <div className="app-rule" key={rule.id}>
+          <div className="app-avatar"><AppWindow /></div>
+          <div className="app-main"><strong>{ruleName}</strong><small>{localizedExecutable(rule, t)}</small></div>
+          {!rule.enabled && <StatusPill tone="muted">{t("categories.disabledRule")}</StatusPill>}
+          {!isPlaceholderApplication(rule) && <button className="icon-button danger" aria-label={t("categories.removeMember", { name: ruleName })} title={t("categories.removeMember", { name: ruleName })} onClick={() => update({ ...state, applications: removeFromCategory(state.applications, rule.id) })}><X size={16} /></button>}
+        </div>;
+      }) : <p className="learned-empty">{t("categories.noMembers")}</p>}
+    </div>
+    <div className="learned-tabs source-toggle" role="group" aria-label={t("categories.addMembers")}>
+      <button type="button" className={source === "installed" ? "active" : ""} aria-pressed={source === "installed"} onClick={() => setSource("installed")}><Search size={14} />{t("applications.sourceInstalled")}</button>
+      <button type="button" className={source === "manual" ? "active" : ""} aria-pressed={source === "manual"} onClick={() => setSource("manual")}><Pencil size={14} />{t("applications.sourceManual")}</button>
+    </div>
+    {source === "installed" ? <InstalledApplicationPicker applications={candidates} error={installedError} onPick={(application) => add([application])} /> : <>
+      <label className="field"><span>{t("applications.displayName")}</span><input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder={t("applications.namePlaceholder")} /></label>
+      <label className="field"><span>{t("applications.executable")}</span><input value={draft.executable} onChange={(event) => { setDraft({ ...draft, executable: event.target.value }); setError(""); }} onKeyDown={(event) => event.key === "Enter" && addManual()} placeholder={t("applications.executablePlaceholder")} /></label>
+      <button className="secondary-button" onClick={addManual}><Plus size={16} />{t("categories.addMember")}</button>
+    </>}
+    {error && <div className="form-error"><CircleAlert size={16} />{error}</div>}
+    <small className="field-hint">{t("categories.pendingSave")}</small>
+    <div className="modal-actions"><button className="primary-button" onClick={onClose}><Check size={16} />{t("categories.done")}</button></div>
+  </Modal>;
+}
+
+function ApplicationCategoriesCard({ state, update, sessionToken }: { state: ConsoleState; update: (state: ConsoleState) => void; sessionToken: string }) {
+  const { t } = useI18n();
+  const [name, setName] = useState("");
+  const [error, setError] = useState("");
+  const [managing, setManaging] = useState<string>();
+  const [renaming, setRenaming] = useState<{ id: string; name: string }>();
+  const [renameError, setRenameError] = useState("");
+  const categories = categoryOptions(state, t);
+  const memberCount = (id: string) => state.applications.filter((rule) => rule.category === id && !isPlaceholderApplication(rule)).length;
+  const usedBy = (id: string) => state.schedules.filter((rule) => rule.target === "categories" && rule.categories.includes(id));
+  function nameError(value: string, ignoreId?: string): string | undefined {
+    const trimmed = value.trim();
+    if (!trimmed) return t("categories.errorName");
+    if (trimmed.length > maxCategoryNameChars) return t("categories.errorNameLength", { max: maxCategoryNameChars });
+    if (categories.some((category) => category.id !== ignoreId && category.name.toLowerCase() === trimmed.toLowerCase())) return t("categories.errorDuplicate");
+    return undefined;
+  }
+  function add() {
+    const problem = nameError(name) ?? (state.applicationCategories.length >= maxApplicationCategories ? t("categories.errorTooMany", { max: maxApplicationCategories }) : undefined);
+    if (problem) { setError(problem); return; }
+    update({ ...state, applicationCategories: [...state.applicationCategories, { id: `cat-${crypto.randomUUID()}`, name: name.trim() }] });
+    setName("");
+    setError("");
+  }
+  function saveRename() {
+    if (!renaming) return;
+    const problem = nameError(renaming.name, renaming.id);
+    if (problem) { setRenameError(problem); return; }
+    update({ ...state, applicationCategories: state.applicationCategories.map((category) => category.id === renaming.id ? { ...category, name: renaming.name.trim() } : category) });
+    setRenaming(undefined);
+  }
+  // Members of a deleted category stay as rules and move to "Other".
+  function remove(id: string) {
+    update({ ...state, applicationCategories: state.applicationCategories.filter((category) => category.id !== id), applications: state.applications.map((rule) => rule.category === id ? { ...rule, category: "custom" } : rule) });
+  }
+  return <Card>
+    <div className="card-heading"><div><h2>{t("categories.title")}</h2><p>{t("categories.description")}</p></div></div>
+    <div className="toolbar">
+      <div className="input-with-icon"><Tags size={17} /><input value={name} placeholder={t("categories.namePlaceholder")} onChange={(event) => { setName(event.target.value); setError(""); }} onKeyDown={(event) => event.key === "Enter" && add()} /></div>
+      <button className="primary-button" onClick={add}><Plus size={17} />{t("categories.add")}</button>
+    </div>
+    {error && <div className="form-error"><CircleAlert size={16} />{error}</div>}
+    {categories.map((category) => {
+      const used = usedBy(category.id);
+      const details = [t(category.builtIn ? "categories.builtIn" : "categories.userDefined"), t("categories.memberCount", { count: memberCount(category.id) })];
+      if (used.length) details.push(t("categories.usedBy", { names: used.map((rule) => rule.name).join("、") }));
+      return <div className="app-rule" key={category.id}>
+        <div className="app-avatar"><Tags /></div>
+        <div className="app-main"><strong>{category.name}</strong><small>{details.join(" · ")}</small></div>
+        <button className="secondary-button" onClick={() => setManaging(category.id)}><ListChecks size={16} />{t("categories.manage")}</button>
+        {!category.builtIn && <>
+          <button className="icon-button" aria-label={t("categories.rename", { name: category.name })} title={t("categories.rename", { name: category.name })} onClick={() => { setRenaming({ id: category.id, name: category.name }); setRenameError(""); }}><Pencil size={16} /></button>
+          <button className="icon-button danger" disabled={used.length > 0} aria-label={t("categories.delete", { name: category.name })} title={t(used.length ? "categories.deleteInUse" : "categories.delete", { name: category.name })} onClick={() => remove(category.id)}><Trash2 size={16} /></button>
+        </>}
+      </div>;
+    })}
+    {managing && <CategoryMembersModal state={state} update={update} sessionToken={sessionToken} categoryId={managing} onClose={() => setManaging(undefined)} />}
+    {renaming && <Modal title={t("categories.renameTitle")} onClose={() => setRenaming(undefined)}>
+      <label className="field"><span>{t("categories.name")}</span><input value={renaming.name} autoFocus onChange={(event) => { setRenaming({ ...renaming, name: event.target.value }); setRenameError(""); }} onKeyDown={(event) => event.key === "Enter" && saveRename()} /></label>
+      {renameError && <div className="form-error"><CircleAlert size={16} />{renameError}</div>}
+      <button className="primary-button modal-submit" onClick={saveRename}><Check size={17} />{t("categories.renameSave")}</button>
+    </Modal>}
+  </Card>;
+}
+
 function Applications({ state, update, sessionToken, onBannedAllowed }: { state: ConsoleState; update: (state: ConsoleState) => void; sessionToken: string; onBannedAllowed: ApplicationAllowedHandler }) {
   const { t } = useI18n();
   const [showAdd, setShowAdd] = useState(false);
@@ -874,7 +1055,7 @@ function Applications({ state, update, sessionToken, onBannedAllowed }: { state:
   const [installed, setInstalled] = useState<InstalledApplication[]>();
   const [installedError, setInstalledError] = useState("");
   const loadingInstalled = useRef(false);
-  const [draft, setDraft] = useState({ name: "", executable: "", category: "custom" as ApplicationRule["category"] });
+  const [draft, setDraft] = useState({ name: "", executable: "", category: "custom" });
   function closeAdd() { setShowAdd(false); setSource("manual"); }
   function add() { if (!draft.name.trim() || !draft.executable.trim()) return; update({ ...state, applications: [...state.applications, { id: crypto.randomUUID(), ...draft, action: "content_only", enabled: true }] }); closeAdd(); setDraft({ name: "", executable: "", category: "custom" }); }
   function chooseInstalled() {
@@ -888,25 +1069,30 @@ function Applications({ state, update, sessionToken, onBannedAllowed }: { state:
   }
   // Picking fills the form; the administrator still reviews the category and saves.
   function pick(application: InstalledApplication) { setDraft({ ...draft, name: application.name, executable: application.executable }); setSource("manual"); }
+  function patchRule(id: string, next: Partial<ApplicationRule>) { update({ ...state, applications: state.applications.map((item) => item.id === id ? { ...item, ...next } : item) }); }
   const sourceToggle = <div className="learned-tabs source-toggle" role="group" aria-label={t("applications.executable")}>
     <button type="button" className={source === "manual" ? "active" : ""} aria-pressed={source === "manual"} onClick={() => setSource("manual")}><Pencil size={14} />{t("applications.sourceManual")}</button>
     <button type="button" className={source === "installed" ? "active" : ""} aria-pressed={source === "installed"} onClick={chooseInstalled}><Search size={14} />{t("applications.sourceInstalled")}</button>
   </div>;
-  return <div className="page-stack"><div className="privacy-banner"><AppWindow size={18} /><span><strong>{t("applications.bannerTitle")}</strong> {t("applications.bannerDescription")}</span></div><RepeatOffenderCard state={state} update={update} sessionToken={sessionToken} onBannedAllowed={onBannedAllowed} /><div className="page-actions"><button className="secondary-button" onClick={() => setShowBatch(true)}><ListChecks size={17} />{t("applications.batchAdd")}</button><button className="primary-button" onClick={() => setShowAdd(true)}><Plus size={17} />{t("applications.add")}</button></div><Card>{state.applications.map((rule) => { const name = localizedApplicationName(rule, t); return <div className="app-rule" key={rule.id}><div className="app-avatar"><AppWindow /></div><div className="app-main"><strong>{name}</strong><small>{localizedExecutable(rule, t)}</small></div><select value={rule.action} onChange={(event) => update({ ...state, applications: state.applications.map((item) => item.id === rule.id ? { ...item, action: event.target.value as ApplicationRule["action"] } : item) })}><option value="content_only">{t("applications.contentOnly")}</option><option value="block">{t("applications.block")}</option><option value="allow">{t("applications.allow")}</option></select><Toggle checked={rule.enabled} onChange={(enabled) => update({ ...state, applications: state.applications.map((item) => item.id === rule.id ? { ...item, enabled } : item) })} label={t("applications.enable", { name })} /></div>; })}</Card>{showAdd && <Modal title={t("applications.modalTitle")} onClose={closeAdd}>{sourceToggle}{source === "installed" ? <InstalledApplicationPicker applications={installed} error={installedError} onPick={pick} /> : <><label className="field"><span>{t("applications.displayName")}</span><input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder={t("applications.namePlaceholder")} /></label><label className="field"><span>{t("applications.executable")}</span><input value={draft.executable} onChange={(event) => setDraft({ ...draft, executable: event.target.value })} placeholder={t("applications.executablePlaceholder")} /></label><label className="field"><span>{t("applications.category")}</span><select value={draft.category} onChange={(event) => setDraft({ ...draft, category: event.target.value as ApplicationRule["category"] })}><option value="browser">{t("applications.browser")}</option><option value="player">{t("applications.player")}</option><option value="game">{t("applications.game")}</option><option value="custom">{t("applications.custom")}</option></select></label><button className="primary-button modal-submit" onClick={add}>{t("applications.save")}</button></>}</Modal>}{showBatch && <BatchAllowApplications state={state} update={update} sessionToken={sessionToken} onClose={() => setShowBatch(false)} />}</div>;
+  return <div className="page-stack"><div className="privacy-banner"><AppWindow size={18} /><span><strong>{t("applications.bannerTitle")}</strong> {t("applications.bannerDescription")}</span></div><RepeatOffenderCard state={state} update={update} sessionToken={sessionToken} onBannedAllowed={onBannedAllowed} /><ApplicationCategoriesCard state={state} update={update} sessionToken={sessionToken} /><div className="page-actions"><button className="secondary-button" onClick={() => setShowBatch(true)}><ListChecks size={17} />{t("applications.batchAdd")}</button><button className="primary-button" onClick={() => setShowAdd(true)}><Plus size={17} />{t("applications.add")}</button></div><Card>{state.applications.map((rule) => { const name = localizedApplicationName(rule, t); return <div className="app-rule" key={rule.id}><div className="app-avatar"><AppWindow /></div><div className="app-main"><strong>{name}</strong><small>{localizedExecutable(rule, t)}</small></div><CategorySelect state={state} value={rule.category} disabled={isPlaceholderApplication(rule)} label={t("applications.categoryOf", { name })} onChange={(category) => patchRule(rule.id, { category })} /><select value={rule.action} aria-label={t("applications.actionOf", { name })} onChange={(event) => patchRule(rule.id, { action: event.target.value as ApplicationRule["action"] })}><option value="content_only">{t("applications.contentOnly")}</option><option value="block">{t("applications.block")}</option><option value="allow">{t("applications.allow")}</option></select><Toggle checked={rule.enabled} onChange={(enabled) => patchRule(rule.id, { enabled })} label={t("applications.enable", { name })} /></div>; })}</Card>{showAdd && <Modal title={t("applications.modalTitle")} onClose={closeAdd}>{sourceToggle}{source === "installed" ? <InstalledApplicationPicker applications={installed} error={installedError} onPick={pick} /> : <><label className="field"><span>{t("applications.displayName")}</span><input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder={t("applications.namePlaceholder")} /></label><label className="field"><span>{t("applications.executable")}</span><input value={draft.executable} onChange={(event) => setDraft({ ...draft, executable: event.target.value })} placeholder={t("applications.executablePlaceholder")} /></label><label className="field"><span>{t("applications.category")}</span><CategorySelect state={state} value={draft.category} onChange={(category) => setDraft({ ...draft, category })} /></label><button className="primary-button modal-submit" onClick={add}>{t("applications.save")}</button></>}</Modal>}{showBatch && <BatchAllowApplications state={state} update={update} sessionToken={sessionToken} onClose={() => setShowBatch(false)} />}</div>;
 }
 
 const dayKeys: MessageKey[] = ["schedule.dayMon", "schedule.dayTue", "schedule.dayWed", "schedule.dayThu", "schedule.dayFri", "schedule.daySat", "schedule.daySun"];
 const dayNameKeys: MessageKey[] = ["schedule.dayNameMon", "schedule.dayNameTue", "schedule.dayNameWed", "schedule.dayNameThu", "schedule.dayNameFri", "schedule.dayNameSat", "schedule.dayNameSun"];
 const networkTargets: Array<{ value: NetworkTarget; label: MessageKey; hint: MessageKey }> = [
-  { value: "browsers", label: "schedule.targetBrowsers", hint: "schedule.targetBrowsersHint" },
+  { value: "categories", label: "schedule.targetCategories", hint: "schedule.targetCategoriesHint" },
   { value: "applications", label: "schedule.targetApplications", hint: "schedule.targetApplicationsHint" },
   { value: "all_network", label: "schedule.targetAllNetwork", hint: "schedule.targetAllNetworkHint" },
+];
+const scheduleActions: Array<{ value: ScheduleAction; label: MessageKey; hint: MessageKey }> = [
+  { value: "block_network", label: "schedule.actionBlockNetwork", hint: "schedule.actionBlockNetworkHint" },
+  { value: "block_launch", label: "schedule.actionBlockLaunch", hint: "schedule.actionBlockLaunchHint" },
 ];
 
 type ScheduleDraft = Omit<ScheduleRule, "id">;
 
 function newScheduleDraft(name: string): ScheduleDraft {
-  return { name, target: "browsers", applications: [], blocks: [0, 1, 2, 3, 4].map((day) => ({ day, start: "21:00", end: "07:00" })), enabled: true };
+  return { name, action: "block_network", target: "categories", categories: ["browser"], applications: [], blocks: [0, 1, 2, 3, 4].map((day) => ({ day, start: "21:00", end: "07:00" })), enabled: true };
 }
 
 function sortBlocks(blocks: ScheduleBlock[]): ScheduleBlock[] {
@@ -918,6 +1104,8 @@ function scheduleDraftError(draft: ScheduleDraft): MessageKey | undefined {
   if (!draft.blocks.length) return "schedule.errorNoBlocks";
   if (draft.blocks.some((block) => !block.start || !block.end || block.start === block.end)) return "schedule.errorEmptyBlock";
   if (draft.target === "applications" && !draft.applications.length) return "schedule.errorNoApplications";
+  if (draft.target === "categories" && !draft.categories.length) return "schedule.errorNoCategories";
+  if (draft.target === "all_network" && draft.action === "block_launch") return "schedule.errorLaunchAllNetwork";
   return undefined;
 }
 
@@ -991,8 +1179,15 @@ function Schedule({ state, update, sessionToken, onNetworkChange }: { state: Con
   const [application, setApplication] = useState("");
   const [error, setError] = useState("");
   const knownExecutables = useMemo(() => Array.from(new Set(state.applications.map((rule) => rule.executable).filter((value) => /\.exe$/i.test(value) || value.trim().startsWith("/")))), [state.applications]);
-  const targetHint = networkTargets.find((target) => target.value === draft.target)?.hint ?? "schedule.targetBrowsersHint";
+  const targetHint = networkTargets.find((target) => target.value === draft.target)?.hint ?? "schedule.targetCategoriesHint";
+  const actionHint = scheduleActions.find((action) => action.value === draft.action)?.hint ?? "schedule.actionBlockNetworkHint";
+  // "Other" groups programs without a category, so it is not offered as a target.
+  const schedulableCategories = categoryOptions(state, t).filter((category) => category.id !== "custom");
+  const memberCount = (id: string) => state.applications.filter((rule) => rule.enabled && rule.category === id && !isPlaceholderApplication(rule)).length;
   function patch(next: Partial<ScheduleDraft>) { setDraft({ ...draft, ...next }); setError(""); }
+  // Terminating every non-system program is not supported.
+  function chooseAction(action: ScheduleAction) { patch(action === "block_launch" && draft.target === "all_network" ? { action, target: "categories" } : { action }); }
+  function toggleCategory(id: string, checked: boolean) { patch({ categories: checked ? [...draft.categories, id] : draft.categories.filter((value) => value !== id) }); }
   function patchBlock(index: number, next: Partial<ScheduleBlock>) { patch({ blocks: draft.blocks.map((block, position) => position === index ? { ...block, ...next } : block) }); }
   function addBlock(day: number) {
     // Start a new block where the day's latest same-day block ends; an
@@ -1016,12 +1211,16 @@ function Schedule({ state, update, sessionToken, onNetworkChange }: { state: Con
   function submit() {
     const problem = scheduleDraftError(draft);
     if (problem) { setError(t(problem)); return; }
-    const rule: ScheduleRule = { ...draft, name: draft.name.trim(), applications: draft.target === "applications" ? draft.applications : [], blocks: sortBlocks(draft.blocks), id: editingId ?? crypto.randomUUID() };
+    const rule: ScheduleRule = { ...draft, name: draft.name.trim(), categories: draft.target === "categories" ? draft.categories : [], applications: draft.target === "applications" ? draft.applications : [], blocks: sortBlocks(draft.blocks), id: editingId ?? crypto.randomUUID() };
     update({ ...state, schedules: editingId ? state.schedules.map((item) => item.id === editingId ? rule : item) : [...state.schedules, rule] });
     resetDraft();
   }
   function edit(rule: ScheduleRule) { const { id, ...rest } = rule; setDraft({ ...rest, blocks: sortBlocks(rest.blocks) }); setEditingId(id); setApplication(""); setError(""); }
-  function targetLabel(target: NetworkTarget) { return t(networkTargets.find((item) => item.value === target)?.label ?? "schedule.targetBrowsers"); }
+  function targetLabel(rule: ScheduleRule) {
+    if (rule.target === "categories") return rule.categories.map((id) => categoryName(state, id, t)).join("、");
+    return t(networkTargets.find((item) => item.value === rule.target)?.label ?? "schedule.targetApplications");
+  }
+  function actionLabel(action: ScheduleAction) { return t(scheduleActions.find((item) => item.value === action)?.label ?? "schedule.actionBlockNetwork"); }
   function blockLabel(block: ScheduleBlock) { return `${block.start}–${block.end}${block.end <= block.start ? ` (${t("schedule.nextDay")})` : ""}`; }
   return (
     <div className="page-stack">
@@ -1030,7 +1229,16 @@ function Schedule({ state, update, sessionToken, onNetworkChange }: { state: Con
         <Card>
           <div className="card-heading"><div><h2>{t(editingId ? "schedule.editTitle" : "schedule.newTitle")}</h2><p>{t("schedule.description")}</p></div></div>
           <label className="field"><span>{t("schedule.name")}</span><input value={draft.name} onChange={(event) => patch({ name: event.target.value })} /></label>
-          <label className="field"><span>{t("schedule.target")}</span><select value={draft.target} onChange={(event) => patch({ target: event.target.value as NetworkTarget })}>{networkTargets.map((target) => <option key={target.value} value={target.value}>{t(target.label)}</option>)}</select><small className="field-hint">{t(targetHint)}</small></label>
+          <label className="field"><span>{t("schedule.action")}</span><select value={draft.action} onChange={(event) => chooseAction(event.target.value as ScheduleAction)}>{scheduleActions.map((action) => <option key={action.value} value={action.value}>{t(action.label)}</option>)}</select><small className="field-hint">{t(actionHint)}</small></label>
+          <label className="field"><span>{t("schedule.target")}</span><select value={draft.target} onChange={(event) => patch({ target: event.target.value as NetworkTarget })}>{networkTargets.filter((target) => draft.action === "block_network" || target.value !== "all_network").map((target) => <option key={target.value} value={target.value}>{t(target.label)}</option>)}</select><small className="field-hint">{t(targetHint)}</small></label>
+          {draft.target === "categories" && (
+            <div className="field">
+              <span>{t("schedule.categories")}</span>
+              <div className="schedule-categories">
+                {schedulableCategories.map((category) => <label key={category.id} className={`schedule-category${draft.categories.includes(category.id) ? " checked" : ""}`}><input type="checkbox" checked={draft.categories.includes(category.id)} onChange={(event) => toggleCategory(category.id, event.target.checked)} /><span>{category.name}</span><small>{category.id === "browser" ? t("schedule.categoryBrowserCount", { count: memberCount(category.id) }) : t("categories.memberCount", { count: memberCount(category.id) })}</small></label>)}
+              </div>
+            </div>
+          )}
           {draft.target === "applications" && (
             <div className="field">
               <span>{t("schedule.applications")}</span>
@@ -1082,7 +1290,8 @@ function Schedule({ state, update, sessionToken, onNetworkChange }: { state: Con
                 <div key={rule.id} className={editingId === rule.id ? "editing" : ""}>
                   <div className="schedule-info">
                     <strong>{rule.name}</strong>
-                    <span className={`tag ${rule.target === "all_network" ? "block" : "sensitive"}`}>{targetLabel(rule.target)}</span>
+                    <span className={`tag ${rule.action === "block_launch" || rule.target === "all_network" ? "block" : "sensitive"}`}>{actionLabel(rule.action)}</span>
+                    <span className="tag">{targetLabel(rule)}</span>
                     {rule.target === "applications" && <small>{rule.applications.join(" · ")}</small>}
                     {dayKeys.map((key, day) => {
                       const blocks = rule.blocks.filter((block) => block.day === day);
@@ -1184,16 +1393,20 @@ function Evidence({ state, update, sessionToken, onDeleted, onApplicationAllowed
   }
   async function confirmDelete() {
     if (!pendingDelete) return;
+    // Critical items go first, so a request that needs the super password is
+    // refused before any item of a later batch is deleted.
+    const critical = new Set(state.evidence.filter((item) => item.risk === "critical").map((item) => item.id));
+    const ids = [...pendingDelete].sort((left, right) => Number(critical.has(right)) - Number(critical.has(left)));
     setDeleting(true);
     setDeleteError("");
     try {
-      await deleteEvidence(sessionToken, pendingDelete);
+      await authorize((superPassword) => deleteEvidence(sessionToken, ids, superPassword));
       onDeleted(pendingDelete);
       setChecked((current) => new Set([...current].filter((id) => !pendingDelete.includes(id))));
       if (selected && pendingDelete.includes(selected.id)) setSelected(null);
       setPendingDelete(null);
     } catch (reason) {
-      setDeleteError(localizeError(reason, t));
+      if (!isAuthorizationCancelled(reason)) setDeleteError(localizeError(reason, t));
     } finally {
       setDeleting(false);
     }
@@ -1222,8 +1435,10 @@ function Evidence({ state, update, sessionToken, onDeleted, onApplicationAllowed
       </div>
     </div>
   </div>)}</div>;
+  const pendingCritical = pendingDelete ? state.evidence.filter((item) => item.risk === "critical" && pendingDelete.includes(item.id)).length : 0;
   const deleteModal = pendingDelete && <Modal title={t("evidence.deleteTitle")} onClose={() => !deleting && setPendingDelete(null)}>
     <p className="modal-description">{t("evidence.deleteConfirm", { count: pendingDelete.length })}</p>
+    {pendingCritical > 0 && state.superPasswordSet && <p className="modal-description">{t("evidence.deleteCriticalNeedsSuper", { count: pendingCritical })}</p>}
     {deleteError && <div className="form-error"><CircleAlert size={16} />{deleteError}</div>}
     <div className="modal-actions">
       <button className="secondary-button" disabled={deleting} onClick={() => setPendingDelete(null)}>{t("evidence.deleteCancel")}</button>
@@ -1242,9 +1457,111 @@ function Evidence({ state, update, sessionToken, onDeleted, onApplicationAllowed
   return <div className="page-stack"><div className="privacy-banner"><Lock size={18} /><span><strong>{t("evidence.bannerTitle")}</strong> {t("evidence.bannerDescription")}</span></div><Card><div className="setting-row"><div className="setting-icon violet"><AppWindow /></div><div><strong>{t("evidence.skipAllowedTitle")}</strong><p>{t("evidence.skipAllowedDescription")}</p></div><Toggle checked={state.recognition.evidenceSkipAllowedApplications} onChange={(value) => update({ ...state, recognition: { ...state.recognition, evidenceSkipAllowedApplications: value } })} label={t("evidence.skipAllowedTitle")} /></div></Card>{allowNotice && <div className="form-success"><Check size={16} />{allowNotice}</div>}{state.evidence.length ? <>{filterBar}{selectionBar}{grid}</> : <Card><EmptyState icon={<Lock />} title={t("evidence.emptyTitle")} text={t(state.recognition.evidenceEnabled ? "evidence.emptyEnabled" : "evidence.emptyDisabled")} /></Card>}{selected && <Modal title={t("evidence.modalTitle")} onClose={() => setSelected(null)} wide>{imageUrl ? <img className="revealed-image" src={imageUrl} alt={t("evidence.originalAlt")} /> : <div className="reveal-panel"><div className="locked-preview"><LockKeyhole /></div><strong>{evidenceReason(selected, t)}</strong><p>{formatCapturedAt(evidenceTimestamp(selected.capturedAt))} · {selected.applicationName} · {selected.monitorName}</p><label className="field"><span>{t("evidence.passwordAgain")}</span><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} onKeyDown={(event) => event.key === "Enter" && reveal()} autoFocus /></label>{error && <div className="form-error"><CircleAlert size={16} />{error}</div>}<button className="primary-button modal-submit" onClick={reveal}><Eye size={17} />{t("evidence.decrypt")}</button></div>}</Modal>}{deleteModal}{allowModal}</div>;
 }
 
-function Audit({ state }: { state: ConsoleState }) {
+type AuditLevel = "success" | "warning" | "denied";
+
+const deniedAuditOutcomes = new Set(["denied", "rate_limited", "failure", "failed", "access_denied"]);
+const warningAuditOutcomes = new Set(["busy", "authorized", "identity_changed", "source_uncertain", "update_in_progress"]);
+/** Closure outcomes that actually closed the window and count toward a restriction. */
+const completedClosureOutcomes = new Set(["closed_gracefully", "terminated"]);
+
+function auditLevel(item: AuditItem): AuditLevel {
+  if (deniedAuditOutcomes.has(item.outcome)) return "denied";
+  if (warningAuditOutcomes.has(item.outcome)) return "warning";
+  return "success";
+}
+
+function isClosure(item: AuditItem): boolean {
+  return item.kind === "application_disposition";
+}
+
+/** The executable an audit row names. Bans from v0.3.9 and earlier kept it as the outcome. */
+function auditExecutable(item: AuditItem): string | undefined {
+  if (item.detail?.executable) return item.detail.executable;
+  if (item.kind === "repeat_offender_banned" && item.outcome !== "success") return item.outcome;
+  return undefined;
+}
+
+function closureReasonText(detail: AuditDetail | null, t: Translate, withScore = true): string {
+  const reason = detail?.reason;
+  if (!reason) return t("audit.reason.unrecorded");
+  if (reason === "image") {
+    if (!withScore || detail.riskMillis === undefined || detail.thresholdMillis === undefined) return t("audit.reason.imageUnknown");
+    return t("audit.reason.image", { risk: Math.round(detail.riskMillis / 10), threshold: Math.round(detail.thresholdMillis / 10) });
+  }
+  const key = `audit.reason.${reason}`;
+  return isMessageKey(key) ? t(key) : reason;
+}
+
+function auditText(item: AuditItem, t: Translate): { title: string; detail: string } {
+  const executable = auditExecutable(item);
+  const app = executable ? executableFileName(executable) : t("audit.unknownApp");
+  if (isClosure(item)) {
+    const outcomeKey = `audit.outcome.${item.outcome}`;
+    return {
+      title: t("audit.closure", { app }),
+      detail: t("audit.closureDetail", { reason: closureReasonText(item.detail, t), outcome: isMessageKey(outcomeKey) ? t(outcomeKey) : item.outcome }),
+    };
+  }
+  if (item.kind === "repeat_offender_banned") return { title: t("audit.banned", { app }), detail: executable ?? "" };
+  if (item.kind === "schedule_launch_blocked") return { title: t(item.outcome === "terminated" ? "audit.launchBlocked" : "audit.launchBlockFailed", { app }), detail: executable ?? "" };
+  const kindKey = `auditKind.${item.kind}`;
+  return { title: isMessageKey(kindKey) ? t(kindKey) : item.kind, detail: item.kind };
+}
+
+/** Counts the reasons of the completed closures that established `ban`. */
+function banStrikeSummary(audit: AuditItem[], ban: ActiveBan, windowMinutes: number, t: Translate): string {
+  const executable = normalizeExecutable(ban.executable);
+  const bannedAt = audit.find((item) => item.kind === "repeat_offender_banned" && item.occurredAtMs <= ban.bannedUntilMs && normalizeExecutable(auditExecutable(item) ?? "") === executable)?.occurredAtMs;
+  if (bannedAt === undefined) return t("applications.banStrikesUnknown");
+  const from = bannedAt - windowMinutes * 60_000;
+  const counts = new Map<string, number>();
+  for (const item of audit) {
+    if (!isClosure(item) || item.occurredAtMs < from || item.occurredAtMs > bannedAt) continue;
+    if (!completedClosureOutcomes.has(item.outcome) || item.detail?.reason === "repeat_offender_ban") continue;
+    if (normalizeExecutable(item.detail?.executable ?? "") !== executable) continue;
+    const label = closureReasonText(item.detail, t, false);
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  if (!counts.size) return t("applications.banStrikesUnknown");
+  return t("applications.banStrikes", { reasons: [...counts].map(([label, count]) => `${label} ×${count}`).join(" · ") });
+}
+
+function useAuditDateTime(): Intl.DateTimeFormat {
+  const { locale } = useI18n();
+  return useMemo(() => new Intl.DateTimeFormat(locale, { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }), [locale]);
+}
+
+function Audit({ state, update }: { state: ConsoleState; update: (state: ConsoleState) => void }) {
   const { t } = useI18n();
-  return <Card>{state.audit.length ? <div className="audit-list">{state.audit.map((item) => <div key={item.id}><span className={`audit-icon ${item.outcome}`}>{item.outcome === "success" ? <Check /> : <CircleAlert />}</span><div><strong>{item.detail}</strong><small>{item.kind} · {item.occurredAt}</small></div><StatusPill tone={item.outcome === "success" ? "good" : item.outcome === "warning" ? "warn" : "danger"}>{t(item.outcome === "success" ? "audit.success" : item.outcome === "warning" ? "audit.warning" : "audit.denied")}</StatusPill></div>)}</div> : <EmptyState icon={<FileClock />} title={t("audit.emptyTitle")} text={t("audit.emptyDescription")} />}</Card>;
+  const dateTime = useAuditDateTime();
+  const [closuresOnly, setClosuresOnly] = useState(false);
+  const [categoryNotice, setCategoryNotice] = useState<{ error: boolean; text: string }>();
+  // Puts a closed application in a category so a Blocking Schedule can block it with the rest.
+  function assignCategory(executable: string, category: string) {
+    const next = assignApplicationsToCategory(state.applications, [{ name: executableFileName(executable), executable }], category);
+    if (next.length > maxApplicationRules) { setCategoryNotice({ error: true, text: t("applications.batchTooMany", { max: maxApplicationRules }) }); return; }
+    update({ ...state, applications: next });
+    setCategoryNotice({ error: false, text: t("categories.pendingSave") });
+  }
+  function categoryControl(item: AuditItem) {
+    const executable = isClosure(item) ? auditExecutable(item) : undefined;
+    if (!executable || !executableFileName(executable).toLowerCase().endsWith(".exe")) return null;
+    const app = executableFileName(executable);
+    const knownBrowser = knownBrowserExecutables.includes(app.toLowerCase());
+    return <CategorySelect state={state} value={applicationCategoryOf(state.applications, executable)} disabled={knownBrowser} label={t("audit.categoryOf", { app })} onChange={(category) => assignCategory(executable, category)} />;
+  }
+  const items = closuresOnly ? state.audit.filter(isClosure) : state.audit;
+  const filter = <div className="toolbar audit-filter">
+    <button className={closuresOnly ? "secondary-button" : "primary-button"} onClick={() => setClosuresOnly(false)}>{t("audit.filterAll")}</button>
+    <button className={closuresOnly ? "primary-button" : "secondary-button"} onClick={() => setClosuresOnly(true)}><Ban size={16} />{t("audit.filterClosures")}</button>
+  </div>;
+  const notice = categoryNotice && (categoryNotice.error ? <div className="form-error"><CircleAlert size={16} />{categoryNotice.text}</div> : <small className="field-hint">{categoryNotice.text}</small>);
+  if (!state.audit.length) return <Card><EmptyState icon={<FileClock />} title={t("audit.emptyTitle")} text={t("audit.emptyDescription")} /></Card>;
+  return <Card>{filter}{notice}{items.length ? <div className="audit-list">{items.map((item) => {
+    const level = auditLevel(item);
+    const text = auditText(item, t);
+    return <div key={item.id}><span className={`audit-icon ${level}`}>{isClosure(item) ? <Ban /> : level === "success" ? <Check /> : <CircleAlert />}</span><div><strong>{text.title}</strong><small>{text.detail} · {dateTime.format(item.occurredAtMs)}</small></div>{categoryControl(item)}<StatusPill tone={level === "success" ? "good" : level === "warning" ? "warn" : "danger"}>{t(level === "success" ? "audit.success" : level === "warning" ? "audit.warning" : "audit.denied")}</StatusPill></div>;
+  })}</div> : <p className="learned-empty">{t("audit.closuresEmpty")}</p>}</Card>;
 }
 
 function PasswordChangeCard({ sessionToken }: { sessionToken: string }) {
@@ -1497,7 +1814,7 @@ function SoftwareUpdatesCard({ state, update, sessionToken, onRefresh }: { state
 
 function SettingsPage({ state, update, sessionToken, onRefresh }: { state: ConsoleState; update: (state: ConsoleState) => void; sessionToken: string; onRefresh: () => Promise<void> }) {
   const { t } = useI18n();
-  return <div className="settings-grid"><Card className="full-span"><div className="setting-row"><div className="setting-icon green"><KarmaShieldIcon /></div><div><strong>{t("settings.protectionTitle")}</strong><p>{t("settings.protectionDescription")}</p></div><Toggle checked={state.protectionEnabled} onChange={(value) => update({ ...state, protectionEnabled: value })} label={t("settings.protectionToggle")} /></div></Card><Card className="full-span"><div className="setting-row"><div className="setting-icon violet"><Power /></div><div><strong>{t("settings.autostartTitle")}</strong><p>{t("settings.autostartDescription")}</p></div><Toggle checked={state.launchAtStartup} onChange={(value) => update({ ...state, launchAtStartup: value })} label={t("settings.autostartToggle")} /></div></Card><Card className="full-span language-card"><div className="setting-row"><div className="setting-icon blue"><Globe2 /></div><div><strong>{t("settings.languageTitle")}</strong><p>{t("language.description")}</p></div><LanguageSelect /></div></Card><PasswordChangeCard sessionToken={sessionToken} /><SuperPasswordCard state={state} sessionToken={sessionToken} onRefresh={onRefresh} /><UninstallCard state={state} sessionToken={sessionToken} onRefresh={onRefresh} /><SoftwareUpdatesCard state={state} update={update} sessionToken={sessionToken} onRefresh={onRefresh} /><BackupCard sessionToken={sessionToken} state={state} update={update} /><Card><div className="card-heading"><div><h2>{t("settings.capabilities")}</h2><p>{t("settings.progress")}</p></div></div><div className="capability-list"><div><Check />{t("settings.capability1")}</div><div><Check />{t("settings.capability2")}</div><div><Check />{t("settings.capability3")}</div><div><Check />{t("settings.capability4")}</div><div><Check />{t("settings.capability5")}</div><div className="pending"><CircleAlert />{t("settings.capabilityPending")}</div></div></Card><Card><div className="card-heading"><div><h2>{t("settings.security")}</h2><p>{t("settings.securitySubtitle")}</p></div></div><div className="security-note"><Lock /><p>{t("settings.securityDescription")}</p></div></Card></div>;
+  return <div className="settings-grid"><Card className="full-span"><div className="setting-row"><div className="setting-icon green"><KarmaShieldIcon /></div><div><strong>{t("settings.protectionTitle")}</strong><p>{t("settings.protectionDescription")}</p></div><Toggle checked={state.protectionEnabled} onChange={(value) => update({ ...state, protectionEnabled: value })} label={t("settings.protectionToggle")} /></div></Card><Card className="full-span"><div className="setting-row"><div className="setting-icon violet"><Power /></div><div><strong>{t("settings.autostartTitle")}</strong><p>{t("settings.autostartDescription")}</p></div><Toggle checked={state.launchAtStartup} onChange={(value) => update({ ...state, launchAtStartup: value })} label={t("settings.autostartToggle")} /></div></Card><Card className="full-span language-card"><div className="setting-row"><div className="setting-icon blue"><Globe2 /></div><div><strong>{t("settings.languageTitle")}</strong><p>{t("language.description")}</p></div><LanguageSelect /></div></Card><PasswordChangeCard sessionToken={sessionToken} /><SuperPasswordCard state={state} sessionToken={sessionToken} onRefresh={onRefresh} /><UninstallCard state={state} sessionToken={sessionToken} onRefresh={onRefresh} /><SoftwareUpdatesCard state={state} update={update} sessionToken={sessionToken} onRefresh={onRefresh} /><BackupCard sessionToken={sessionToken} state={state} update={update} /><Card className="full-span"><div className="card-heading"><div><h2>{t("settings.capabilities")}</h2><p>{t("settings.progress")}</p></div></div><div className="capability-list"><div><Check />{t("settings.capability1")}</div><div><Check />{t("settings.capability2")}</div><div><Check />{t("settings.capability3")}</div><div><Check />{t("settings.capability4")}</div><div><Check />{t("settings.capability5")}</div><div className="pending"><CircleAlert />{t("settings.capabilityPending")}</div></div></Card></div>;
 }
 
 function Modal({ title, children, onClose, wide = false }: { title: string; children: ReactNode; onClose: () => void; wide?: boolean }) {
@@ -1685,7 +2002,7 @@ function AppContent() {
     if (page === "applications") return <Applications state={state} update={update} sessionToken={sessionToken} onBannedAllowed={applicationAllowed} />;
     if (page === "schedule") return <Schedule state={state} update={update} sessionToken={sessionToken} onNetworkChange={updateNetwork} />;
     if (page === "evidence") return <Evidence state={state} update={update} sessionToken={sessionToken} onDeleted={evidenceDeleted} onApplicationAllowed={applicationAllowed} />;
-    if (page === "audit") return <Audit state={state} />;
+    if (page === "audit") return <Audit state={state} update={update} />;
     return <SettingsPage state={state} update={update} sessionToken={sessionToken} onRefresh={refreshAuthorization} />;
   }, [page, state, sessionToken, locale]);
 
@@ -1693,7 +2010,10 @@ function AppContent() {
   if (startupError) return <ServiceConnectionError detail={localizeError(startupError, t)} onRetry={() => void refreshAuthStatus()} />;
   if (authMode !== "unlocked") return <PasswordGate mode={authMode} onAuthenticated={authenticated} />;
   const meta = pageMeta[page];
-  return <div className="app-shell"><aside className="sidebar"><div className="brand-lockup sidebar-brand"><div className="brand-mark"><KarmaShieldIcon /></div><div><strong>KARMA</strong><span>{t("brand.short")}</span></div></div><nav>{navItems.map((item) => { const Icon = item.icon; return <button className={page === item.key ? "active" : ""} key={item.key} onClick={() => setPage(item.key)}><Icon size={19} /><span>{t(item.label)}</span>{item.key === "evidence" && state.evidence.length > 0 && <b>{state.evidence.length}</b>}</button>; })}</nav><div className="sidebar-foot"><div className="mini-health"><span className={state.serviceConnected ? "online" : "offline"} /><div><strong>{t(state.serviceConnected ? "sidebar.serviceOnline" : "sidebar.serviceOffline")}</strong><small>{t(state.agentConnected ? "sidebar.agentOnline" : "sidebar.consoleOnly")}</small></div></div><button onClick={signOut}><LogOut size={18} /><span>{t("common.lockConsole")}</span></button>{appVersion && <div className="sidebar-version">{t("sidebar.version", { version: appVersion })}</div>}</div></aside><main className="main"><header><div><span className="eyebrow">KARMA CONTROL</span><h1>{t(meta.title)}</h1><p>{t(meta.subtitle)}</p></div><div className="header-actions">{saveMessage && <span className="saved-message"><Check size={15} />{saveMessage}</span>}{saveError && <span className="save-error-message"><CircleAlert size={15} />{saveError}</span>}<button className="secondary-button" onClick={signOut}><Lock size={16} />{t("common.lock")}</button><button className="primary-button" disabled={!dirty || saving} onClick={save}><Save size={17} />{t(saving ? "common.saving" : "common.saveSettings")}</button></div></header><div className="page-content">{content}</div></main></div>;
+  const saveStatus = saveError ? <span className="sidebar-status error"><CircleAlert size={14} /><span>{saveError}</span></span>
+    : dirty && !saving ? <span className="sidebar-status unsaved"><CircleAlert size={14} /><span>{t("common.unsavedChanges")}</span></span>
+    : saveMessage ? <span className="sidebar-status saved"><Check size={14} /><span>{saveMessage}</span></span> : null;
+  return <div className="app-shell"><aside className="sidebar"><div className="brand-lockup sidebar-brand"><div className="brand-mark"><KarmaShieldIcon /></div><div><strong>KARMA</strong><span>{t("brand.short")}</span></div></div><nav>{navItems.map((item) => { const Icon = item.icon; return <button className={page === item.key ? "active" : ""} key={item.key} onClick={() => setPage(item.key)}><Icon size={19} /><span>{t(item.label)}</span>{item.key === "evidence" && state.evidence.length > 0 && <b>{state.evidence.length}</b>}</button>; })}<div className="sidebar-actions">{saveStatus}<button className={`primary-button sidebar-save${dirty ? " unsaved" : ""}`} disabled={!dirty || saving} title={dirty ? t("common.unsavedChanges") : undefined} onClick={save}><Save size={17} /><span>{t(saving ? "common.saving" : "common.saveSettings")}</span></button><button className="sidebar-lock" onClick={signOut}><Lock size={18} /><span>{t("common.lockConsole")}</span></button></div></nav><div className="sidebar-foot"><div className="mini-health"><span className={state.serviceConnected ? "online" : "offline"} /><div><strong>{t(state.serviceConnected ? "sidebar.serviceOnline" : "sidebar.serviceOffline")}</strong><small>{t(state.agentConnected ? "sidebar.agentOnline" : "sidebar.consoleOnly")}</small></div></div>{appVersion && <div className="sidebar-version">{t("sidebar.version", { version: appVersion })}</div>}</div></aside><main className="main"><header><div><span className="eyebrow">KARMA CONTROL</span><h1>{t(meta.title)}</h1><p>{t(meta.subtitle)}</p></div></header><div className="page-content">{content}</div></main></div>;
 }
 
 export function App() {
