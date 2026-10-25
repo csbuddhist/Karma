@@ -6,12 +6,14 @@ use thiserror::Error;
 pub const DEFAULT_REPEAT_OFFENDER_WINDOW_MINUTES: u32 = 20;
 /// Default closures within the window required to ban an executable.
 pub const DEFAULT_REPEAT_OFFENDER_STRIKE_LIMIT: u32 = 5;
-/// How long a ban lasts once established: one hour.
-pub const REPEAT_OFFENDER_BAN_MS: i64 = 60 * 60 * 1000;
+/// Default length of a ban once established: two hours.
+pub const DEFAULT_REPEAT_OFFENDER_BAN_MINUTES: u32 = 2 * 60;
 pub const MIN_REPEAT_OFFENDER_WINDOW_MINUTES: u32 = 1;
 pub const MAX_REPEAT_OFFENDER_WINDOW_MINUTES: u32 = 24 * 60;
 pub const MIN_REPEAT_OFFENDER_STRIKE_LIMIT: u32 = 2;
 pub const MAX_REPEAT_OFFENDER_STRIKE_LIMIT: u32 = 20;
+pub const MIN_REPEAT_OFFENDER_BAN_MINUTES: u32 = 1;
+pub const MAX_REPEAT_OFFENDER_BAN_MINUTES: u32 = 7 * 24 * 60;
 /// Upper bound on tracked executables so persisted state stays small.
 const MAX_TRACKED_EXECUTABLES: usize = 64;
 const MS_PER_MINUTE: i64 = 60 * 1000;
@@ -35,6 +37,13 @@ pub enum RepeatOffenderError {
 struct RepeatOffenderInput {
     window_minutes: u32,
     strike_limit: u32,
+    /// Absent in policies saved before the ban length was configurable.
+    #[serde(default = "default_ban_minutes")]
+    ban_minutes: u32,
+}
+
+fn default_ban_minutes() -> u32 {
+    DEFAULT_REPEAT_OFFENDER_BAN_MINUTES
 }
 
 impl Default for RepeatOffenderRule {
@@ -42,16 +51,17 @@ impl Default for RepeatOffenderRule {
         Self::new(
             DEFAULT_REPEAT_OFFENDER_WINDOW_MINUTES,
             DEFAULT_REPEAT_OFFENDER_STRIKE_LIMIT,
+            DEFAULT_REPEAT_OFFENDER_BAN_MINUTES,
         )
     }
 }
 
 impl RepeatOffenderRule {
-    fn new(window_minutes: u32, strike_limit: u32) -> Self {
+    fn new(window_minutes: u32, strike_limit: u32, ban_minutes: u32) -> Self {
         Self {
             window_ms: i64::from(window_minutes) * MS_PER_MINUTE,
             strike_limit: strike_limit as usize,
-            ban_ms: REPEAT_OFFENDER_BAN_MS,
+            ban_ms: i64::from(ban_minutes) * MS_PER_MINUTE,
         }
     }
 
@@ -66,10 +76,16 @@ impl RepeatOffenderRule {
             .contains(&input.window_minutes)
             || !(MIN_REPEAT_OFFENDER_STRIKE_LIMIT..=MAX_REPEAT_OFFENDER_STRIKE_LIMIT)
                 .contains(&input.strike_limit)
+            || !(MIN_REPEAT_OFFENDER_BAN_MINUTES..=MAX_REPEAT_OFFENDER_BAN_MINUTES)
+                .contains(&input.ban_minutes)
         {
             return Err(RepeatOffenderError::InvalidPolicy);
         }
-        Ok(Self::new(input.window_minutes, input.strike_limit))
+        Ok(Self::new(
+            input.window_minutes,
+            input.strike_limit,
+            input.ban_minutes,
+        ))
     }
 }
 
@@ -204,8 +220,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        MAX_TRACKED_EXECUTABLES, REPEAT_OFFENDER_BAN_MS, RepeatOffenderRule, StrikeRecord,
-        active_bans, is_banned, normalize_executable, record_closure,
+        MAX_TRACKED_EXECUTABLES, RepeatOffenderRule, StrikeRecord, active_bans, is_banned,
+        normalize_executable, record_closure,
     };
 
     const GAME: &str = "d:\\games\\game.exe";
@@ -219,11 +235,11 @@ mod tests {
     };
 
     #[test]
-    fn default_rule_bans_after_five_closures_within_twenty_minutes_for_one_hour() {
+    fn default_rule_bans_after_five_closures_within_twenty_minutes_for_two_hours() {
         let rule = RepeatOffenderRule::default();
         assert_eq!(rule.window_ms, 20 * MINUTE);
         assert_eq!(rule.strike_limit, 5);
-        assert_eq!(rule.ban_ms, REPEAT_OFFENDER_BAN_MS);
+        assert_eq!(rule.ban_ms, 2 * HOUR);
         let mut records = Vec::new();
         for index in 0..4_u32 {
             let at = 1_000 + i64::from(index) * 4 * MINUTE;
@@ -232,13 +248,13 @@ mod tests {
         assert!(!is_banned(&records, GAME, 1_000 + 12 * MINUTE));
         let fifth = 1_000 + 16 * MINUTE;
         assert!(record_closure(&mut records, rule, GAME, 9, 1, fifth));
-        assert!(is_banned(&records, GAME, fifth + HOUR - 1));
-        assert!(!is_banned(&records, GAME, fifth + HOUR));
+        assert!(is_banned(&records, GAME, fifth + 2 * HOUR - 1));
+        assert!(!is_banned(&records, GAME, fifth + 2 * HOUR));
         assert_eq!(
             active_bans(&records, fifth).collect::<Vec<_>>(),
-            vec![(GAME, fifth + HOUR)]
+            vec![(GAME, fifth + 2 * HOUR)]
         );
-        assert_eq!(active_bans(&records, fifth + HOUR).count(), 0);
+        assert_eq!(active_bans(&records, fifth + 2 * HOUR).count(), 0);
     }
 
     #[test]
@@ -253,7 +269,7 @@ mod tests {
     }
 
     #[test]
-    fn policy_section_configures_window_and_strike_limit_within_bounds() {
+    fn policy_section_configures_window_strike_limit_and_ban_length_within_bounds() {
         assert_eq!(
             RepeatOffenderRule::from_value(&json!({})).unwrap(),
             RepeatOffenderRule::default()
@@ -264,12 +280,19 @@ mod tests {
         .unwrap();
         assert_eq!(rule.window_ms, 45 * MINUTE);
         assert_eq!(rule.strike_limit, 3);
-        assert_eq!(rule.ban_ms, HOUR);
+        assert_eq!(rule.ban_ms, 2 * HOUR);
+        let rule = RepeatOffenderRule::from_value(
+            &json!({"repeatOffender": {"windowMinutes": 45, "strikeLimit": 3, "banMinutes": 30}}),
+        )
+        .unwrap();
+        assert_eq!(rule.ban_ms, 30 * MINUTE);
         for invalid in [
             json!({"repeatOffender": {"windowMinutes": 0, "strikeLimit": 5}}),
             json!({"repeatOffender": {"windowMinutes": 1441, "strikeLimit": 5}}),
             json!({"repeatOffender": {"windowMinutes": 20, "strikeLimit": 1}}),
             json!({"repeatOffender": {"windowMinutes": 20, "strikeLimit": 21}}),
+            json!({"repeatOffender": {"windowMinutes": 20, "strikeLimit": 5, "banMinutes": 0}}),
+            json!({"repeatOffender": {"windowMinutes": 20, "strikeLimit": 5, "banMinutes": 10081}}),
             json!({"repeatOffender": {"windowMinutes": 20}}),
             json!({"repeatOffender": {"windowMinutes": 20, "strikeLimit": 5, "extra": 1}}),
             json!({"repeatOffender": "20"}),

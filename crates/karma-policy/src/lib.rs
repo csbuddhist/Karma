@@ -38,11 +38,12 @@ pub use remembered_title::{
     remember_titles_enabled, rememberable_title_key, title_digest, title_key,
 };
 pub use repeat_offender::{
-    DEFAULT_REPEAT_OFFENDER_STRIKE_LIMIT, DEFAULT_REPEAT_OFFENDER_WINDOW_MINUTES,
+    DEFAULT_REPEAT_OFFENDER_BAN_MINUTES, DEFAULT_REPEAT_OFFENDER_STRIKE_LIMIT,
+    DEFAULT_REPEAT_OFFENDER_WINDOW_MINUTES, MAX_REPEAT_OFFENDER_BAN_MINUTES,
     MAX_REPEAT_OFFENDER_STRIKE_LIMIT, MAX_REPEAT_OFFENDER_WINDOW_MINUTES,
-    MIN_REPEAT_OFFENDER_STRIKE_LIMIT, MIN_REPEAT_OFFENDER_WINDOW_MINUTES, REPEAT_OFFENDER_BAN_MS,
-    RepeatOffenderError, RepeatOffenderRule, StrikeRecord, active_bans, is_banned,
-    normalize_executable, record_closure,
+    MIN_REPEAT_OFFENDER_BAN_MINUTES, MIN_REPEAT_OFFENDER_STRIKE_LIMIT,
+    MIN_REPEAT_OFFENDER_WINDOW_MINUTES, RepeatOffenderError, RepeatOffenderRule, StrikeRecord,
+    active_bans, is_banned, normalize_executable, record_closure,
 };
 pub use risk::{RiskOutcome, RiskState};
 pub use schedule::{MinuteRange, ScheduleError, WeeklySchedule};

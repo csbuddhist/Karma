@@ -801,10 +801,11 @@ function RepeatOffenderCard({ state, update, sessionToken, onBannedAllowed }: { 
   }
   const patch = (next: Partial<ConsoleState["repeatOffender"]>) => update({ ...state, repeatOffender: { ...settings, ...next } });
   return <Card>
-    <div className="setting-row"><div className="setting-icon amber"><Ban /></div><div><strong>{t("applications.repeatTitle")}</strong><p>{t("applications.repeatDescription", { minutes: settings.windowMinutes, count: settings.strikeLimit })}</p></div></div>
+    <div className="setting-row"><div className="setting-icon amber"><Ban /></div><div><strong>{t("applications.repeatTitle")}</strong><p>{t("applications.repeatDescription", { minutes: settings.windowMinutes, count: settings.strikeLimit, banMinutes: settings.banMinutes })}</p></div></div>
     <div className="repeat-fields">
       <NumberField label={t("applications.repeatWindow")} value={settings.windowMinutes} min={repeatOffenderLimits.windowMinutes.min} max={repeatOffenderLimits.windowMinutes.max} onCommit={(windowMinutes) => patch({ windowMinutes })} />
       <NumberField label={t("applications.repeatCount")} value={settings.strikeLimit} min={repeatOffenderLimits.strikeLimit.min} max={repeatOffenderLimits.strikeLimit.max} onCommit={(strikeLimit) => patch({ strikeLimit })} />
+      <NumberField label={t("applications.repeatBan")} value={settings.banMinutes} min={repeatOffenderLimits.banMinutes.min} max={repeatOffenderLimits.banMinutes.max} onCommit={(banMinutes) => patch({ banMinutes })} />
     </div>
     <div className="learned-list">
       <span className="learned-heading">{t("applications.activeBans")}</span>

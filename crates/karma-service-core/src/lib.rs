@@ -2259,7 +2259,7 @@ mod tests {
     }
 
     #[test]
-    fn fifth_closed_program_is_terminated_on_sight_for_one_hour() {
+    fn fifth_closed_program_is_terminated_on_sight_for_two_hours() {
         let directory = tempfile::tempdir().unwrap();
         let core = open_core(directory.path(), 0);
         configure_policy(&core, repeat_offender_policy());
@@ -2282,8 +2282,23 @@ mod tests {
                 if event_id == "relaunch"
         ));
 
-        // One hour after the fifth closure the program may run again.
-        let now = base + 4_000 + 60 * 60 * 1000 + 5;
+        // Still banned just before two hours have passed.
+        let now = base + 4_000 + 2 * 60 * 60 * 1000 - 5;
+        let late_relaunch = context_observation_at(
+            "late-relaunch",
+            now - 1,
+            "项目进度评审会议",
+            Some("safe.example"),
+            250,
+        );
+        assert!(matches!(
+            submit_context_at(&core, "late-relaunch-nonce", late_relaunch, now),
+            ServiceResult::DispositionRequired { event_id, grace_period_ms: 0, .. }
+                if event_id == "late-relaunch"
+        ));
+
+        // Two hours after the fifth closure the program may run again.
+        let now = base + 4_000 + 2 * 60 * 60 * 1000 + 5;
         let after_ban = context_observation_at(
             "after-ban",
             now - 1,
@@ -3413,11 +3428,11 @@ mod tests {
     }
 
     #[test]
-    fn configured_strike_limit_and_window_govern_bans_and_reach_the_agent() {
+    fn configured_strike_limit_window_and_ban_length_govern_bans_and_reach_the_agent() {
         let directory = tempfile::tempdir().unwrap();
         let core = open_core(directory.path(), 0);
         let mut policy = remembered_title_policy();
-        policy["repeatOffender"] = json!({"windowMinutes": 1, "strikeLimit": 2});
+        policy["repeatOffender"] = json!({"windowMinutes": 1, "strikeLimit": 2, "banMinutes": 60});
         configure_policy(&core, policy);
         // Two closures more than a minute apart do not ban.
         close_by_image(&core, "strike-1", None, 50, 10_000);
@@ -5343,7 +5358,7 @@ mod tests {
             "protectionEnabled": true,
             "launchAtStartup": true,
             "recognition": {"imageEnabled": true, "ocrEnabled": true, "titleMatchingEnabled": true, "rememberTitlesEnabled": true, "sensitivity": 80},
-            "repeatOffender": {"windowMinutes": 20, "strikeLimit": 5},
+            "repeatOffender": {"windowMinutes": 20, "strikeLimit": 5, "banMinutes": 120},
             "websites": [{"id":"b", "pattern":"blocked.example", "action":"block", "enabled":true}],
             "applications": [{"id":"g", "name":"Game", "executable":"game.exe", "category":"game", "action":"block", "enabled":true}],
             "keywords": [{"id":"k", "phrase":"赌球直播", "category":"high_risk", "enabled":true}],
@@ -5378,6 +5393,7 @@ mod tests {
             ("/schedules", json!([])),
             ("/repeatOffender/windowMinutes", json!(10)),
             ("/repeatOffender/strikeLimit", json!(6)),
+            ("/repeatOffender/banMinutes", json!(60)),
         ] {
             let mut policy = original.clone();
             *policy.pointer_mut(pointer).unwrap() = value;
@@ -5463,7 +5479,7 @@ mod tests {
                 .iter()
                 .filter(|event| event.kind == "policy_weakening" && event.outcome == "denied")
                 .count(),
-            14
+            15
         );
     }
 

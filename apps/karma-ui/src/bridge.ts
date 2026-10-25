@@ -29,7 +29,7 @@ export const defaultConsoleState: ConsoleState = {
     rememberTitlesEnabled: true,
     ambiguousTitleKeywordsEnabled: false,
   },
-  repeatOffender: { windowMinutes: 20, strikeLimit: 5 },
+  repeatOffender: { windowMinutes: 20, strikeLimit: 5, banMinutes: 120 },
   keywords: [],
   titleKeywordAdditions: [],
   websites: [],
@@ -50,6 +50,7 @@ export const defaultConsoleState: ConsoleState = {
 export const repeatOffenderLimits = {
   windowMinutes: { min: 1, max: 1440 },
   strikeLimit: { min: 2, max: 20 },
+  banMinutes: { min: 1, max: 10080 },
 } as const;
 
 function isTauri(): boolean {

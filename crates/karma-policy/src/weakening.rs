@@ -100,7 +100,10 @@ pub fn policy_weakenings(old: &Value, new: &Value) -> Vec<Weakening> {
 
     let old_rule = RepeatOffenderRule::from_value(old).unwrap_or_default();
     let new_rule = RepeatOffenderRule::from_value(new).unwrap_or_default();
-    if new_rule.window_ms < old_rule.window_ms || new_rule.strike_limit > old_rule.strike_limit {
+    if new_rule.window_ms < old_rule.window_ms
+        || new_rule.strike_limit > old_rule.strike_limit
+        || new_rule.ban_ms < old_rule.ban_ms
+    {
         found.push(Weakening::RepeatOffenderRelaxed);
     }
     found
@@ -420,6 +423,14 @@ mod tests {
         assert_eq!(
             weakenings(|policy| policy["repeatOffender"]["windowMinutes"] = json!(10)),
             vec![Weakening::RepeatOffenderRelaxed]
+        );
+        // Omitting banMinutes means the two-hour default, so one hour is shorter.
+        assert_eq!(
+            weakenings(|policy| policy["repeatOffender"]["banMinutes"] = json!(60)),
+            vec![Weakening::RepeatOffenderRelaxed]
+        );
+        assert!(
+            weakenings(|policy| policy["repeatOffender"]["banMinutes"] = json!(180)).is_empty()
         );
     }
 

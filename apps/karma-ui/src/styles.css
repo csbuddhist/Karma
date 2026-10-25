@@ -264,7 +264,7 @@ select, .field input, .toolbar input { height: 39px; padding: 0 11px; color: var
 .batch-app:first-child { border-top: 0; }
 .batch-app.is-disabled { cursor: default; opacity: .7; }
 .batch-app .app-main small { overflow-wrap: anywhere; }
-.repeat-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.repeat-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
 .repeat-fields .field { margin-top: 15px; }
 .field-error { display: block; margin-top: 7px; color: #a33e3a; font-size: 9px; }
 .learned-list { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
@@ -435,6 +435,7 @@ select, .field input, .toolbar input { height: 39px; padding: 0 11px; color: var
   .page-content { padding: 18px; }
   .metric-grid, .monitor-grid, .evidence-grid { grid-template-columns: 1fr; }
   .password-form { grid-template-columns: 1fr; }
+  .repeat-fields { grid-template-columns: 1fr; }
   .password-form-footer { flex-wrap: wrap; }
   .toolbar { align-items: stretch; flex-direction: column; }
   .table-head { display: none; }

@@ -38,8 +38,10 @@ export interface RecognitionSettings {
 export interface RepeatOffenderSettings {
   /** Rolling window in which closures accumulate toward a ban. */
   windowMinutes: number;
-  /** Closures within the window that ban an application for one hour. */
+  /** Closures within the window that ban an application. */
   strikeLimit: number;
+  /** How long a ban lasts; shortening it requires the super password. */
+  banMinutes: number;
 }
 
 export interface RememberedTitle {
