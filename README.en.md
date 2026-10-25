@@ -47,7 +47,7 @@ Karma is a local pornography-protection and digital-wellbeing application for Wi
 
 ### Using the Installer (Recommended)
 
-1. Download the single-file installer `Karma-windows-x64-test-v0.3.21-setup.exe` from the [v0.3.21 Windows Test Build](https://github.com/csbuddhist/Karma/releases/tag/v0.3.21).
+1. Download the single-file installer `Karma-windows-x64-test-v0.4.0-setup.exe` from the [v0.4.0 Windows Test Build](https://github.com/csbuddhist/Karma/releases/tag/v0.4.0).
 2. Right-click it and choose “Run as administrator”. Setup installs to `C:\Program Files\Karma`, verifies every file hash, registers and starts `KarmaService`, and creates desktop and Start menu shortcuts. It includes the official Microsoft Visual C++ 2015–2022 x64 Redistributable, verifies the Microsoft signature, and installs it silently only when the runtime is missing or older than 14.44.
 3. Open the console from the “Karma 家庭保护” desktop shortcut or “Karma 管理控制台” in the Start menu, and create an administrator password of at least 10 characters on first connection.
 4. Then set a super password in System Settings and hand it to the supervisor.
