@@ -349,7 +349,7 @@ export function isBrowserExecutable(rules: ApplicationRule[], executable: string
   if (fileName && knownBrowserExecutables.includes(fileName)) return true;
   return rules.some((rule) => {
     const components = pathComponents(rule.executable);
-    return rule.enabled && rule.category === "browser" && (components[components.length - 1] ?? "").endsWith(".exe") && trailingMatch(observed, components);
+    return rule.enabled && rule.category === "browser" && !isPlaceholderApplication(rule) && trailingMatch(observed, components);
   });
 }
 
@@ -389,9 +389,13 @@ export function allowApplications(rules: ApplicationRule[], applications: Instal
   return next;
 }
 
+/** Mirrors `karma_policy`'s placeholder executables: built-in rows that stand for a group of programs. */
+const placeholderExecutables: readonly string[] = ["受支持浏览器", "受支持播放器"];
+
 /** Whether a rule names no program file, like the built-in "Supported browsers" entry; the Service gives it no category members. */
 export function isPlaceholderApplication(rule: ApplicationRule): boolean {
-  return !(pathComponents(rule.executable).at(-1) ?? "").endsWith(".exe");
+  const executable = rule.executable.trim();
+  return !executable || placeholderExecutables.includes(executable);
 }
 
 /**

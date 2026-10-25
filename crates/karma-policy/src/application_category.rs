@@ -78,9 +78,21 @@ impl ApplicationCategories {
     }
 }
 
+/// Executables of the built-in rows that stand for a group of programs, such
+/// as "Supported browsers", rather than for one program file.
+const PLACEHOLDER_EXECUTABLES: &[&str] = &["受支持浏览器", "受支持播放器"];
+
+/// Whether an application rule's executable names a program file: a Windows
+/// `.exe`, a macOS path, or a macOS executable name, but not a built-in
+/// placeholder row.
+pub(crate) fn names_program(executable: &str) -> bool {
+    let executable = executable.trim();
+    !executable.is_empty() && !PLACEHOLDER_EXECUTABLES.contains(&executable)
+}
+
 /// Joined, lowercase executable components of the enabled application rules
-/// in each category. Placeholder rules without an `.exe` file name and
-/// malformed entries are skipped; `ApplicationPolicy` validates the list.
+/// in each category. Placeholder rows and malformed entries are skipped;
+/// `ApplicationPolicy` validates the list.
 pub(crate) fn category_members(policy: &Value) -> BTreeMap<String, BTreeSet<String>> {
     let mut members: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let Some(applications) = policy.get("applications").and_then(Value::as_array) else {
@@ -92,10 +104,7 @@ pub(crate) fn category_members(policy: &Value) -> BTreeMap<String, BTreeSet<Stri
         .filter(|application| application.enabled)
     {
         let components = path_components(&application.executable);
-        if components
-            .last()
-            .is_some_and(|file_name| file_name.ends_with(".exe"))
-        {
+        if names_program(&application.executable) && !components.is_empty() {
             members
                 .entry(application.category)
                 .or_default()
@@ -154,5 +163,20 @@ mod tests {
             BTreeSet::from([r"c:\games\steam.exe".to_owned(), "launcher.exe".to_owned()])
         );
         assert!(!members.contains_key("player"));
+    }
+
+    #[test]
+    fn macos_programs_are_category_members() {
+        let members = category_members(&json!({"applications": [
+            {"id":"s","name":"Steam","executable":"/Applications/Steam.app/Contents/MacOS/steam_osx","category":"cat-games","action":"content_only","enabled":true},
+            {"id":"c","name":"Chess","executable":"Chess","category":"cat-games","action":"content_only","enabled":true}
+        ]}));
+        assert_eq!(
+            members["cat-games"],
+            BTreeSet::from([
+                r"applications\steam.app\contents\macos\steam_osx".to_owned(),
+                "chess".to_owned()
+            ])
+        );
     }
 }

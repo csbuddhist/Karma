@@ -1481,6 +1481,11 @@ function auditExecutable(item: AuditItem): string | undefined {
   return undefined;
 }
 
+/** The Service records executables with backslashes; a macOS path such as `\applications\steam.app\…` reads better with slashes again. */
+function posixExecutable(executable: string): string {
+  return /^\\[^\\]/.test(executable) ? executable.replace(/\\/g, "/") : executable;
+}
+
 function closureReasonText(detail: AuditDetail | null, t: Translate, withScore = true): string {
   const reason = detail?.reason;
   if (!reason) return t("audit.reason.unrecorded");
@@ -1544,8 +1549,9 @@ function Audit({ state, update }: { state: ConsoleState; update: (state: Console
     setCategoryNotice({ error: false, text: t("categories.pendingSave") });
   }
   function categoryControl(item: AuditItem) {
-    const executable = isClosure(item) ? auditExecutable(item) : undefined;
-    if (!executable || !executableFileName(executable).toLowerCase().endsWith(".exe")) return null;
+    const recorded = isClosure(item) ? auditExecutable(item) : undefined;
+    const executable = recorded && posixExecutable(recorded);
+    if (!executable || !isAttributedExecutable(executable)) return null;
     const app = executableFileName(executable);
     const knownBrowser = knownBrowserExecutables.includes(app.toLowerCase());
     return <CategorySelect state={state} value={applicationCategoryOf(state.applications, executable)} disabled={knownBrowser} label={t("audit.categoryOf", { app })} onChange={(category) => assignCategory(executable, category)} />;
