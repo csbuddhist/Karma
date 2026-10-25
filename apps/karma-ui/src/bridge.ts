@@ -10,7 +10,7 @@ export const defaultConsoleState: ConsoleState = {
   protectionEnabled: true,
   launchAtStartup: true,
   updates: { autoInstall: true },
-  productVersion: "0.4.0",
+  productVersion: "0.4.1",
   superPasswordSet: false,
   uninstall: null,
   update: { phase: "idle", lastCheckedAtMs: null, availableVersion: null, lastError: null },
