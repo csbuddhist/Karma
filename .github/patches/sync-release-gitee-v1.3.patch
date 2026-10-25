@@ -204,7 +204,7 @@
      )
      
      if success:
-@@ -219,62 +144,28 @@
+@@ -219,62 +144,36 @@
          set_action_output("release-id", release_id)
          return release_id
      else:
@@ -232,6 +232,9 @@
 +    directory = Path(local_directory).resolve()
 +    directory.mkdir(parents=True, exist_ok=True)
 +    destination = directory / filename
++    logger.info('Downloading asset %r', filename)
++    downloaded_bytes = 0
++    next_report = 16 * 1024 * 1024
      try:
 -        # 构建完整的本地目录路径
 -        full_directory_path = os.path.join(os.getcwd(), local_directory)
@@ -279,13 +282,18 @@
 +                for chunk in response.iter_content(chunk_size=1024 * 1024):
 +                    if chunk:
 +                        handle.write(chunk)
++                        downloaded_bytes += len(chunk)
++                        if downloaded_bytes >= next_report:
++                            logger.info('Downloaded %s bytes for %r', downloaded_bytes, filename)
++                            next_report += 16 * 1024 * 1024
 +    except requests.RequestException:
 +        raise RuntimeError('Asset download failed; retry the workflow') from None
++    logger.info('Download complete: %r (%s bytes)', filename, downloaded_bytes)
 +    return str(destination)
  
  
  def sync_github_releases_to_gitee():
-@@ -308,11 +199,16 @@
+@@ -308,11 +207,16 @@
          tqdm.write(f'gitee_repo : {gitee_repo}')
          tqdm.write(f'github_owner : {github_owner}')
          tqdm.write(f'github_repo : {github_repo}')
@@ -303,7 +311,7 @@
      
      tqdm.write(f"获取到 {len(github_releases)} 个 GitHub Release 和 {len(gitee_releases)} 个 Gitee Release")
      
-@@ -339,7 +235,10 @@
+@@ -339,7 +243,10 @@
                  
              # 如果 Gitee 上已存在相同标签的 Release，则跳过创建
              if release_tag_name in gitee_releases:
@@ -315,7 +323,7 @@
                  continue
                  
              tqdm.write(f'成功获取 GitHub Release URL {github_release_url} , 标签为 {github_release_info["tag_name"]}')
-@@ -360,7 +259,8 @@
+@@ -360,10 +267,11 @@
                  gitee_owner, gitee_token, gitee_repo, release_tag_name,
                  github_release['name'],
                  release_body,
@@ -324,8 +332,12 @@
 +                prerelease=github_release.get('prerelease', False))
                  
      # 第二步：按照时间倒序（从新到旧）上传附件
-     github_releases_reverse_sorted = sorted(github_releases, key=lambda x: x.get('created_at', x.get('published_at', '')), reverse=True)
-@@ -384,8 +284,7 @@
+-    github_releases_reverse_sorted = sorted(github_releases, key=lambda x: x.get('created_at', x.get('published_at', '')), reverse=True)
++    github_releases_reverse_sorted = sorted(github_releases, key=lambda x: x.get('published_at') or x.get('created_at') or '', reverse=True)[:1]
+     
+     with logging_redirect_tqdm():
+         for github_release in tqdm(github_releases_reverse_sorted, desc="上传附件", unit="release"):
+@@ -384,8 +292,7 @@
                  if release_tag_name in updated_gitee_releases:
                      gitee_release_info = updated_gitee_releases[release_tag_name]
                  else:
@@ -335,7 +347,7 @@
              else:
                  gitee_release_info = gitee_releases[release_tag_name]
                  
-@@ -396,50 +295,51 @@
+@@ -396,50 +303,51 @@
  
  
  def sync_release_assets_only(gitee_client, github_release_assets, release_tag_name, gitee_release_info, gitee_repo):
@@ -470,7 +482,7 @@
  
          # 检查响应中是否包含 ID 字段
          if "id" in response_data:
-@@ -196,61 +195,38 @@
+@@ -196,61 +195,46 @@
                     - success (bool): 是否成功
                     - result (str): 成功时为文件下载链接，失败时为错误信息
          """
@@ -538,10 +550,18 @@
 +                name = file_name if len(paths) == 1 and file_name else os.path.basename(path)
 +                fields.append(('file', (name, handle, 'application/octet-stream')))
 +            encoder = MultipartEncoder(fields=fields)
++            logging.info('Uploading %r (%s multipart bytes)', file_name, encoder.len)
++            next_report = [16 * 1024 * 1024]
++            def report_progress(monitor):
++                if monitor.bytes_read >= next_report[0]:
++                    logging.info('Uploaded %s of %s multipart bytes for %r', monitor.bytes_read, monitor.len, file_name)
++                    next_report[0] += 16 * 1024 * 1024
++            monitor = MultipartEncoderMonitor(encoder, report_progress)
 +            url = f'https://gitee.com/api/v5/repos/{self.owner}/{repo}/releases/{release_id}/attach_files'
-+            result = request_json('post', url, data=encoder, headers={'Content-Type': encoder.content_type}, timeout=(15, 900))
++            result = request_json('post', url, data=monitor, headers={'Content-Type': encoder.content_type}, timeout=(15, 900))
 +            if not isinstance(result, dict) or not result.get('browser_download_url'):
 +                raise RuntimeError('Gitee upload response has no download URL')
++            logging.info('Upload complete: %r', file_name)
 +            return True, result['browser_download_url']
 +
 +
