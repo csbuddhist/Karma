@@ -131,7 +131,7 @@ class HardeningTests(unittest.TestCase):
         uploaded = []
         def post(url, **kwargs):
             if url.endswith('/attach_files'):
-                uploaded.append(kwargs['data'].to_string())
+                uploaded.append(b''.join(iter(lambda: kwargs['data'].read(65536), b'')))
                 return response({'browser_download_url': 'https://gitee.com/download/setup.exe'})
             self.assertEqual(kwargs['data']['prerelease'], 'true')
             self.assertEqual(kwargs['data']['body'], 'English\n中文')
@@ -164,6 +164,18 @@ class HardeningTests(unittest.TestCase):
         with patch.dict(os.environ, self.values), patch.object(sync, 'fetch_github_releases', return_value=([release], 'github')), patch.object(sync, 'fetch_gitee_releases', return_value=({'v1': current}, 'gitee')), patch.object(sync, 'fetch_pages', return_value=[{'name': 'v1'}]), patch.object(sync, 'fetch_github_release_details', return_value=(release, {}, 'github')), patch.object(sync, 'sync_release_assets_only'), patch.object(client.requests, 'patch', return_value=response(current)) as update:
             sync.sync_github_releases_to_gitee()
         self.assertEqual(update.call_args.kwargs['data']['prerelease'], 'false')
+
+    def test_only_latest_published_release_uploads_assets(self):
+        releases = [
+            {'id': 1, 'tag_name': 'v1', 'published_at': '2026-10-24T00:00:00Z', 'created_at': '2026-10-25T00:00:00Z'},
+            {'id': 2, 'tag_name': 'v2', 'published_at': '2026-10-25T00:00:00Z', 'created_at': '2026-10-23T00:00:00Z'},
+        ]
+        current = {'v1': {'id': 11}, 'v2': {'id': 12}}
+        def details(owner, repo, identifier):
+            return next(r for r in releases if r['id'] == identifier), {}, 'github'
+        with patch.dict(os.environ, self.values), patch.object(sync, 'fetch_github_releases', return_value=(releases, 'github')), patch.object(sync, 'fetch_gitee_releases', return_value=(current, 'gitee')), patch.object(sync, 'fetch_pages', return_value=[{'name': 'v1'}, {'name': 'v2'}]), patch.object(sync, 'fetch_github_release_details', side_effect=details), patch.object(sync, 'sync_release_assets_only') as upload:
+            sync.sync_github_releases_to_gitee()
+        self.assertEqual([call.args[2] for call in upload.call_args_list], ['v2'])
 
 
 if __name__ == '__main__':
