@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -8,6 +10,13 @@ val repoRoot: File = rootDir.parentFile.parentFile
 val modelDir: File = (findProperty("karma.modelDir") as String? ?: "target/model-assets/viddexa-nano")
     .let { File(it).takeIf(File::isAbsolute) ?: File(repoRoot, it) }
 val generatedAssets = layout.buildDirectory.dir("generated/karma-assets")
+
+// Release signing reads storeFile, storePassword, keyAlias and keyPassword from the properties
+// file named by karma.signing (kept outside the repository). Without it the release APK is unsigned.
+val releaseSigning: Properties? = (findProperty("karma.signing") as String?)
+    ?.let(::File)
+    ?.takeIf(File::isFile)
+    ?.let { file -> Properties().apply { file.inputStream().use { load(it) } } }
 
 android {
     namespace = "com.karma.android"
@@ -25,8 +34,20 @@ android {
         }
     }
 
+    signingConfigs {
+        if (releaseSigning != null) {
+            create("release") {
+                storeFile = File(releaseSigning.getProperty("storeFile"))
+                storePassword = releaseSigning.getProperty("storePassword")
+                keyAlias = releaseSigning.getProperty("keyAlias")
+                keyPassword = releaseSigning.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
+            signingConfig = signingConfigs.findByName("release")
             isMinifyEnabled = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
@@ -42,6 +63,8 @@ android {
     androidResources {
         // Stored uncompressed so the model is read without inflating it first.
         noCompress += "onnx"
+        // Lists English and Simplified Chinese in the system's per-app language setting.
+        generateLocaleConfig = true
     }
 
     compileOptions {
