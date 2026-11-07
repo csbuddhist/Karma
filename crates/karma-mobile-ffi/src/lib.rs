@@ -11,6 +11,7 @@ mod engine;
 mod packages;
 mod store;
 mod types;
+mod update;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -27,6 +28,8 @@ pub use types::{
     AdminSession, AuditEventRecord, AuthError, ClassifierProbabilities, CoreError, CoreStatus,
     Enrollment, ForegroundContext, MobileAction, MobileDecision, MobileReason, PackageClass,
 };
+
+pub use update::{AndroidRelease, ReleaseSource};
 
 use crate::auth::Sessions;
 use crate::store::{PersistedState, SealedStore};
@@ -451,4 +454,57 @@ fn audit_token(value: &str) -> Option<String> {
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
     valid.then_some(value)
+}
+
+/// The release-list API URL of `source`.
+#[uniffi::export]
+pub fn release_list_url(source: ReleaseSource) -> String {
+    source.releases_url().to_owned()
+}
+
+/// Every update source, in download order.
+#[uniffi::export]
+pub fn release_sources() -> Vec<ReleaseSource> {
+    ReleaseSource::ALL.to_vec()
+}
+
+/// The newest Android release in `releases_json` (a GitHub or Gitee release
+/// list) that is newer than `installed_version`, or `None`.
+#[uniffi::export]
+pub fn select_android_release(
+    source: ReleaseSource,
+    releases_json: Vec<u8>,
+    installed_version: String,
+) -> Option<AndroidRelease> {
+    update::select_release(source, &releases_json, &installed_version)
+}
+
+/// Newest version first, then GitHub before its Gitee mirror.
+#[uniffi::export]
+pub fn order_android_releases(mut releases: Vec<AndroidRelease>) -> Vec<AndroidRelease> {
+    update::order_releases(&mut releases);
+    releases
+}
+
+/// The SHA-256 (lowercase hex) that a checksum file lists for `file_name`.
+#[uniffi::export]
+pub fn checksum_for_file(checksums: String, file_name: String) -> Option<String> {
+    update::checksum_for(&checksums, &file_name)
+}
+
+/// Size limits the platform enforces while downloading.
+#[uniffi::export]
+pub fn update_download_limits() -> UpdateLimits {
+    UpdateLimits {
+        release_list_bytes: update::MAX_RELEASE_LIST_BYTES,
+        apk_bytes: update::MAX_APK_BYTES,
+        checksum_bytes: update::MAX_CHECKSUM_BYTES,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct UpdateLimits {
+    pub release_list_bytes: u64,
+    pub apk_bytes: u64,
+    pub checksum_bytes: u64,
 }

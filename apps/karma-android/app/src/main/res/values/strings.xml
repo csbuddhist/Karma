@@ -129,4 +129,24 @@
     <string name="reason_image">Explicit image detected</string>
     <string name="reason_ocr_warning">Sensitive text detected</string>
     <string name="reason_source_uncertain">The source could not be checked</string>
+    <string name="admin_updates">Updates</string>
+    <string name="update_installed_version">Installed version: %1$s</string>
+    <string name="update_never_checked">Not checked yet.</string>
+    <string name="update_last_check">Last check %1$s: %2$s %3$s</string>
+    <string name="update_automatic">Update automatically</string>
+    <string name="update_explanation">Karma checks GitHub and its Gitee mirror twice a day on Wi-Fi, downloads a newer APK, and installs it only when its checksum matches the release and it is signed by the same certificate as this app. Nothing is uploaded.</string>
+    <string name="update_needs_permission">Android does not yet let Karma install updates.</string>
+    <string name="update_allow_installs">Allow installing updates</string>
+    <string name="update_check_now">Check for updates now</string>
+    <string name="update_refresh">Refresh status</string>
+    <string name="update_checking">Checking for updates…</string>
+    <string name="update_outcome_up_to_date">up to date</string>
+    <string name="update_outcome_installing">installing version</string>
+    <string name="update_outcome_network">GitHub and Gitee could not be reached</string>
+    <string name="update_outcome_download_failed">download failed for version</string>
+    <string name="update_outcome_verification">checksum or signature did not match for version</string>
+    <string name="update_outcome_blocked">installation was not allowed for version</string>
+    <string name="update_outcome_unknown">unknown</string>
+    <string name="update_ready_title">Karma update ready</string>
+    <string name="update_ready_text">Tap to install the verified update.</string>
 </resources>

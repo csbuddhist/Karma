@@ -4,6 +4,7 @@ import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import com.karma.android.service.WatchdogWorker
+import com.karma.android.update.UpdateWorker
 
 class KarmaApp : Application() {
     override fun onCreate() {
@@ -24,6 +25,7 @@ class KarmaApp : Application() {
             ),
         )
         WatchdogWorker.schedule(this)
+        UpdateWorker.schedule(this)
     }
 
     companion object {

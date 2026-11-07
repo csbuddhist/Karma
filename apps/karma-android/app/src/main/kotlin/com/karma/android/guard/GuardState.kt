@@ -38,6 +38,27 @@ object GuardState {
 
     fun maintenanceRemainingMs(): Long = (maintenanceUntilElapsed - SystemClock.elapsedRealtime()).coerceAtLeast(0)
 
+    /** How long installer windows are let through after Karma commits a verified update. */
+    const val INSTALLER_WINDOW_MS = 10 * 60 * 1000L
+
+    @Volatile
+    private var installerUntilElapsed = 0L
+
+    /**
+     * Lets package-installer windows through for [INSTALLER_WINDOW_MS], so that the
+     * confirmation of Karma's own update is not backed out of. Settings pages stay guarded,
+     * and device admin still blocks uninstalling. Memory only, like maintenance.
+     */
+    fun allowInstaller() {
+        installerUntilElapsed = SystemClock.elapsedRealtime() + INSTALLER_WINDOW_MS
+    }
+
+    fun closeInstaller() {
+        installerUntilElapsed = 0L
+    }
+
+    fun installerAllowed(): Boolean = SystemClock.elapsedRealtime() < installerUntilElapsed
+
     /** The watchdog acts only when armed and outside a maintenance window. */
     fun watchdogActive(context: Context): Boolean = isArmed(context) && !inMaintenance()
 }

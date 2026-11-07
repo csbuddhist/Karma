@@ -128,4 +128,24 @@
     <string name="reason_image">检测到露骨图片</string>
     <string name="reason_ocr_warning">检测到敏感文字</string>
     <string name="reason_source_uncertain">无法检查来源</string>
+    <string name="admin_updates">更新</string>
+    <string name="update_installed_version">已安装版本：%1$s</string>
+    <string name="update_never_checked">尚未检查。</string>
+    <string name="update_last_check">上次检查 %1$s：%2$s %3$s</string>
+    <string name="update_automatic">自动更新</string>
+    <string name="update_explanation">Karma 每天两次在 Wi-Fi 下检查 GitHub 及其 Gitee 镜像，下载更新的 APK；只有校验和与发布一致、且与本应用使用同一证书签名时才会安装。不会上传任何内容。</string>
+    <string name="update_needs_permission">Android 尚未允许 Karma 安装更新。</string>
+    <string name="update_allow_installs">允许安装更新</string>
+    <string name="update_check_now">立即检查更新</string>
+    <string name="update_refresh">刷新状态</string>
+    <string name="update_checking">正在检查更新…</string>
+    <string name="update_outcome_up_to_date">已是最新</string>
+    <string name="update_outcome_installing">正在安装版本</string>
+    <string name="update_outcome_network">无法连接 GitHub 和 Gitee</string>
+    <string name="update_outcome_download_failed">下载失败，版本</string>
+    <string name="update_outcome_verification">校验和或签名不符，版本</string>
+    <string name="update_outcome_blocked">未被允许安装，版本</string>
+    <string name="update_outcome_unknown">未知</string>
+    <string name="update_ready_title">Karma 更新已就绪</string>
+    <string name="update_ready_text">点击安装已校验的更新。</string>
 </resources>

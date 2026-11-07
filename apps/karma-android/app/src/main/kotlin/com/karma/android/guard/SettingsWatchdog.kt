@@ -25,6 +25,7 @@ class SettingsWatchdog(private val service: AccessibilityService, private val co
     /** Returns true when the window was blocked. [nowMs] is `elapsedRealtime`, used for throttling. */
     fun inspect(packageName: String, root: AccessibilityNodeInfo?, nowMs: Long): Boolean {
         if (!isGuardedPackage(packageName) || !GuardState.watchdogActive(service)) return false
+        if (packageName in INSTALLER_PACKAGES && GuardState.installerAllowed()) return false
         if (nowMs - lastScanMs < SCAN_INTERVAL_MS) return false
         lastScanMs = nowMs
         root ?: return false
@@ -70,6 +71,13 @@ class SettingsWatchdog(private val service: AccessibilityService, private val co
     companion object {
         private const val SCAN_INTERVAL_MS = 300L
         private const val MAX_SCANNED_NODES = 600
+
+        /** Package installers, which show the confirmation of Karma's own update. */
+        val INSTALLER_PACKAGES = setOf(
+            "com.android.packageinstaller",
+            "com.google.android.packageinstaller",
+            "com.miui.packageinstaller",
+        )
 
         /** System settings, vendor security centers and package installers. */
         val GUARDED_PACKAGES = setOf(

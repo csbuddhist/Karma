@@ -35,10 +35,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.karma.android.BuildConfig
 import com.karma.android.R
 import com.karma.android.guard.DeviceOwnerPolicies
 import com.karma.android.guard.GuardState
 import com.karma.android.monitor.enforce.label
+import com.karma.android.update.UpdateInstaller
+import com.karma.android.update.UpdateSettings
+import com.karma.android.update.UpdateWorker
+import com.karma.android.update.Updater
 import java.text.DateFormat
 import java.util.Date
 import kotlinx.coroutines.Dispatchers
@@ -158,6 +163,9 @@ fun AdminScreen(core: KarmaCore, token: String, onLocked: () -> Unit) {
             }
         }) { Text(stringResource(R.string.regenerate_codes)) }
 
+        SectionTitle(stringResource(R.string.admin_updates))
+        UpdatesSection(onAuthorize = ::authorize)
+
         SectionTitle(stringResource(R.string.admin_guard))
         Text(stringResource(R.string.maintenance_explanation), style = MaterialTheme.typography.bodySmall)
         OutlinedButton(onClick = {
@@ -217,6 +225,60 @@ private fun prepareUninstall(context: Context) {
         Intent(Intent.ACTION_DELETE, android.net.Uri.parse("package:${context.packageName}"))
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
     )
+}
+
+@Composable
+private fun UpdatesSection(onAuthorize: (String) -> Boolean) {
+    val context = LocalContext.current
+    var automatic by remember { mutableStateOf(UpdateSettings.isAutomatic(context)) }
+    var tick by remember { mutableIntStateOf(0) }
+    val status = remember(tick) { UpdateSettings.status(context) }
+    val canInstall = remember(tick) { UpdateInstaller.canInstall(context) }
+    val format = remember { DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT) }
+
+    Text(stringResource(R.string.update_installed_version, BuildConfig.VERSION_NAME))
+    Text(
+        if (status.checkedAtMs == 0L) {
+            stringResource(R.string.update_never_checked)
+        } else {
+            stringResource(R.string.update_last_check, format.format(Date(status.checkedAtMs)), stringResource(updateOutcomeLabel(status.outcome, status.version != null)), status.version ?: "")
+        },
+        style = MaterialTheme.typography.bodySmall,
+    )
+    SwitchRow(stringResource(R.string.update_automatic), automatic) {
+        automatic = it
+        UpdateSettings.setAutomatic(context, it)
+    }
+    Text(stringResource(R.string.update_explanation), style = MaterialTheme.typography.bodySmall)
+    if (!canInstall) {
+        Text(stringResource(R.string.update_needs_permission), style = MaterialTheme.typography.bodySmall)
+        OutlinedButton(onClick = {
+            // The "install unknown apps" page names Karma, so the guard stands down briefly.
+            if (onAuthorize("maintenance")) {
+                GuardState.openMaintenance()
+                runCatching {
+                    context.startActivity(
+                        Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, android.net.Uri.parse("package:${context.packageName}")),
+                    )
+                }
+            }
+        }) { Text(stringResource(R.string.update_allow_installs)) }
+    }
+    OutlinedButton(onClick = {
+        UpdateWorker.checkNow(context)
+        Toast.makeText(context, R.string.update_checking, Toast.LENGTH_SHORT).show()
+        tick++
+    }) { Text(stringResource(R.string.update_check_now)) }
+    TextButton(onClick = { tick++ }) { Text(stringResource(R.string.update_refresh)) }
+}
+
+private fun updateOutcomeLabel(outcome: Updater.Outcome?, found: Boolean): Int = when (outcome) {
+    Updater.Outcome.UP_TO_DATE -> R.string.update_outcome_up_to_date
+    Updater.Outcome.INSTALLING -> R.string.update_outcome_installing
+    Updater.Outcome.NETWORK_FAILED -> if (found) R.string.update_outcome_download_failed else R.string.update_outcome_network
+    Updater.Outcome.VERIFICATION_FAILED -> R.string.update_outcome_verification
+    Updater.Outcome.INSTALL_BLOCKED -> R.string.update_outcome_blocked
+    null -> R.string.update_outcome_unknown
 }
 
 @Composable

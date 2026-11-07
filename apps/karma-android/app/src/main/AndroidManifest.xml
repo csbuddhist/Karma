@@ -10,6 +10,9 @@
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <!-- "Prepare uninstall" opens the system uninstall dialog for Karma itself. -->
     <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
+    <!-- Only used to download Karma's own updates from GitHub or Gitee; nothing is uploaded. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- Lets the accessibility service name the launcher and input method it never captures. -->
     <uses-permission
         android:name="android.permission.QUERY_ALL_PACKAGES"
@@ -81,6 +84,10 @@
                 <action android:name="android.app.action.PROFILE_PROVISIONING_COMPLETE" />
             </intent-filter>
         </receiver>
+
+        <receiver
+            android:name=".update.UpdateStatusReceiver"
+            android:exported="false" />
 
         <receiver
             android:name=".service.BootReceiver"
