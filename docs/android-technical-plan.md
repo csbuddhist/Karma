@@ -1,6 +1,6 @@
 # Karma Android 技术方案（RFC）
 
-状态：草案 v0.1 · 日期：2026-11-07 · 适用分支：`main`
+状态：v0.2（M0–M2 及 M3/M4 的代码已实现，待真机验收，见 §13）· 日期：2026-11-07 · 适用分支：`main`
 
 本文档定义 Karma Android 端的目标、边界、架构、目录结构、核心接口与实施路线，
 作为 Android 版本开发的起点。与桌面端共享的原则（本地推理、不上传画面、管理员密码、审计）保持不变。
@@ -330,3 +330,28 @@ Karma/
 | 功耗 | 中 | 按需触发、224 输入、XNNPACK；M1 起持续测量 |
 | 误杀 | 中 | 沿用桌面端滑动窗口融合；Android 阈值初期保守 |
 | `karma-service-core` 抽取影响 Windows 端 | 中 | M2 作为独立 PR，Windows 全量测试通过后合并 |
+
+---
+
+## 13. 实施记录（2026-11-07）
+
+已实现（代码层面，尚未真机验收）：
+
+| 里程碑 | 状态 | 说明 |
+|--------|------|------|
+| M0 骨架 | 代码完成 | Gradle 工程、Compose 管理界面、无障碍服务、前台服务、开机恢复、WorkManager 看门狗 |
+| M1 视觉闭环 | 代码完成 | `takeScreenshot` → 与桌面逐位一致的预处理 → ORT XNNPACK → Rust 决策 → HOME + 遮罩；未经过临时 Kotlin 阈值阶段，直接接入 Rust |
+| M2 Rust 核心 | 完成并有测试 | `crates/karma-mobile-ffi` 已加入工作区；`cargo test -p karma-mobile-ffi` 覆盖桌面/Android 决策一致性、封装存储、口令与恢复码 |
+| M3 L1 防篡改 | 代码完成 | 设备管理器、设置看门（含主要国产 ROM 安全中心包名）、电池豁免与厂商自启动引导；国产 ROM 存活率待测 |
+| M4 L2 + 文本层 | 代码完成 | 设备所有者策略集、`setPackagesSuspended`、地址栏 host 提取、标题关键词、安全窗口兜底 |
+| M5 发布 | 未开始 | 需先完成 [Android 验收清单](android-acceptance.md) |
+
+与原方案的差异：
+
+1. **存储**：未使用 rusqlite，核心状态是一个 AES-256-GCM 封装的 JSON 文件（审计最多 2000 条），原子替换写入；数据密钥由 Android Keystore 包装。数据量有界，单文件更易审计与交叉编译。
+2. **未抽取 `karma-service-core`**：口令、恢复码、限速在 `karma-mobile-ffi` 内独立实现，参数与桌面端一致（Argon2 默认参数、≥10 字符、5 次失败锁定 30 秒、会话 15 分钟），避免触碰 Windows 服务代码。
+3. **接口**：所有方法显式接收 `now_ms`；策略以 JSON 字符串传递并由桌面端解析器校验；新增 `classify_package`（供取帧节奏使用）、`authorize_privileged`、`clear_cooldown`、`regenerate_recovery_codes`。决策原因使用移动端枚举 `MobileReason`（增加 `BlockedWebsite`、`TitleKeyword`、`SecureWindow` 等），不修改 `karma-domain`。
+4. **时段规则**：复用桌面 `schedules`。Android 暂无网络过滤，断网与禁止启动均按关闭处理；`all_network` 目标不在 Android 执行（否则会关闭所有应用）。
+5. **冷却期**由 Rust 持有并持久化（默认 60 秒，可设 10–3600 秒），冷却期内再次进入直接关闭、不推理。
+6. **Gradle Wrapper**：仓库未包含 `gradle-wrapper.jar`；用 Android Studio 打开或本机 Gradle 8.11.1 构建，CI 使用 `gradle/actions/setup-gradle`。
+

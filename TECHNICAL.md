@@ -14,6 +14,8 @@ Karma follows a “single product, shared core, two native executors” architec
 | `apps/karma-agent-windows` | Windows session agent: multi-display capture, foreground-window attribution, ONNX inference |
 | `apps/karma-service-windows` | Windows privileged service `KarmaService` and `KarmaControl` |
 | `apps/karma-ui` | Tauri + React management console (TypeScript in `src/`, Rust in `src-tauri/`) |
+| `apps/karma-android` | Android client (Gradle project: Kotlin + Compose app module `app/`, UniFFI bindings module `core/`) |
+| `crates/karma-mobile-ffi` | Mobile UniFFI export layer: risk fusion, policy decisions, administrator password, and audit |
 | `assets/` | Model manifests and keyword lists |
 | `tools/` | OCR model export, keyword-list generation, and Windows test-bundle packaging |
 | `docs/` | Design documents, installation guide, and hardware acceptance checklists |
@@ -37,6 +39,9 @@ cd apps/karma-ui && npm run tauri -- dev                  # run the desktop app
 python3 -m unittest discover -s tools/ocr-export/tests        # OCR exporter tests
 python3 tools/keyword-lists/build_title_keywords.py           # regenerate keyword JSON after editing the CSV
 bash tools/package-windows-test/test_bundle_contract.sh       # validate the Windows bundle contract
+
+cargo test -p karma-mobile-ffi                                # mobile core, including desktop/Android decision parity
+cd apps/karma-android && gradle assembleDebug testDebugUnitTest   # build the Android APK and run JVM unit tests
 ```
 
 Tests on a macOS development machine and cross-compilation prove only that algorithms and API signatures are correct; changes to Windows capture, GPU, or ONNX code require hardware evidence from the relevant `docs/*acceptance.md` checklist.
@@ -475,6 +480,24 @@ Explicitly not adopted:
 - Unsigned core programs and installation directories writable by ordinary users.
 - Global DLL injection, hidden files, and excessive keyboard hooks.
 - Coupling passwords, AI, networking, UI, and self-protection into a monolithic process.
+
+## Android Client
+
+The full design is in the [Android technical plan](docs/android-technical-plan.md) (Chinese); this section summarizes what is implemented.
+
+**Division of work.** Kotlin captures, preprocesses, runs ONNX inference, and calls every Android API. Rust (`crates/karma-mobile-ffi`, built by cargo-ndk into `libkarma_mobile_ffi.so`, with UniFFI-generated Kotlin bindings loaded through JNA) fuses risk, applies the policy and cooldowns, checks the administrator password, and keeps the audit trail. Only the five classifier probabilities and the foreground context (package, title, address-bar host, secure-window flag, time) cross the boundary, never pixels. Every call carries its own timestamp; `tests/core_lifecycle.rs` checks that one score sequence yields exactly the decisions of the desktop `RiskState`.
+
+**Decision order.** Protection off → exempt system packages (Karma, system UI, dialers, permission controller, installers) → repeat closure during a cooldown → "always block" apps → schedules (the desktop `schedules`; Android has no network filter yet, so both network and launch restrictions close the app, and `all_network` is not enforced on Android) → address-bar websites and title keywords (the desktop `context_enforcement`) → allowed apps/websites skip image recognition → secure browser windows close by default → image recognition (`ViddexaRiskMapper` + `RiskState`: 950 immediate, 3 frames ≥ 820 within 5 s). Built-in Android browser and video package names are injected as `content_only` rules in the `browser` and `player` categories, so desktop categories, schedules, and website rules apply to Android packages unchanged.
+
+**Capture.** `AccessibilityService.takeScreenshot()` (API 30+) replaces MediaProjection, which needs consent for every session. `FramePacer`: exempt, allowed, and blocked apps are not captured; video apps are sampled at 1 fps; other apps at most 2 fps after content events, every 2 s on still screens, paused after 30 s without events. The hardware buffer is copied once into a reused pixel array and released; `Preprocessor` reproduces the desktop's two scaling steps bit for bit (640 px longest-edge integer bilinear, then 224×224 float bilinear), and a JVM test checks it against golden values from the desktop pipeline.
+
+**Enforcement.** Close = `GLOBAL_ACTION_HOME` + a full-screen `TYPE_ACCESSIBILITY_OVERLAY` (reason, cooldown countdown, administrator unlock) + `killBackgroundProcesses` after 1.5 s; `Terminate` under Device Owner also calls `setPackagesSuspended` until the cooldown ends. Cooldowns are persisted and survive restarts.
+
+**Storage.** The core state (password hash, recovery-code hashes, rate limit, policy, cooldowns, up to 2,000 audit events) is one AES-256-GCM sealed JSON file replaced atomically. Its random 32-byte data key is wrapped by a non-exportable Android Keystore AES key and stored in `noBackupFilesDir`; the Keystore key does not require an unlocked device, so monitoring continues on the lock screen. Backup and device transfer are disabled. Audit events record kind, outcome, package, action, and reason only — never titles, URLs, or scores.
+
+**Tamper resistance.** L1: device admin makes Android refuse to uninstall until it is deactivated; the settings guard presses Back twice and asks for the password whenever a system settings, vendor security-center, or installer window shows Karma's name, and a correct password opens a 10-minute maintenance window (memory only, so a restart re-arms it); a foreground service keeps a status notification; WorkManager checks every 15 minutes and alerts when accessibility or device admin was turned off. L2 Device Owner: uninstall blocked, `DISALLOW_SAFE_BOOT`, `DISALLOW_FACTORY_RESET`, `DISALLOW_ADD_USER`, `DISALLOW_DEBUGGING_FEATURES`, `DISALLOW_APPS_CONTROL`, and only Karma may use third-party accessibility. "Prepare uninstall" needs administrator authorization and lifts every restriction and the device admin.
+
+**Departures from the plan.** The plan's rusqlite store and the extraction of password logic from `karma-service-core` were not adopted: mobile uses its own sealed state file, with the desktop's Argon2 parameters, 10-character minimum, 30-second lockout after 5 failures, and 15-minute sessions. The desktop service code is unchanged.
 
 ## Technology Stack
 
