@@ -42,6 +42,7 @@ bash tools/package-windows-test/test_bundle_contract.sh       # validate the Win
 
 cargo test -p karma-mobile-ffi                                # mobile core, including desktop/Android decision parity
 cd apps/karma-android && gradle assembleDebug testDebugUnitTest   # build the Android APK and run JVM unit tests
+gradle -Pkarma.signing=<properties> assembleRelease lintRelease  # signed, R8-minified release APK (apps/karma-android/README.md)
 ```
 
 Tests on a macOS development machine and cross-compilation prove only that algorithms and API signatures are correct; changes to Windows capture, GPU, or ONNX code require hardware evidence from the relevant `docs/*acceptance.md` checklist.

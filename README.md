@@ -146,15 +146,22 @@ Karma 只应由设备所有者、监护人或组织在合法授权范围内用�
 
 ## Android 版（开发预览）
 
-Android 客户端位于 `apps/karma-android`，与桌面端共享同一套 Rust 决策核心（`crates/karma-mobile-ffi`）、同一模型和同一策略格式。当前只提供源码，尚未发布 APK，需在真机上按 [Android 验收清单](docs/android-acceptance.md) 验证后才会发布。
+Android 客户端位于 `apps/karma-android`，与桌面端共享同一套 Rust 决策核心（`crates/karma-mobile-ffi`）、同一模型和同一策略格式。首个 APK [android-v0.1.0](https://github.com/csbuddhist/Karma/releases/tag/android-v0.1.0) 是开发预览版：已在 Android 15 模拟器上验证，尚未完成 [Android 验收清单](docs/android-acceptance.md) 中的真机验收。
 
 - **画面识别**：通过无障碍服务 `takeScreenshot()` 在本机取帧（最高 2 fps，静止时降频、30 秒无变化暂停），ONNX Runtime（XNNPACK）运行 viddexa-nano，连续帧融合规则与桌面端完全一致；截图只在内存中缩放为模型输入，不保存、不上传。
 - **关闭来源应用**：返回桌面、全屏遮罩显示原因和剩余冷却时间，冷却期内再次进入会被立即关闭；设备所有者模式下可挂起应用。
 - **上下文规则**：应用黑白名单、浏览器地址栏网址黑白名单、页面标题关键词、按时段禁用（复用桌面端 `schedules`）；无法截图的浏览器隐私窗口默认直接关闭。
-- **防随意退出**：管理员密码（Argon2id，5 次错误锁定 30 秒）+ 一次性恢复码；设备管理器阻止直接卸载；“设置看门”在系统设置、安全中心、卸载对话框中出现 Karma 时立即返回并要求密码；可选设备所有者模式禁止安全模式、恢复出厂设置、ADB 和添加用户。
-- **系统要求**：Android 11（API 30）及以上，arm64；模拟器可用 x86_64。
+- **防随意退出**：管理员密码（Argon2id，5 次错误锁定 30 秒）+ 一次性恢复码；设备管理器阻止直接卸载；“设置看门”在系统设置、安全中心、卸载对话框中出现 Karma 时立即返回并要求密码；可选设备所有者模式提供更强的防卸载与防篡改保护。
+- **系统要求**：Android 11（API 30）及以上，arm64；模拟器可用 x86_64。界面支持简体中文和英文，跟随系统语言，Android 13 及以上也可在“应用信息 → 语言”中单独设置。
 
-构建（需要 JDK 17、Android SDK 35、NDK r27、`cargo-ndk` 和 Rust Android 目标）：
+安装：
+
+1. 从 [android-v0.1.0](https://github.com/csbuddhist/Karma/releases/tag/android-v0.1.0) 下载 `Karma-android-v0.1.0.apk`，可用同页的 `SHA256SUMS-android-v0.1.0.txt` 核对。
+2. 在手机上打开 APK 安装（需允许浏览器或文件管理器“安装未知应用”）。
+3. 打开 Karma，设置管理员密码并抄下恢复码，再按“设置向导”依次启用无障碍服务、设备管理器、不限制电池使用和通知。Android 13 及以上如果无障碍开关是灰色的，先在“应用信息”右上角菜单中选择“允许受限设置”。
+4. 在“管理员”页添加应用和网址规则，最后启用“设置看门”。
+
+从源码构建（需要 JDK 17、Android SDK 35、NDK r27、`cargo-ndk` 和 Rust Android 目标）：
 
 ```bash
 rustup target add aarch64-linux-android x86_64-linux-android
@@ -164,7 +171,7 @@ cd apps/karma-android && gradle assembleDebug
 
 未放入模型时 APK 仍可构建，此时只执行应用、网址、标题和时段规则。模型导出见 [模型资产说明](docs/model-assets.md)，默认从 `target/model-assets/viddexa-nano` 复制。
 
-**限制**：无法阻止能 root、刷机、恢复出厂设置或进入安全模式的人（设备所有者模式可阻止后两项）；普通安装时其他用户和私密空间不受保护；部分国产 ROM 需要手动允许自启动并关闭电池优化。
+**注意**：管理员密码和恢复码请由监督人保管；部分国产 ROM 需要手动允许自启动并关闭电池优化。
 
 ## 更多文档
 

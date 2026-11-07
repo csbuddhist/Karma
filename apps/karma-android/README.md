@@ -3,8 +3,8 @@
 Android client of Karma. Open this directory directly in Android Studio.
 
 Status: **developer preview** — the code for milestones M0–M4 of `docs/android-technical-plan.md`
-(Chinese) is in place; it has not yet passed `docs/android-acceptance.md` on real devices, and no APK
-is published.
+(Chinese) is in place. The first APK (`android-v0.1.0`) was verified on an Android 15 emulator; it
+has not yet passed `docs/android-acceptance.md` on real devices.
 
 ## Layout
 
@@ -39,6 +39,20 @@ gradle assembleDebug testDebugUnitTest
 still builds and enforces application, website, title and schedule rules only.
 
 The repository does not ship `gradle-wrapper.jar`; run `gradle wrapper` once if you want `./gradlew`.
+
+## Release build
+
+`assembleRelease` minifies with R8 and signs with the key described by the properties file named in
+`karma.signing` (`storeFile`, `storePassword`, `keyAlias`, `keyPassword`); keep that file and the
+keystore outside the repository. Without `karma.signing` the release APK is unsigned.
+
+```bash
+gradle -Pkarma.signing=$HOME/.config/karma/android-signing.properties assembleRelease lintRelease
+```
+
+Published APKs are signed by the certificate with SHA-256
+`2b6e9836d496091e8607bbabf6b4f7dda856e656cddefa5f6d6adb1936129bd7`. Android only installs updates
+signed by the same key, so a debug build must be uninstalled before installing a release build.
 
 ## Key decisions
 

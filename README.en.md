@@ -146,15 +146,22 @@ Karma should be used only for content protection by device owners, guardians, or
 
 ## Android (Developer Preview)
 
-The Android client lives in `apps/karma-android` and shares the desktop's Rust decision core (`crates/karma-mobile-ffi`), model, and policy format. It is source-only for now: no APK is published until it passes the [Android acceptance checklist](docs/android-acceptance.md) on real devices.
+The Android client lives in `apps/karma-android` and shares the desktop's Rust decision core (`crates/karma-mobile-ffi`), model, and policy format. The first APK, [android-v0.1.0](https://github.com/csbuddhist/Karma/releases/tag/android-v0.1.0), is a developer preview: it has been verified on an Android 15 emulator but has not yet passed real-device testing against the [Android acceptance checklist](docs/android-acceptance.md).
 
 - **Screen recognition**: frames come from the accessibility service's `takeScreenshot()` (at most 2 fps, slower on still screens, paused after 30 seconds without change); ONNX Runtime with XNNPACK runs viddexa-nano, and multi-frame fusion is identical to the desktop. Screenshots are only scaled to the model input in memory; they are never saved or uploaded.
 - **Closing the source app**: Karma goes to the home screen and shows a full-screen overlay with the reason and the remaining cooldown; reopening the app during the cooldown closes it again at once. Under Device Owner the app can also be suspended.
 - **Context rules**: app allow/block lists, address-bar website allow/block lists, page-title keywords, and time schedules (the desktop `schedules`). Private browser windows that refuse screenshots are closed by default.
-- **Exit prevention**: administrator password (Argon2id, 30-second lockout after 5 failures) plus one-time recovery codes; device admin blocks a direct uninstall; the settings guard backs out of any system settings, security-center, or uninstall window showing Karma and asks for the password; optional Device Owner mode blocks safe mode, factory reset, ADB, and new users.
-- **Requirements**: Android 11 (API 30) or later on arm64; x86_64 for emulators.
+- **Exit prevention**: administrator password (Argon2id, 30-second lockout after 5 failures) plus one-time recovery codes; device admin blocks a direct uninstall; the settings guard backs out of any system settings, security-center, or uninstall window showing Karma and asks for the password; optional Device Owner mode adds stronger uninstall and tamper protection.
+- **Requirements**: Android 11 (API 30) or later on arm64; x86_64 for emulators. The interface is in English and Simplified Chinese and follows the system language; on Android 13 and later it can also be set under App info → Language.
 
-Build (requires JDK 17, Android SDK 35, NDK r27, `cargo-ndk`, and the Rust Android targets):
+Installation:
+
+1. Download `Karma-android-v0.1.0.apk` from [android-v0.1.0](https://github.com/csbuddhist/Karma/releases/tag/android-v0.1.0) and check it against `SHA256SUMS-android-v0.1.0.txt` on the same page.
+2. Open the APK on the phone to install it (allow your browser or file manager to install unknown apps).
+3. Open Karma, set the administrator password, write down the recovery codes, then follow the setup checklist to enable the accessibility service, device admin, unrestricted battery use, and notifications. On Android 13 and later, if the accessibility switch is greyed out, first choose "Allow restricted settings" from the ⋮ menu in App info.
+4. Add app and website rules on the Administrator tab, then arm the settings guard.
+
+Build from source (requires JDK 17, Android SDK 35, NDK r27, `cargo-ndk`, and the Rust Android targets):
 
 ```bash
 rustup target add aarch64-linux-android x86_64-linux-android
@@ -164,7 +171,7 @@ cd apps/karma-android && gradle assembleDebug
 
 Without a model the APK still builds and enforces app, website, title, and schedule rules only. See [Model assets](docs/model-assets.md) for exporting it; the build copies it from `target/model-assets/viddexa-nano` by default.
 
-**Limitations**: Karma cannot stop someone who can root the phone, flash another system, factory-reset it, or boot into safe mode (Device Owner blocks the last two). A normal install does not protect other users or Private Space. Some Chinese vendor ROMs need autostart allowed and battery optimization turned off by hand.
+**Notes**: keep the administrator password and recovery codes with the supervisor. Some Chinese vendor ROMs need autostart allowed and battery optimization turned off by hand.
 
 ## More Documentation
 
