@@ -1,17 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- The desktop logo (apps/karma-ui/src-tauri/icons/icon.svg): white shield with a K,
+     scaled from its 512 px viewBox into the 66 dp safe zone of the adaptive icon. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
     <group
-        android:translateX="30"
-        android:translateY="30">
+        android:scaleX="0.16"
+        android:scaleY="0.16"
+        android:translateX="13"
+        android:translateY="12.7">
         <path
-            android:fillColor="#FFB0C6FF"
-            android:pathData="M24,4L8,10v12c0,10.5 6.8,20.3 16,22.7 9.2,-2.4 16,-12.2 16,-22.7V10L24,4z" />
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M256 82c55 42 107 57 148 63v101c0 89-58 156-148 188-90-32-148-99-148-188V145c41-6 93-21 148-63Z" />
         <path
-            android:fillColor="#FF1C2333"
-            android:pathData="M21,30.2l-6.1,-6.1 2.1,-2.1 4,4 10,-10 2.1,2.1z" />
+            android:fillColor="#FF5754CF"
+            android:pathData="M181 166h45v72l72-72h59l-89 87 93 95h-61l-74-78v78h-45V166Z" />
     </group>
 </vector>

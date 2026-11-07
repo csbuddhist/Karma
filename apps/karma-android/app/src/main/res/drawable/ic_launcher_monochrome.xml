@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Themed-icon variant of the desktop logo: the K is cut out of the shield. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:scaleX="0.16"
+        android:scaleY="0.16"
+        android:translateX="13"
+        android:translateY="12.7">
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:fillType="evenOdd"
+            android:pathData="M256 82c55 42 107 57 148 63v101c0 89-58 156-148 188-90-32-148-99-148-188V145c41-6 93-21 148-63Z M181 166h45v72l72-72h59l-89 87 93 95h-61l-74-78v78h-45V166Z" />
+    </group>
+</vector>

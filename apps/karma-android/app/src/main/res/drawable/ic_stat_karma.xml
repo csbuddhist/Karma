@@ -1,11 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Shield outline used for notifications. -->
+<!-- Notification icon: the desktop logo's shield with the K cut out. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
     android:height="24dp"
-    android:viewportWidth="24"
-    android:viewportHeight="24">
+    android:viewportWidth="512"
+    android:viewportHeight="512">
     <path
         android:fillColor="#FFFFFFFF"
-        android:pathData="M12,2L4,5v6c0,5.25 3.4,10.15 8,11.35 4.6,-1.2 8,-6.1 8,-11.35V5L12,2zM12,4.18l6,2.25V11c0,4.17 -2.6,8.1 -6,9.27 -3.4,-1.17 -6,-5.1 -6,-9.27V6.43L12,4.18z" />
+        android:fillType="evenOdd"
+        android:pathData="M256 82c55 42 107 57 148 63v101c0 89-58 156-148 188-90-32-148-99-148-188V145c41-6 93-21 148-63Z M181 166h45v72l72-72h59l-89 87 93 95h-61l-74-78v78h-45V166Z" />
 </vector>

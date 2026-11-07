@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="karma_primary">#3B5BA9</color>
-    <color name="karma_launcher_background">#1C2333</color>
+    <color name="karma_launcher_background">#5754CF</color>
     <style name="Theme.Karma" parent="android:Theme.Material.Light.NoActionBar" />
 </resources>
