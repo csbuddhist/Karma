@@ -65,7 +65,8 @@
     <string name="check_battery_detail">防止系统暂停保护。</string>
     <string name="check_notifications">通知</string>
     <string name="check_autostart">自启动（小米、OPPO、vivo、华为、荣耀、三星）</string>
-    <string name="check_autostart_detail">允许 Karma 自动启动并在后台运行。</string>
+    <string name="check_autostart_detail">允许 Karma 自动启动并在后台运行。如果打开的不是自启动页面，请在系统设置中搜索“自启动”或“应用启动管理”。</string>
+    <string name="open_failed">无法打开此页面，请在系统设置中手动设置。</string>
     <string name="check_device_owner">设备所有者（更强保护）</string>
     <string name="check_device_owner_detail">可选。在未登录任何账号的手机上，从电脑执行一次以下命令：</string>
     <string name="check_device_owner_active">已启用：Karma 无法被卸载，设备策略已生效。</string>

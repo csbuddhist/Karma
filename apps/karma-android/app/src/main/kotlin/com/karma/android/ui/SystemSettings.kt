@@ -36,18 +36,22 @@ object SystemSettings {
         ComponentName("com.oplus.safecenter", "com.oplus.safecenter.permission.startup.StartupAppListActivity"),
         ComponentName("com.vivo.permissionmanager", "com.vivo.permissionmanager.activity.BgStartUpManagerActivity"),
         ComponentName("com.iqoo.secure", "com.iqoo.secure.ui.phoneoptimize.BgStartUpManager"),
-        ComponentName("com.huawei.systemmanager", "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity"),
+        ComponentName("com.hihonor.systemmanager", "com.hihonor.systemmanager.appcontrol.activity.StartupAppControlActivity"),
         ComponentName("com.hihonor.systemmanager", "com.hihonor.systemmanager.startupmgr.ui.StartupNormalAppListActivity"),
+        ComponentName("com.huawei.systemmanager", "com.huawei.systemmanager.appcontrol.activity.StartupAppControlActivity"),
+        ComponentName("com.huawei.systemmanager", "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity"),
         ComponentName("com.samsung.android.lool", "com.samsung.android.sm.battery.ui.BatteryActivity"),
     )
 
-    /** The first vendor autostart page that exists on this device, or app info. */
-    fun vendorAutostart(context: Context): Intent {
+    /**
+     * The vendor autostart pages present on this device, followed by app info. A page can exist
+     * yet refuse third-party callers, so the caller tries them in order.
+     */
+    fun vendorAutostart(context: Context): List<Intent> {
         val pm = context.packageManager
         return VENDOR_AUTOSTART
             .map { Intent().setComponent(it) }
-            .firstOrNull { it.resolveActivity(pm) != null }
-            ?: appDetails(context)
+            .filter { it.resolveActivity(pm) != null } + appDetails(context)
     }
 
     const val DEVICE_OWNER_COMMAND =

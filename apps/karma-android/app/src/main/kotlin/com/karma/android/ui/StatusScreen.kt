@@ -1,10 +1,12 @@
 package com.karma.android.ui
 
 import android.Manifest
+import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Column
@@ -115,7 +117,7 @@ fun StatusScreen(core: KarmaCore, refresh: Int) {
             }
         }
         ChecklistRow(stringResource(R.string.check_autostart), stringResource(R.string.check_autostart_detail), null, stringResource(R.string.open)) {
-            start(context, SystemSettings.vendorAutostart(context))
+            start(context, *SystemSettings.vendorAutostart(context).toTypedArray())
         }
         ChecklistRow(
             stringResource(R.string.check_device_owner),
@@ -144,6 +146,12 @@ fun StatusScreen(core: KarmaCore, refresh: Int) {
     }
 }
 
-private fun start(context: Context, intent: Intent) {
-    runCatching { context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+/** Opens the first of [intents] the system accepts, or explains that none could be opened. */
+private fun start(context: Context, vararg intents: Intent) {
+    val opened = intents.any { intent ->
+        // ADD_DEVICE_ADMIN finishes at once when started as a new task, so stay in our task.
+        if (context !is Activity) intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        runCatching { context.startActivity(intent) }.isSuccess
+    }
+    if (!opened) Toast.makeText(context, R.string.open_failed, Toast.LENGTH_LONG).show()
 }

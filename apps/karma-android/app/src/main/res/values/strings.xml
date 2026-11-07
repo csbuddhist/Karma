@@ -66,7 +66,8 @@
     <string name="check_battery_detail">Stops the system from pausing protection.</string>
     <string name="check_notifications">Notifications</string>
     <string name="check_autostart">Autostart (Xiaomi, OPPO, vivo, Huawei, Honor, Samsung)</string>
-    <string name="check_autostart_detail">Allow Karma to start automatically and run in the background.</string>
+    <string name="check_autostart_detail">Allow Karma to start automatically and run in the background. If a different page opens, search system settings for \"autostart\" or \"app launch\".</string>
+    <string name="open_failed">This page could not be opened. Change the setting in system settings instead.</string>
     <string name="check_device_owner">Device Owner (stronger protection)</string>
     <string name="check_device_owner_detail">Optional. On a phone without accounts, run this command once from a computer:</string>
     <string name="check_device_owner_active">Active: Karma cannot be uninstalled and its device policies are enforced.</string>
