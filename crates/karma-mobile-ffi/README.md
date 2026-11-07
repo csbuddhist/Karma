@@ -1,26 +1,36 @@
 # karma-mobile-ffi
 
-UniFFI export layer of the Karma core for mobile platforms (Android now, iOS later).
-
-Status: **planning** — not yet a workspace member. Add it to `[workspace] members` in the root
-`Cargo.toml` once it builds (milestone M2 in `docs/android-technical-plan.md`).
+UniFFI export layer of the Karma core for mobile platforms (Android now, iOS later). A workspace
+member since milestone M2 of `docs/android-technical-plan.md`.
 
 Wraps:
 
-- `karma-ai`      — `ViddexaRiskMapper`: classifier probabilities → `RiskObservation`
-- `karma-policy`  — `DecisionEngine`, `RiskState`, `ContextPolicy`
-- `karma-domain`  — `Decision`, `Action`, `ReasonCode`, `AuditEvent`
-- platform-independent password (Argon2id) and store logic extracted from `karma-service-core`
+- `karma-ai`      — `ViddexaRiskMapper`: classifier probabilities → risk score and labels
+- `karma-policy`  — `RiskState` (multi-frame fusion), `ApplicationPolicy`, `ContextPolicy`,
+  `NetworkSchedulePolicy`, `context_enforcement`
+- `karma-domain`  — `Action`, `ReasonCode`, `RiskObservation`
 
-Design rule: the FFI surface carries scores and metadata only. Image capture, preprocessing and
-ONNX inference stay on the platform side.
+and adds what the phone needs on top: per-package cooldowns, built-in Android browser/video package
+categories, Argon2id administrator password with one-time recovery codes and rate limiting
+(desktop parameters), short-lived sessions, and a bounded audit trail — all persisted in one
+AES-256-GCM sealed state file whose key the platform supplies.
 
-Build (planned):
+Design rules: the FFI surface carries scores and metadata only. Image capture, preprocessing and
+ONNX inference stay on the platform side. Every call takes its timestamp from the caller, so a
+recorded score sequence yields the same decisions on desktop tests and on a phone
+(`tests/core_lifecycle.rs`).
+
+## Build
+
+The Android Gradle project runs these steps itself (`core:cargoBuild`, `core:uniffiBindgen`):
 
 ```bash
-cargo ndk -t arm64-v8a -t x86_64 \
-  -o ../../apps/karma-android/core/src/main/jniLibs \
-  build --release -p karma-mobile-ffi
-uniffi-bindgen generate --library target/.../libkarma_mobile_ffi.so \
-  --language kotlin --out-dir ../../apps/karma-android/core/src/main/kotlin
+cargo ndk -t arm64-v8a -t x86_64 -P 30 \
+  -o apps/karma-android/core/src/main/jniLibs \
+  build --release --locked -p karma-mobile-ffi
+cargo run --release -p karma-mobile-ffi --features bindgen --bin uniffi-bindgen -- \
+  generate --library apps/karma-android/core/src/main/jniLibs/arm64-v8a/libkarma_mobile_ffi.so \
+  --language kotlin --out-dir apps/karma-android/core/build/generated/uniffi/kotlin
 ```
+
+Host tests: `cargo test -p karma-mobile-ffi`.
