@@ -3,6 +3,7 @@ package com.karma.android.monitor
 import android.accessibilityservice.AccessibilityService
 import android.content.Intent
 import android.graphics.Bitmap
+import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
@@ -51,6 +52,9 @@ class KarmaAccessibilityService : AccessibilityService() {
     @Volatile
     private var classifier: ImageClassifier? = null
     private var pixels = IntArray(0)
+    /** Consecutive blacked-out browser frames; worker thread only, see [onBlackedOutBrowserFrame]. */
+    private var blackedOutFrames = 0
+    private var blackedOutPackage: String? = null
 
     private var foregroundPackage: String? = null
     private var foregroundClass = PackageClass.EXEMPT
@@ -77,6 +81,10 @@ class KarmaAccessibilityService : AccessibilityService() {
         audit("accessibility_connected", "observed")
         worker.post { loadClassifier() }
         main.post(tick)
+        // A browser already in front when the service (re)connects sends no window change.
+        main.post {
+            rootInActiveWindow?.packageName?.toString()?.let { onForegroundChanged(it, null, SystemClock.elapsedRealtime()) }
+        }
     }
 
     private fun loadClassifier() {
@@ -114,7 +122,7 @@ class KarmaAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun onForegroundChanged(packageName: String, event: AccessibilityEvent, now: Long) {
+    private fun onForegroundChanged(packageName: String, event: AccessibilityEvent?, now: Long) {
         foregroundPackage = packageName
         foregroundClass = if (packageName in localExempt) PackageClass.EXEMPT else core.classifyPackage(packageName)
         pacer.onForeground(foregroundClass, now)
@@ -186,6 +194,12 @@ class KarmaAccessibilityService : AccessibilityService() {
         } finally {
             buffer.close()
         }
+        if (packageClass == PackageClass.BROWSER && BlackedOutFrame.matches(pixels, width, height)) {
+            pixels.fill(0)
+            onBlackedOutBrowserFrame(packageName, packageClass)
+            return
+        }
+        blackedOutFrames = 0
         val probabilities = try {
             classifier!!.classify(pixels, width, height)
         } finally {
@@ -194,6 +208,38 @@ class KarmaAccessibilityService : AccessibilityService() {
         val decision = core.observeFrame(probabilities, currentContext(packageName, packageClass, secure = false))
         MonitorStatus.update { it.copy(framesScored = it.framesScored + 1) }
         enforce(packageName, decision)
+    }
+
+    /**
+     * Runs on the worker thread. A display screenshot draws secure windows (such as Chrome
+     * Incognito tabs) black instead of failing. Android 14+ confirms through a screenshot of
+     * the active window, which reports a secure window; older versions require a few blacked-out
+     * frames in a row so that a black scene in a video does not count.
+     */
+    private fun onBlackedOutBrowserFrame(packageName: String, packageClass: PackageClass) {
+        val windowId = rootInActiveWindow?.windowId
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && windowId != null) {
+            takeScreenshotOfWindow(windowId, workerExecutor, object : TakeScreenshotCallback {
+                override fun onSuccess(screenshot: ScreenshotResult) {
+                    // The window itself is black; there is nothing to classify.
+                    screenshot.hardwareBuffer.close()
+                }
+
+                override fun onFailure(errorCode: Int) {
+                    if (errorCode == ERROR_TAKE_SCREENSHOT_SECURE_WINDOW) {
+                        enforce(packageName, core.observeContext(currentContext(packageName, packageClass, secure = true)))
+                    }
+                }
+            })
+            return
+        }
+        if (packageName != blackedOutPackage) {
+            blackedOutPackage = packageName
+            blackedOutFrames = 0
+        }
+        if (++blackedOutFrames < SECURE_FRAMES_WITHOUT_CONFIRMATION) return
+        blackedOutFrames = 0
+        enforce(packageName, core.observeContext(currentContext(packageName, packageClass, secure = true)))
     }
 
     /** Runs on the worker thread; switches to the main thread to act. */
@@ -270,5 +316,10 @@ class KarmaAccessibilityService : AccessibilityService() {
             workerThread.quitSafely()
         }
         super.onDestroy()
+    }
+
+    private companion object {
+        /** Blacked-out browser frames in a row treated as a secure window before Android 14. */
+        const val SECURE_FRAMES_WITHOUT_CONFIRMATION = 3
     }
 }
