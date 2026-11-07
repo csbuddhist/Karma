@@ -1,0 +1,131 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Karma</string>
+    <string name="accessibility_service_label">Karma Protection</string>
+    <string name="accessibility_service_description">Karma checks what is on screen, entirely on this phone, and closes apps that show explicit images or blocked content. Screenshots are never saved or uploaded. Turning this off requires the administrator password.</string>
+
+    <string name="channel_status">Protection status</string>
+    <string name="channel_alerts">Protection alerts</string>
+    <string name="status_notification_title">Karma is protecting this device</string>
+    <string name="status_notification_text">Screen content is checked on this phone only. Nothing is uploaded.</string>
+    <string name="alert_title">Karma protection weakened</string>
+    <string name="alert_accessibility_disabled">The Karma accessibility service is off, so the screen is no longer checked.</string>
+    <string name="alert_device_admin_disabled">Karma is no longer a device admin, so it can be uninstalled.</string>
+
+    <string name="device_admin_explanation">Keeps Karma from being uninstalled without the administrator password.</string>
+    <string name="device_admin_disable_warning">Turning this off lets Karma be uninstalled. Use \"Prepare uninstall\" in Karma with the administrator password instead.</string>
+
+    <string name="tab_status">Status</string>
+    <string name="tab_admin">Administrator</string>
+
+    <string name="setup_title">Set the administrator password</string>
+    <string name="setup_explanation">This password is required to change settings, stop protection or uninstall Karma. Use at least 10 characters, and keep it away from the person using this phone.</string>
+    <string name="privacy_promise">All checks run on this phone. Karma does not upload screen content, never saves screenshots, and its log records only app names, reasons and times.</string>
+    <string name="new_password">New password</string>
+    <string name="confirm_password">Confirm password</string>
+    <string name="setup_submit">Set password</string>
+    <string name="recovery_codes_title">Recovery codes</string>
+    <string name="recovery_codes_explanation">Each code unlocks Karma once if the password is forgotten. Write them down now; they are not shown again.</string>
+    <string name="recovery_codes_saved">I have saved them</string>
+
+    <string name="admin_password">Administrator password</string>
+    <string name="recovery_code">Recovery code</string>
+    <string name="unlock">Unlock</string>
+    <string name="use_recovery_code">Use a recovery code</string>
+    <string name="use_password">Use the password</string>
+    <string name="admin_locked">Enter the administrator password to change settings.</string>
+    <string name="unlock_title">Administrator password required</string>
+    <string name="unlock_maintenance_explanation">This system page can turn off Karma. Enter the password to allow changes for 10 minutes.</string>
+    <string name="unlock_open_app_explanation">Enter the password to let this app open again now.</string>
+
+    <string name="error_generic">Something went wrong. Try again.</string>
+    <string name="error_wrong_secret">Incorrect password or code.</string>
+    <string name="error_rate_limited">Too many attempts. Try again in %1$d s.</string>
+    <string name="error_weak_password">The password must be 10 to 256 characters.</string>
+    <string name="error_password_mismatch">The passwords do not match.</string>
+    <string name="error_invalid_policy">That setting could not be saved.</string>
+
+    <string name="status_protection_on">Protection is on</string>
+    <string name="status_protection_off">Protection is turned off by the administrator</string>
+    <string name="status_protection_incomplete">Protection is not running yet</string>
+    <string name="status_model_ready">Image recognition: ready</string>
+    <string name="status_model_missing">Image recognition: no model packaged. Apps, websites, titles and schedules are still enforced.</string>
+    <string name="status_model_rejected">Image recognition: the model failed verification and is not used.</string>
+    <string name="status_model_loading">Image recognition: loading</string>
+    <string name="status_counters">Frames checked: %1$d · Apps closed: %2$d</string>
+    <string name="status_last_closure">Last closure: %1$s at %2$s</string>
+
+    <string name="checklist_title">Setup</string>
+    <string name="check_accessibility">Accessibility service</string>
+    <string name="check_accessibility_detail">Lets Karma see the foreground app and check the screen.</string>
+    <string name="check_restricted_settings">Allow restricted settings</string>
+    <string name="check_restricted_settings_detail">If the switch is greyed out (Android 13+), open App info, tap ⋮ and choose \"Allow restricted settings\".</string>
+    <string name="check_device_admin">Device admin</string>
+    <string name="check_device_admin_detail">Prevents uninstalling without the password.</string>
+    <string name="check_battery">Unrestricted battery use</string>
+    <string name="check_battery_detail">Stops the system from pausing protection.</string>
+    <string name="check_notifications">Notifications</string>
+    <string name="check_autostart">Autostart (Xiaomi, OPPO, vivo, Huawei, Honor, Samsung)</string>
+    <string name="check_autostart_detail">Allow Karma to start automatically and run in the background.</string>
+    <string name="check_device_owner">Device Owner (stronger protection)</string>
+    <string name="check_device_owner_detail">Optional. On a phone without accounts, run this command once from a computer:</string>
+    <string name="check_device_owner_active">Active: uninstalling, safe mode, factory reset and new users are blocked.</string>
+    <string name="open">Open</string>
+    <string name="enable">Enable</string>
+
+    <string name="guard_title">Settings guard</string>
+    <string name="guard_armed">Armed: system pages that could turn off Karma ask for the password.</string>
+    <string name="guard_disarmed">Not armed. Finish the setup above, then arm the guard.</string>
+    <string name="guard_arm">Arm the settings guard</string>
+    <string name="guard_disarm">Disarm the settings guard</string>
+    <string name="limitations">Limitations: Karma cannot stop someone who can root the phone, flash another system, factory-reset it or start it in safe mode (Device Owner blocks the last two). Without Device Owner, other users and Private Space are not protected.</string>
+
+    <string name="admin_protection">Protection</string>
+    <string name="policy_protection">Protection enabled</string>
+    <string name="policy_image">Image recognition</string>
+    <string name="policy_secure_window">Close browser windows that block screenshots (private tabs)</string>
+    <string name="policy_cooldown">Closed apps stay blocked for %1$d s</string>
+    <string name="save">Save</string>
+    <string name="saved">Saved</string>
+    <string name="admin_apps">Apps</string>
+    <string name="add_app">Add an app rule</string>
+    <string name="rule_block">Block</string>
+    <string name="rule_allow">Allow</string>
+    <string name="remove">Remove</string>
+    <string name="admin_websites">Websites</string>
+    <string name="website_host">Website, such as example.com</string>
+    <string name="admin_audit">Activity log</string>
+    <string name="audit_empty">No events yet.</string>
+    <string name="admin_account">Password</string>
+    <string name="change_password">Change password</string>
+    <string name="password_changed">Password changed</string>
+    <string name="regenerate_codes">New recovery codes</string>
+    <string name="admin_guard">Maintenance and uninstall</string>
+    <string name="maintenance_explanation">A maintenance window lets you change Karma\'s system settings for 10 minutes.</string>
+    <string name="open_maintenance">Open a maintenance window</string>
+    <string name="maintenance_opened">Settings unlocked for 10 minutes</string>
+    <string name="prepare_uninstall">Prepare uninstall</string>
+    <string name="prepare_uninstall_explanation">This removes Device Owner and device admin, disarms the guard and opens the uninstall dialog.</string>
+    <string name="confirm">Confirm</string>
+    <string name="cancel">Cancel</string>
+    <string name="lock_admin">Lock administrator area</string>
+
+    <string name="overlay_title">This app was closed</string>
+    <string name="overlay_cooldown">It can be opened again in %1$d:%2$02d</string>
+    <string name="overlay_dismiss">OK</string>
+    <string name="overlay_unlock">Administrator unlock</string>
+
+    <string name="reason_default_allow">Allowed</string>
+    <string name="reason_protection_disabled">Protection is off</string>
+    <string name="reason_exempt_application">System app</string>
+    <string name="reason_allowed_application">Allowed app</string>
+    <string name="reason_allowed_website">Allowed website</string>
+    <string name="reason_time_window_blocked">Not allowed at this time</string>
+    <string name="reason_application_blocked">This app is blocked</string>
+    <string name="reason_blocked_website">This website is blocked</string>
+    <string name="reason_title_keyword">The page title matched a blocked keyword</string>
+    <string name="reason_secure_window">A private browser window cannot be checked</string>
+    <string name="reason_image">Explicit image detected</string>
+    <string name="reason_ocr_warning">Sensitive text detected</string>
+    <string name="reason_source_uncertain">The source could not be checked</string>
+</resources>

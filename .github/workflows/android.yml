@@ -1,0 +1,79 @@
+name: Android
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - apps/karma-android/**
+      - crates/karma-mobile-ffi/**
+      - crates/karma-domain/**
+      - crates/karma-policy/**
+      - crates/karma-ai/**
+      - assets/keyword-lists/**
+      - Cargo.lock
+      - .github/workflows/android.yml
+  pull_request:
+    paths:
+      - apps/karma-android/**
+      - crates/karma-mobile-ffi/**
+      - crates/karma-domain/**
+      - crates/karma-policy/**
+      - crates/karma-ai/**
+      - assets/keyword-lists/**
+      - Cargo.lock
+      - .github/workflows/android.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust 1.85 with Android targets
+        run: |
+          rustup toolchain install 1.85 --profile minimal --component clippy,rustfmt
+          rustup target add --toolchain 1.85 aarch64-linux-android x86_64-linux-android
+
+      - name: Test the shared core
+        run: |
+          cargo fmt -p karma-mobile-ffi -- --check
+          cargo clippy -p karma-mobile-ffi --all-targets --locked -- -D warnings
+          cargo test -p karma-mobile-ffi -p karma-policy -p karma-ai -p karma-domain --locked
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --version 3.5.4 --locked
+
+      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install NDK r27
+        run: |
+          echo "y" | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.2.12479018" > /dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+
+      - uses: gradle/actions/setup-gradle@94baf225fe0a508e581a564467443d0e2379123b # v4.3.0
+        with:
+          gradle-version: "8.11.1"
+
+      - name: Build the debug APK and run unit tests
+        working-directory: apps/karma-android
+        run: gradle --no-daemon assembleDebug testDebugUnitTest
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: karma-android-debug
+          path: apps/karma-android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error

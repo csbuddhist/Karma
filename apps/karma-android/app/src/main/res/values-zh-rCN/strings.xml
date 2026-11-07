@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="accessibility_service_label">Karma 保护</string>
+    <string name="accessibility_service_description">Karma 完全在本机检查屏幕内容，关闭显示露骨图片或被禁止内容的应用。截图不会被保存或上传。关闭此服务需要管理员密码。</string>
+
+    <string name="channel_status">保护状态</string>
+    <string name="channel_alerts">保护警报</string>
+    <string name="status_notification_title">Karma 正在保护此设备</string>
+    <string name="status_notification_text">屏幕内容仅在本机检查，不上传任何内容。</string>
+    <string name="alert_title">Karma 保护已被削弱</string>
+    <string name="alert_accessibility_disabled">Karma 无障碍服务已关闭，屏幕不再被检查。</string>
+    <string name="alert_device_admin_disabled">Karma 已不是设备管理器，可被卸载。</string>
+
+    <string name="device_admin_explanation">防止在没有管理员密码的情况下卸载 Karma。</string>
+    <string name="device_admin_disable_warning">停用后 Karma 可被卸载。请改用 Karma 中的“准备卸载”并输入管理员密码。</string>
+
+    <string name="tab_status">状态</string>
+    <string name="tab_admin">管理员</string>
+
+    <string name="setup_title">设置管理员密码</string>
+    <string name="setup_explanation">修改设置、停止保护或卸载 Karma 都需要此密码。请至少使用 10 个字符，并不要让手机使用者知道。</string>
+    <string name="privacy_promise">所有检查都在本机完成。Karma 不上传屏幕内容、从不保存截图，日志只记录应用名、原因和时间。</string>
+    <string name="new_password">新密码</string>
+    <string name="confirm_password">确认密码</string>
+    <string name="setup_submit">设置密码</string>
+    <string name="recovery_codes_title">恢复码</string>
+    <string name="recovery_codes_explanation">忘记密码时，每个恢复码可解锁一次。请现在抄下，之后不会再显示。</string>
+    <string name="recovery_codes_saved">我已保存</string>
+
+    <string name="admin_password">管理员密码</string>
+    <string name="recovery_code">恢复码</string>
+    <string name="unlock">解锁</string>
+    <string name="use_recovery_code">使用恢复码</string>
+    <string name="use_password">使用密码</string>
+    <string name="admin_locked">输入管理员密码以修改设置。</string>
+    <string name="unlock_title">需要管理员密码</string>
+    <string name="unlock_maintenance_explanation">此系统页面可以关闭 Karma。输入密码后 10 分钟内允许修改。</string>
+    <string name="unlock_open_app_explanation">输入密码以立即允许重新打开此应用。</string>
+
+    <string name="error_generic">出现问题，请重试。</string>
+    <string name="error_wrong_secret">密码或恢复码不正确。</string>
+    <string name="error_rate_limited">尝试次数过多，请 %1$d 秒后再试。</string>
+    <string name="error_weak_password">密码长度须为 10 到 256 个字符。</string>
+    <string name="error_password_mismatch">两次输入的密码不一致。</string>
+    <string name="error_invalid_policy">无法保存该设置。</string>
+
+    <string name="status_protection_on">保护已开启</string>
+    <string name="status_protection_off">管理员已关闭保护</string>
+    <string name="status_protection_incomplete">保护尚未运行</string>
+    <string name="status_model_ready">图像识别：就绪</string>
+    <string name="status_model_missing">图像识别：未打包模型。应用、网站、标题和时段规则仍然生效。</string>
+    <string name="status_model_rejected">图像识别：模型校验失败，未启用。</string>
+    <string name="status_model_loading">图像识别：加载中</string>
+    <string name="status_counters">已检查画面：%1$d · 已关闭应用：%2$d</string>
+    <string name="status_last_closure">最近一次关闭：%1$s（%2$s）</string>
+
+    <string name="checklist_title">设置向导</string>
+    <string name="check_accessibility">无障碍服务</string>
+    <string name="check_accessibility_detail">让 Karma 识别前台应用并检查屏幕。</string>
+    <string name="check_restricted_settings">允许受限设置</string>
+    <string name="check_restricted_settings_detail">如果开关是灰色的（Android 13+），打开“应用信息”，点右上角 ⋮，选择“允许受限设置”。</string>
+    <string name="check_device_admin">设备管理器</string>
+    <string name="check_device_admin_detail">没有密码时无法卸载。</string>
+    <string name="check_battery">不限制电池使用</string>
+    <string name="check_battery_detail">防止系统暂停保护。</string>
+    <string name="check_notifications">通知</string>
+    <string name="check_autostart">自启动（小米、OPPO、vivo、华为、荣耀、三星）</string>
+    <string name="check_autostart_detail">允许 Karma 自动启动并在后台运行。</string>
+    <string name="check_device_owner">设备所有者（更强保护）</string>
+    <string name="check_device_owner_detail">可选。在未登录任何账号的手机上，从电脑执行一次以下命令：</string>
+    <string name="check_device_owner_active">已启用：禁止卸载、安全模式、恢复出厂设置和添加用户。</string>
+    <string name="open">打开</string>
+    <string name="enable">启用</string>
+
+    <string name="guard_title">设置看门</string>
+    <string name="guard_armed">已启用：可能关闭 Karma 的系统页面会要求输入密码。</string>
+    <string name="guard_disarmed">未启用。完成上方设置后启用看门。</string>
+    <string name="guard_arm">启用设置看门</string>
+    <string name="guard_disarm">停用设置看门</string>
+    <string name="limitations">限制：Karma 无法阻止能 root、刷机、恢复出厂设置或进入安全模式的人（设备所有者模式可阻止后两项）。未启用设备所有者时，其他用户和私密空间不受保护。</string>
+
+    <string name="admin_protection">保护</string>
+    <string name="policy_protection">启用保护</string>
+    <string name="policy_image">图像识别</string>
+    <string name="policy_secure_window">关闭禁止截图的浏览器窗口（无痕标签页）</string>
+    <string name="policy_cooldown">被关闭的应用在 %1$d 秒内保持禁止</string>
+    <string name="save">保存</string>
+    <string name="saved">已保存</string>
+    <string name="admin_apps">应用</string>
+    <string name="add_app">添加应用规则</string>
+    <string name="rule_block">禁止</string>
+    <string name="rule_allow">允许</string>
+    <string name="remove">移除</string>
+    <string name="admin_websites">网站</string>
+    <string name="website_host">网站，例如 example.com</string>
+    <string name="admin_audit">活动日志</string>
+    <string name="audit_empty">暂无事件。</string>
+    <string name="admin_account">密码</string>
+    <string name="change_password">修改密码</string>
+    <string name="password_changed">密码已修改</string>
+    <string name="regenerate_codes">生成新恢复码</string>
+    <string name="admin_guard">维护与卸载</string>
+    <string name="maintenance_explanation">维护窗口允许你在 10 分钟内修改 Karma 的系统设置。</string>
+    <string name="open_maintenance">打开维护窗口</string>
+    <string name="maintenance_opened">设置已解锁 10 分钟</string>
+    <string name="prepare_uninstall">准备卸载</string>
+    <string name="prepare_uninstall_explanation">这将移除设备所有者和设备管理器、停用看门，并打开卸载对话框。</string>
+    <string name="confirm">确认</string>
+    <string name="cancel">取消</string>
+    <string name="lock_admin">锁定管理员区域</string>
+
+    <string name="overlay_title">此应用已被关闭</string>
+    <string name="overlay_cooldown">%1$d:%2$02d 后可重新打开</string>
+    <string name="overlay_dismiss">知道了</string>
+    <string name="overlay_unlock">管理员解锁</string>
+
+    <string name="reason_default_allow">允许</string>
+    <string name="reason_protection_disabled">保护已关闭</string>
+    <string name="reason_exempt_application">系统应用</string>
+    <string name="reason_allowed_application">允许的应用</string>
+    <string name="reason_allowed_website">允许的网站</string>
+    <string name="reason_time_window_blocked">当前时段不允许使用</string>
+    <string name="reason_application_blocked">此应用已被禁止</string>
+    <string name="reason_blocked_website">此网站已被禁止</string>
+    <string name="reason_title_keyword">页面标题命中禁止关键词</string>
+    <string name="reason_secure_window">无法检查浏览器隐私窗口</string>
+    <string name="reason_image">检测到露骨图片</string>
+    <string name="reason_ocr_warning">检测到敏感文字</string>
+    <string name="reason_source_uncertain">无法检查来源</string>
+</resources>
