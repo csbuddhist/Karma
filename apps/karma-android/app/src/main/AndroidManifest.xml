@@ -8,6 +8,8 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.KILL_BACKGROUND_PROCESSES" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- "Prepare uninstall" opens the system uninstall dialog for Karma itself. -->
+    <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
     <!-- Lets the accessibility service name the launcher and input method it never captures. -->
     <uses-permission
         android:name="android.permission.QUERY_ALL_PACKAGES"
