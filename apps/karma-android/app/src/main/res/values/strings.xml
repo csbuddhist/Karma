@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Karma</string>
+    <string name="app_name" translatable="false">Karma</string>
     <string name="accessibility_service_label">Karma Protection</string>
     <string name="accessibility_service_description">Karma checks what is on screen, entirely on this phone, and closes apps that show explicit images or blocked content. Screenshots are never saved or uploaded. Turning this off requires the administrator password.</string>
 
@@ -69,7 +69,7 @@
     <string name="check_autostart_detail">Allow Karma to start automatically and run in the background.</string>
     <string name="check_device_owner">Device Owner (stronger protection)</string>
     <string name="check_device_owner_detail">Optional. On a phone without accounts, run this command once from a computer:</string>
-    <string name="check_device_owner_active">Active: uninstalling, safe mode, factory reset and new users are blocked.</string>
+    <string name="check_device_owner_active">Active: Karma cannot be uninstalled and its device policies are enforced.</string>
     <string name="open">Open</string>
     <string name="enable">Enable</string>
 
@@ -78,7 +78,7 @@
     <string name="guard_disarmed">Not armed. Finish the setup above, then arm the guard.</string>
     <string name="guard_arm">Arm the settings guard</string>
     <string name="guard_disarm">Disarm the settings guard</string>
-    <string name="limitations">Limitations: Karma cannot stop someone who can root the phone, flash another system, factory-reset it or start it in safe mode (Device Owner blocks the last two). Without Device Owner, other users and Private Space are not protected.</string>
+    <string name="supervisor_advice">Keep the administrator password and recovery codes with the supervisor, not with the person using this phone.</string>
 
     <string name="admin_protection">Protection</string>
     <string name="policy_protection">Protection enabled</string>

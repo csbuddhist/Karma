@@ -140,7 +140,7 @@ fun StatusScreen(core: KarmaCore, refresh: Int) {
                 },
             ) { Text(stringResource(R.string.guard_arm)) }
         }
-        Text(stringResource(R.string.limitations), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 16.dp))
+        Text(stringResource(R.string.supervisor_advice), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 16.dp))
     }
 }
 

@@ -68,7 +68,7 @@
     <string name="check_autostart_detail">允许 Karma 自动启动并在后台运行。</string>
     <string name="check_device_owner">设备所有者（更强保护）</string>
     <string name="check_device_owner_detail">可选。在未登录任何账号的手机上，从电脑执行一次以下命令：</string>
-    <string name="check_device_owner_active">已启用：禁止卸载、安全模式、恢复出厂设置和添加用户。</string>
+    <string name="check_device_owner_active">已启用：Karma 无法被卸载，设备策略已生效。</string>
     <string name="open">打开</string>
     <string name="enable">启用</string>
 
@@ -77,7 +77,7 @@
     <string name="guard_disarmed">未启用。完成上方设置后启用看门。</string>
     <string name="guard_arm">启用设置看门</string>
     <string name="guard_disarm">停用设置看门</string>
-    <string name="limitations">限制：Karma 无法阻止能 root、刷机、恢复出厂设置或进入安全模式的人（设备所有者模式可阻止后两项）。未启用设备所有者时，其他用户和私密空间不受保护。</string>
+    <string name="supervisor_advice">管理员密码和恢复码请由监督人保管，不要交给使用这部手机的人。</string>
 
     <string name="admin_protection">保护</string>
     <string name="policy_protection">启用保护</string>
