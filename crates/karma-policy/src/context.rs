@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::LazyLock;
 
 use serde::Deserialize;
@@ -25,6 +25,24 @@ const MAX_RULE_VALUE_CHARS: usize = 2048;
 const BUNDLED_TITLE_KEYWORDS: &str =
     include_str!("../../../assets/keyword-lists/window-title-explicit.json");
 const BUNDLED_FORMAT_VERSION: u32 = 2;
+const TRADITIONAL_TO_SIMPLIFIED: &str =
+    include_str!("../../../assets/keyword-lists/traditional-to-simplified.txt");
+
+/// Traditional Chinese characters and their Simplified forms, so that titles
+/// such as `內射` match the keyword `内射` (and the other way around).
+static SIMPLIFIED: LazyLock<HashMap<char, char>> = LazyLock::new(|| {
+    TRADITIONAL_TO_SIMPLIFIED
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .filter_map(|line| {
+            let mut characters = line.chars();
+            match (characters.next(), characters.next(), characters.next()) {
+                (Some(traditional), Some(simplified), None) => Some((traditional, simplified)),
+                _ => None,
+            }
+        })
+        .collect()
+});
 
 /// The bundled list, parsed and normalized once per process.
 static BUNDLED: LazyLock<Result<BundledTitleKeywords, ContextPolicyError>> =
@@ -525,6 +543,7 @@ fn normalize_text(value: &str) -> String {
     value
         .nfkc()
         .flat_map(char::to_lowercase)
+        .map(|character| SIMPLIFIED.get(&character).copied().unwrap_or(character))
         .collect::<String>()
         .trim()
         .to_owned()
@@ -612,6 +631,43 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn traditional_chinese_titles_match_simplified_keywords() {
+        let policy = ContextPolicy::default();
+        assert_eq!(
+            policy.matched_title_keyword("爆操內射兒媳婦後人猛幹插入裏面真滋潤啊"),
+            Some("内射")
+        );
+        assert_eq!(
+            policy.matched_title_keyword("與小惡魔Coser的性愛-寬哥"),
+            Some("性爱")
+        );
+        assert_eq!(policy.matched_title_keyword("美腿護理師28歲"), None);
+    }
+
+    #[test]
+    fn traditional_chinese_custom_keywords_match_simplified_titles() {
+        let policy = ContextPolicy::from_value(&json!({
+            "keywords": [
+                {"id":"custom","phrase":"雙飛","category":"high_risk","enabled":true}
+            ]
+        }))
+        .unwrap();
+        assert_eq!(
+            policy.evaluate(None, "姊妹找双飞二打一"),
+            ContextVerdict::TitleKeyword
+        );
+    }
+
+    #[test]
+    fn keywords_in_the_middle_of_a_title_match() {
+        let policy = ContextPolicy::default();
+        assert_eq!(
+            policy.matched_title_keyword("肉丝家庭教师的调教性交-丝琪姐姐 - 黄色仓库"),
+            Some("性交")
+        );
+    }
 
     #[test]
     fn allowlist_precedes_blocklist_and_includes_subdomains() {

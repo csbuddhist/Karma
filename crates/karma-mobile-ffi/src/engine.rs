@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use karma_ai::{ClassifierOutput, VIDDEXA_LABELS, ViddexaRiskMapper};
+use karma_ai::{ClassifierOutput, ImageInference, VIDDEXA_LABELS, ViddexaRiskMapper};
 use karma_domain::{Action, ModelVersions, MonitorId, OcrRisk, RiskObservation};
 use karma_policy::{
     ApplicationEffect, ApplicationPolicy, ContextPolicy, ContextVerdict, NetworkSchedulePolicy,
@@ -26,6 +26,8 @@ const DEFAULT_COOLDOWN_SECONDS: u64 = 60;
 const MIN_COOLDOWN_SECONDS: u64 = 10;
 const MAX_COOLDOWN_SECONDS: u64 = 3600;
 const MINUTES_PER_WEEK: u32 = 10_080;
+/// Moving regions classified besides the whole frame, as on the desktop.
+pub const MAX_FOCUS_REGIONS: usize = 2;
 
 /// What a browser window that refuses screenshots leads to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -207,7 +209,29 @@ impl Engine {
         probabilities: &ClassifierProbabilities,
         context: &ForegroundContext,
     ) -> Result<Evaluation, CoreError> {
-        let output = classifier_output(probabilities)?;
+        self.observe_focused_frame(probabilities, &[], context)
+    }
+
+    /// Decides from the window context, the whole classified frame, and the
+    /// classified crops of its moving regions (such as a video playing in a
+    /// small player). The riskiest of them counts as the frame's score, as in
+    /// the desktop `MotionFocusClassifier`.
+    pub fn observe_focused_frame(
+        &mut self,
+        probabilities: &ClassifierProbabilities,
+        focus: &[ClassifierProbabilities],
+        context: &ForegroundContext,
+    ) -> Result<Evaluation, CoreError> {
+        if focus.len() > MAX_FOCUS_REGIONS {
+            return Err(CoreError::InvalidClassifierOutput);
+        }
+        let mut inference = classifier_inference(probabilities)?;
+        for region in focus {
+            let candidate = classifier_inference(region)?;
+            if candidate.score_millis > inference.score_millis {
+                inference = candidate;
+            }
+        }
         let package = match self.context_stage(context) {
             Stage::Decided(evaluation) => return Ok(evaluation),
             Stage::ContentAllowed(reason) => {
@@ -218,8 +242,6 @@ impl Engine {
             }
             Stage::ContentEligible(package) => package,
         };
-        let inference =
-            ViddexaRiskMapper::map(&output).map_err(|_| CoreError::InvalidClassifierOutput)?;
         let score = inference.score_millis;
         let outcome = self.risk.observe(RiskObservation {
             // Histories are per package, so switching apps never fuses frames.
@@ -440,6 +462,11 @@ fn schedule_view(policy: &Value) -> Value {
     view
 }
 
+fn classifier_inference(value: &ClassifierProbabilities) -> Result<ImageInference, CoreError> {
+    ViddexaRiskMapper::map(&classifier_output(value)?)
+        .map_err(|_| CoreError::InvalidClassifierOutput)
+}
+
 fn classifier_output(value: &ClassifierProbabilities) -> Result<ClassifierOutput, CoreError> {
     let probabilities = [
         value.normal,
@@ -484,6 +511,55 @@ mod tests {
             sexy: 0.0,
             drawing: 0.0,
         }
+    }
+
+    #[test]
+    fn risky_focus_region_closes_a_safe_looking_frame() {
+        let mut engine = engine(json!({}));
+        let whole = engine
+            .observe_frame(&probabilities(0.05), &context("com.example.browser", 1_000))
+            .unwrap();
+        assert_eq!(whole.decision.action, MobileAction::Allow);
+
+        let focused = engine
+            .observe_focused_frame(
+                &probabilities(0.05),
+                &[probabilities(0.1), probabilities(0.97)],
+                &context("com.example.browser", 2_000),
+            )
+            .unwrap();
+        assert_eq!(focused.decision.action, MobileAction::CloseGracefully);
+        assert_eq!(focused.decision.reason, MobileReason::ImageImmediate);
+    }
+
+    #[test]
+    fn safe_focus_regions_keep_the_whole_frame_score() {
+        let mut engine = engine(json!({}));
+        let result = engine
+            .observe_focused_frame(
+                &probabilities(0.4),
+                &[probabilities(0.0)],
+                &context("com.example.browser", 1_000),
+            )
+            .unwrap();
+        let alone = super::classifier_inference(&probabilities(0.4))
+            .unwrap()
+            .score_millis;
+        assert_eq!(result.decision.image_score_millis, Some(u32::from(alone)));
+    }
+
+    #[test]
+    fn too_many_focus_regions_are_rejected() {
+        let mut engine = engine(json!({}));
+        let focus = vec![probabilities(0.0); MAX_FOCUS_REGIONS + 1];
+        assert!(matches!(
+            engine.observe_focused_frame(
+                &probabilities(0.0),
+                &focus,
+                &context("com.example.browser", 1_000)
+            ),
+            Err(CoreError::InvalidClassifierOutput)
+        ));
     }
 
     #[test]

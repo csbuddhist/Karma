@@ -27,9 +27,59 @@ class ImageClassifier private constructor(
     private val preprocessor = Preprocessor(manifest)
     private val shape = longArrayOf(1, 3, manifest.height.toLong(), manifest.width.toLong())
 
+    private val motion = MotionRegionTracker()
+    private var crop = IntArray(0)
+
+    /** The whole frame's scores and those of its moving regions, see [classifyWithFocus]. */
+    class FrameScores(val whole: ClassifierProbabilities, val focus: List<ClassifierProbabilities>)
+
+    /** Whether the last frame given to [classifyWithFocus] showed motion, such as a playing video. */
+    val moving: Boolean get() = motion.moving
+
+    /** Forgets the motion history, for example when another app comes to the front. */
+    fun resetMotion() = motion.reset()
+
+    /**
+     * Scores the whole frame, then each moving region on its own (desktop
+     * `MotionFocusClassifier`). The whole-frame inference shrinks a video that covers part
+     * of the screen to a small patch of the model input among unrelated page content, which
+     * dilutes its score; each crop is read from the full-resolution screenshot and given to
+     * the model at its own scale. Not thread-safe; call from one thread.
+     */
+    fun classifyWithFocus(pixels: IntArray, width: Int, height: Int): FrameScores {
+        var regions: List<MotionRegionTracker.Region> = emptyList()
+        var preparedWidth = width
+        var preparedHeight = height
+        val whole = classify(pixels, width, height) { prepared, w, h ->
+            preparedWidth = w
+            preparedHeight = h
+            regions = motion.observe(prepared, w, h, width, height)
+        }
+        val focus = regions.mapNotNull { region ->
+            val area = MotionRegionTracker.scaled(region, preparedWidth, preparedHeight, width, height)
+            if (area.width <= 0 || area.height <= 0) return@mapNotNull null
+            val size = area.width * area.height
+            if (crop.size < size) crop = IntArray(size)
+            for (row in 0 until area.height) {
+                System.arraycopy(pixels, (area.y + row) * width + area.x, crop, row * area.width, area.width)
+            }
+            try {
+                classify(crop, area.width, area.height)
+            } finally {
+                crop.fill(0)
+            }
+        }
+        return FrameScores(whole, focus)
+    }
+
     /** Scores one frame of `0xAARRGGBB` pixels. Not thread-safe; call from one thread. */
-    fun classify(pixels: IntArray, width: Int, height: Int): ClassifierProbabilities {
-        preprocessor.fill(pixels, width, height)
+    fun classify(
+        pixels: IntArray,
+        width: Int,
+        height: Int,
+        onPrepared: ((prepared: IntArray, width: Int, height: Int) -> Unit)? = null,
+    ): ClassifierProbabilities {
+        preprocessor.fill(pixels, width, height, onPrepared)
         val logits = OnnxTensor.createTensor(environment, FloatBuffer.wrap(preprocessor.tensor), shape).use { input ->
             session.run(mapOf(manifest.inputName to input)).use { result ->
                 @Suppress("UNCHECKED_CAST")

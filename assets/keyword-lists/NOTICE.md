@@ -76,3 +76,12 @@ matching independently configurable.
 The other candidate sources listed in
 [`docs/browser-policy-and-title-keyword-research.md`](../../docs/browser-policy-and-title-keyword-research.md)
 were used for engineering and licensing comparison only and were not copied into this data file.
+
+## Traditional-to-Simplified folding
+
+`traditional-to-simplified.txt` maps 3,221 Traditional Chinese characters to their Simplified forms;
+the policy engine applies it to window titles and title keywords before matching. It is the first
+value of each single-character entry of `data/dictionary/TSCharacters.txt` from OpenCC
+(<https://github.com/BYVoid/OpenCC>, commit `fae2a0a911c30764e669a7d8b0591cd8e852934a`),
+by the OpenCC authors, licensed under the Apache License 2.0
+(<https://www.apache.org/licenses/LICENSE-2.0>).

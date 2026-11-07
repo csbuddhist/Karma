@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use serde_json::Value;
 use zeroize::Zeroizing;
 
-pub use engine::{CompiledPolicy, Engine, Evaluation, IMAGE_MODEL_VERSION};
+pub use engine::{CompiledPolicy, Engine, Evaluation, IMAGE_MODEL_VERSION, MAX_FOCUS_REGIONS};
 pub use packages::{
     EXEMPT_PACKAGES, KARMA_PACKAGE, KNOWN_BROWSER_PACKAGES, KNOWN_VIDEO_PACKAGES,
     with_builtin_applications,
@@ -194,6 +194,22 @@ impl KarmaCore {
     ) -> Result<MobileDecision, CoreError> {
         let mut inner = self.lock();
         let evaluation = inner.engine.observe_frame(&probabilities, &context)?;
+        Ok(inner.finish(evaluation, &context.package_name, context.captured_at_ms))
+    }
+
+    /// One classified frame, the classified crops of its moving regions (at
+    /// most [`MAX_FOCUS_REGIONS`], such as a video in a small player), and its
+    /// window context → decision. The riskiest result counts.
+    pub fn observe_focused_frame(
+        &self,
+        probabilities: ClassifierProbabilities,
+        focus: Vec<ClassifierProbabilities>,
+        context: ForegroundContext,
+    ) -> Result<MobileDecision, CoreError> {
+        let mut inner = self.lock();
+        let evaluation = inner
+            .engine
+            .observe_focused_frame(&probabilities, &focus, &context)?;
         Ok(inner.finish(evaluation, &context.package_name, context.captured_at_ms))
     }
 

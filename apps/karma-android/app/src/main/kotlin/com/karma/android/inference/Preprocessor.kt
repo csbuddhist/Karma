@@ -16,8 +16,16 @@ class Preprocessor(private val manifest: ModelManifest) {
     private var prepared = IntArray(0)
     val tensor = FloatArray(3 * manifest.height * manifest.width)
 
-    /** Fills [tensor] from [pixels] (`0xAARRGGBB`, row-major, `width * height`). */
-    fun fill(pixels: IntArray, width: Int, height: Int) {
+    /**
+     * Fills [tensor] from [pixels] (`0xAARRGGBB`, row-major, `width * height`). [onPrepared]
+     * sees the prepared frame (longer edge at most 640 px) before its buffer is cleared.
+     */
+    fun fill(
+        pixels: IntArray,
+        width: Int,
+        height: Int,
+        onPrepared: ((prepared: IntArray, width: Int, height: Int) -> Unit)? = null,
+    ) {
         require(width > 0 && height > 0 && pixels.size >= width * height)
         val (preparedWidth, preparedHeight) = preparedSize(width, height)
         val source: IntArray
@@ -31,7 +39,11 @@ class Preprocessor(private val manifest: ModelManifest) {
             source = prepared
         }
         buildTensor(source, preparedWidth, preparedHeight)
-        prepared.fill(0)
+        try {
+            onPrepared?.invoke(source, preparedWidth, preparedHeight)
+        } finally {
+            prepared.fill(0)
+        }
     }
 
     private fun buildTensor(source: IntArray, width: Int, height: Int) {

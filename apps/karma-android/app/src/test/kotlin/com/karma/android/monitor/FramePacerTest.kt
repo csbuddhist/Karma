@@ -67,4 +67,19 @@ class FramePacerTest {
         pacer.onCaptureFinished()
         assertTrue(pacer.shouldCapture(5_000))
     }
+
+    @Test
+    fun motionKeepsBrowsersSampledAtOneFrameASecond() {
+        val pacer = FramePacer()
+        pacer.onForeground(PackageClass.BROWSER, 0)
+        assertTrue(captureAt(pacer, 0))
+        var now = 1_000L
+        while (now < 120_000L) {
+            pacer.onMotion(true, now)
+            assertTrue("capture at $now", captureAt(pacer, now))
+            now += FramePacer.VIDEO_INTERVAL_MS
+        }
+        pacer.onMotion(false, now)
+        assertFalse(captureAt(pacer, now + FramePacer.IDLE_PAUSE_MS + 5_000))
+    }
 }

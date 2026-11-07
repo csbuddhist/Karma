@@ -124,11 +124,12 @@ class KarmaAccessibilityService : AccessibilityService() {
 
     private fun onForegroundChanged(packageName: String, event: AccessibilityEvent?, now: Long) {
         foregroundPackage = packageName
+        worker.post { classifier?.resetMotion() }
         foregroundClass = if (packageName in localExempt) PackageClass.EXEMPT else core.classifyPackage(packageName)
         pacer.onForeground(foregroundClass, now)
         if (foregroundClass == PackageClass.EXEMPT) return
         // Blocked apps, schedules, cooldowns and title rules apply before any frame.
-        val title = TitleExtractor.title(this, event)
+        val title = TitleExtractor.title(this, event, rootInActiveWindow)
         worker.post {
             val decision = core.observeContext(context(packageName, title, host = null, secure = false))
             enforce(packageName, decision)
@@ -200,12 +201,19 @@ class KarmaAccessibilityService : AccessibilityService() {
             return
         }
         blackedOutFrames = 0
-        val probabilities = try {
-            classifier!!.classify(pixels, width, height)
+        val model = classifier!!
+        val scores = try {
+            model.classifyWithFocus(pixels, width, height)
         } finally {
             pixels.fill(0)
         }
-        val decision = core.observeFrame(probabilities, currentContext(packageName, packageClass, secure = false))
+        val moving = model.moving
+        main.post { if (packageName == foregroundPackage) pacer.onMotion(moving, SystemClock.elapsedRealtime()) }
+        val decision = core.observeFocusedFrame(
+            scores.whole,
+            scores.focus,
+            currentContext(packageName, packageClass, secure = false),
+        )
         MonitorStatus.update { it.copy(framesScored = it.framesScored + 1) }
         enforce(packageName, decision)
     }
@@ -260,7 +268,7 @@ class KarmaAccessibilityService : AccessibilityService() {
     private fun currentContext(packageName: String, packageClass: PackageClass, secure: Boolean): ForegroundContext {
         val root = rootInActiveWindow
         val host = if (packageClass == PackageClass.BROWSER) BrowserUrlExtractor.host(packageName, root) else null
-        return context(packageName, TitleExtractor.title(this, null), host, secure)
+        return context(packageName, TitleExtractor.title(this, null, root), host, secure)
     }
 
     private fun context(packageName: String, title: String, host: String?, secure: Boolean): ForegroundContext {

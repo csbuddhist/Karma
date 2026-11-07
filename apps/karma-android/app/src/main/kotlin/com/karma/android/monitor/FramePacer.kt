@@ -11,6 +11,8 @@ import uniffi.karma_mobile_ffi.PackageClass
  * - Other apps (browsers included) are captured on content events at most 2 fps,
  *   fall back to one frame every 2 s while the screen is still, and pause after 30 s
  *   without events until the next event.
+ * - While the frames show motion (a video playing in a page or a small player, which
+ *   sends no accessibility events), they are sampled at 1 fps and never pause.
  */
 class FramePacer {
     private var packageClass: PackageClass = PackageClass.EXEMPT
@@ -18,9 +20,11 @@ class FramePacer {
     private var lastCaptureMs = Long.MIN_VALUE / 2
     private var dirty = false
     private var inFlight = false
+    private var moving = false
 
     fun onForeground(packageClass: PackageClass, nowMs: Long) {
         this.packageClass = packageClass
+        moving = false
         dirty = true
         lastEventMs = nowMs
         lastCaptureMs = Long.MIN_VALUE / 2
@@ -29,6 +33,12 @@ class FramePacer {
     fun onContentEvent(nowMs: Long) {
         dirty = true
         lastEventMs = nowMs
+    }
+
+    /** Whether the last scored frame showed motion; see [com.karma.android.inference.MotionRegionTracker]. */
+    fun onMotion(moving: Boolean, nowMs: Long) {
+        this.moving = moving
+        if (moving) lastEventMs = nowMs
     }
 
     /** Whether a capture should start now. Call [onCaptureStarted] when one does. */
@@ -40,6 +50,7 @@ class FramePacer {
             PackageClass.VIDEO -> sinceCapture >= VIDEO_INTERVAL_MS
             PackageClass.BROWSER, PackageClass.MONITORED -> when {
                 dirty && sinceCapture >= MIN_INTERVAL_MS -> true
+                moving && sinceCapture >= VIDEO_INTERVAL_MS -> true
                 nowMs - lastEventMs < IDLE_PAUSE_MS && sinceCapture >= STILL_INTERVAL_MS -> true
                 else -> false
             }
