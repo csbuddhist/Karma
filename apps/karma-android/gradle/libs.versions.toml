@@ -8,6 +8,7 @@ composeBom = "2024.12.01"
 workManager = "2.10.0"
 onnxruntime = "1.22.0"
 jna = "5.15.0"
+annotation = "1.9.1"
 junit = "4.13.2"
 androidxTestRunner = "1.6.2"
 androidxTestExt = "1.2.1"
@@ -24,6 +25,7 @@ androidx-compose-material3 = { group = "androidx.compose.material3", name = "mat
 androidx-work-runtime-ktx = { group = "androidx.work", name = "work-runtime-ktx", version.ref = "workManager" }
 onnxruntime-android = { group = "com.microsoft.onnxruntime", name = "onnxruntime-android", version.ref = "onnxruntime" }
 jna = { group = "net.java.dev.jna", name = "jna", version.ref = "jna" }
+androidx-annotation = { group = "androidx.annotation", name = "annotation", version.ref = "annotation" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-test-runner = { group = "androidx.test", name = "runner", version.ref = "androidxTestRunner" }
 androidx-test-ext-junit = { group = "androidx.test.ext", name = "junit", version.ref = "androidxTestExt" }

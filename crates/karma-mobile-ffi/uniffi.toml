@@ -1,0 +1,4 @@
+# Read by uniffi-bindgen in library mode (apps/karma-android core:uniffiBindgen).
+[bindings.kotlin]
+# Android cleaner: SystemCleaner behind an SDK_INT check, JNA's cleaner below API 34.
+android = true

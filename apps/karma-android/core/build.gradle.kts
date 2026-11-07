@@ -48,6 +48,8 @@ kotlin {
 dependencies {
     // UniFFI's Kotlin bindings load the library through JNA.
     api("net.java.dev.jna:jna:${libs.versions.jna.get()}@aar")
+    // The bindings are generated in UniFFI's Android mode, which annotates with @RequiresApi.
+    implementation(libs.androidx.annotation)
 }
 
 val cargoBuild by tasks.registering(Exec::class) {
@@ -61,7 +63,7 @@ val cargoBuild by tasks.registering(Exec::class) {
         cargo, "ndk",
         "-t", "arm64-v8a",
         "-t", "x86_64",
-        "-P", "30",
+        "--platform", "30",
         "-o", jniLibsDir.asFile.absolutePath,
         "build", "--release", "--locked", "-p", "karma-mobile-ffi",
     )
@@ -72,8 +74,12 @@ val uniffiBindgen by tasks.registering(Exec::class) {
     description = "Generates the Kotlin bindings of karma-mobile-ffi."
     dependsOn(cargoBuild)
     workingDir = repoRoot
-    val library = jniLibsDir.file("arm64-v8a/libkarma_mobile_ffi.so").asFile
+    // cargo-ndk strips the jniLibs copy, which drops the UniFFI metadata symbols;
+    // read the unstripped library from cargo's target directory instead.
+    val targetDir = System.getenv("CARGO_TARGET_DIR")?.let(::File) ?: File(repoRoot, "target")
+    val library = File(targetDir, "aarch64-linux-android/release/libkarma_mobile_ffi.so")
     inputs.file(library)
+    inputs.file(File(repoRoot, "crates/karma-mobile-ffi/uniffi.toml"))
     outputs.dir(bindingsDir)
     commandLine(
         cargo, "run", "--release", "--locked",

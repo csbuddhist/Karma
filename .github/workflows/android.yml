@@ -68,9 +68,9 @@ jobs:
         with:
           gradle-version: "8.11.1"
 
-      - name: Build the debug APK and run unit tests
+      - name: Build the debug APK, run unit tests and lint
         working-directory: apps/karma-android
-        run: gradle --no-daemon assembleDebug testDebugUnitTest
+        run: gradle --no-daemon assembleDebug testDebugUnitTest lintRelease
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

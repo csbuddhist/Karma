@@ -25,12 +25,15 @@ recorded score sequence yields the same decisions on desktop tests and on a phon
 The Android Gradle project runs these steps itself (`core:cargoBuild`, `core:uniffiBindgen`):
 
 ```bash
-cargo ndk -t arm64-v8a -t x86_64 -P 30 \
+cargo ndk -t arm64-v8a -t x86_64 --platform 30 \
   -o apps/karma-android/core/src/main/jniLibs \
   build --release --locked -p karma-mobile-ffi
 cargo run --release -p karma-mobile-ffi --features bindgen --bin uniffi-bindgen -- \
-  generate --library apps/karma-android/core/src/main/jniLibs/arm64-v8a/libkarma_mobile_ffi.so \
+  generate --library target/aarch64-linux-android/release/libkarma_mobile_ffi.so \
   --language kotlin --out-dir apps/karma-android/core/build/generated/uniffi/kotlin
 ```
+
+Generate the bindings from the unstripped library in `target/`: cargo-ndk strips the
+jniLibs copy, and the stripped file carries no UniFFI metadata.
 
 Host tests: `cargo test -p karma-mobile-ffi`.
