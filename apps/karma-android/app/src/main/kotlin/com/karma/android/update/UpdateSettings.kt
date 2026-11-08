@@ -82,11 +82,12 @@ class UpdateWorker(context: Context, params: WorkerParameters) : CoroutineWorker
             manager.enqueueUniquePeriodicWork(PERIODIC, ExistingPeriodicWorkPolicy.KEEP, request)
         }
 
+        /** Starts one check unless one is already waiting or running; repeated taps do not restart a download. */
         fun checkNow(context: Context) {
             val request = OneTimeWorkRequestBuilder<UpdateWorker>()
                 .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
                 .build()
-            WorkManager.getInstance(context).enqueueUniqueWork(NOW, ExistingWorkPolicy.REPLACE, request)
+            WorkManager.getInstance(context).enqueueUniqueWork(NOW, ExistingWorkPolicy.KEEP, request)
         }
     }
 }

@@ -129,13 +129,15 @@
     <string name="reason_image">Explicit image detected</string>
     <string name="reason_ocr_warning">Sensitive text detected</string>
     <string name="reason_source_uncertain">The source could not be checked</string>
-    <string name="admin_updates">Updates</string>
+    <string name="updates_title">Updates</string>
     <string name="update_installed_version">Installed version: %1$s</string>
     <string name="update_never_checked">Not checked yet.</string>
     <string name="update_last_check">Last check %1$s: %2$s %3$s</string>
     <string name="update_automatic">Update automatically</string>
     <string name="update_explanation">Karma checks GitHub and its Gitee mirror twice a day on Wi-Fi, downloads a newer APK, and installs it only when its checksum matches the release and it is signed by the same certificate as this app. Nothing is uploaded.</string>
     <string name="update_needs_permission">Android does not yet let Karma install updates.</string>
+    <string name="update_anyone_explanation">No password is needed to update. Karma installs only a higher version signed by the same certificate as this app; it never installs an older one.</string>
+    <string name="update_needs_administrator">Android does not yet let Karma install updates. The administrator can allow it under Administrator → Updates.</string>
     <string name="update_allow_installs">Allow installing updates</string>
     <string name="update_check_now">Check for updates now</string>
     <string name="update_refresh">Refresh status</string>

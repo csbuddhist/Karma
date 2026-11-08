@@ -35,15 +35,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
-import com.karma.android.BuildConfig
 import com.karma.android.R
 import com.karma.android.guard.DeviceOwnerPolicies
 import com.karma.android.guard.GuardState
 import com.karma.android.monitor.enforce.label
 import com.karma.android.update.UpdateInstaller
 import com.karma.android.update.UpdateSettings
-import com.karma.android.update.UpdateWorker
-import com.karma.android.update.Updater
 import java.text.DateFormat
 import java.util.Date
 import kotlinx.coroutines.Dispatchers
@@ -163,7 +160,7 @@ fun AdminScreen(core: KarmaCore, token: String, onLocked: () -> Unit) {
             }
         }) { Text(stringResource(R.string.regenerate_codes)) }
 
-        SectionTitle(stringResource(R.string.admin_updates))
+        SectionTitle(stringResource(R.string.updates_title))
         UpdatesSection(onAuthorize = ::authorize)
 
         SectionTitle(stringResource(R.string.admin_guard))
@@ -227,24 +224,13 @@ private fun prepareUninstall(context: Context) {
     )
 }
 
+/** Update preferences. Checking and installing a newer version is on the status screen. */
 @Composable
 private fun UpdatesSection(onAuthorize: (String) -> Boolean) {
     val context = LocalContext.current
     var automatic by remember { mutableStateOf(UpdateSettings.isAutomatic(context)) }
-    var tick by remember { mutableIntStateOf(0) }
-    val status = remember(tick) { UpdateSettings.status(context) }
-    val canInstall = remember(tick) { UpdateInstaller.canInstall(context) }
-    val format = remember { DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT) }
+    val canInstall = remember { UpdateInstaller.canInstall(context) }
 
-    Text(stringResource(R.string.update_installed_version, BuildConfig.VERSION_NAME))
-    Text(
-        if (status.checkedAtMs == 0L) {
-            stringResource(R.string.update_never_checked)
-        } else {
-            stringResource(R.string.update_last_check, format.format(Date(status.checkedAtMs)), stringResource(updateOutcomeLabel(status.outcome, status.version != null)), status.version ?: "")
-        },
-        style = MaterialTheme.typography.bodySmall,
-    )
     SwitchRow(stringResource(R.string.update_automatic), automatic) {
         automatic = it
         UpdateSettings.setAutomatic(context, it)
@@ -264,21 +250,6 @@ private fun UpdatesSection(onAuthorize: (String) -> Boolean) {
             }
         }) { Text(stringResource(R.string.update_allow_installs)) }
     }
-    OutlinedButton(onClick = {
-        UpdateWorker.checkNow(context)
-        Toast.makeText(context, R.string.update_checking, Toast.LENGTH_SHORT).show()
-        tick++
-    }) { Text(stringResource(R.string.update_check_now)) }
-    TextButton(onClick = { tick++ }) { Text(stringResource(R.string.update_refresh)) }
-}
-
-private fun updateOutcomeLabel(outcome: Updater.Outcome?, found: Boolean): Int = when (outcome) {
-    Updater.Outcome.UP_TO_DATE -> R.string.update_outcome_up_to_date
-    Updater.Outcome.INSTALLING -> R.string.update_outcome_installing
-    Updater.Outcome.NETWORK_FAILED -> if (found) R.string.update_outcome_download_failed else R.string.update_outcome_network
-    Updater.Outcome.VERIFICATION_FAILED -> R.string.update_outcome_verification
-    Updater.Outcome.INSTALL_BLOCKED -> R.string.update_outcome_blocked
-    null -> R.string.update_outcome_unknown
 }
 
 @Composable

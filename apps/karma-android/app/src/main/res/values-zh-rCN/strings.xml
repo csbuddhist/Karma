@@ -128,13 +128,15 @@
     <string name="reason_image">检测到露骨图片</string>
     <string name="reason_ocr_warning">检测到敏感文字</string>
     <string name="reason_source_uncertain">无法检查来源</string>
-    <string name="admin_updates">更新</string>
+    <string name="updates_title">更新</string>
     <string name="update_installed_version">已安装版本：%1$s</string>
     <string name="update_never_checked">尚未检查。</string>
     <string name="update_last_check">上次检查 %1$s：%2$s %3$s</string>
     <string name="update_automatic">自动更新</string>
     <string name="update_explanation">Karma 每天两次在 Wi-Fi 下检查 GitHub 及其 Gitee 镜像，下载更新的 APK；只有校验和与发布一致、且与本应用使用同一证书签名时才会安装。不会上传任何内容。</string>
     <string name="update_needs_permission">Android 尚未允许 Karma 安装更新。</string>
+    <string name="update_anyone_explanation">更新无需密码。Karma 只安装版本更高、且与本应用使用同一证书签名的版本，不会安装更旧的版本。</string>
+    <string name="update_needs_administrator">Android 尚未允许 Karma 安装更新，需由管理员在“管理员 → 更新”中允许。</string>
     <string name="update_allow_installs">允许安装更新</string>
     <string name="update_check_now">立即检查更新</string>
     <string name="update_refresh">刷新状态</string>

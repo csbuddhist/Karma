@@ -16,7 +16,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -29,6 +31,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.karma.android.BuildConfig
 import com.karma.android.R
 import com.karma.android.guard.DeviceOwnerPolicies
 import com.karma.android.guard.GuardState
@@ -36,6 +39,10 @@ import com.karma.android.monitor.MonitorStatus
 import com.karma.android.monitor.enforce.label
 import com.karma.android.service.MonitorForegroundService
 import com.karma.android.service.WatchdogWorker
+import com.karma.android.update.UpdateInstaller
+import com.karma.android.update.UpdateSettings
+import com.karma.android.update.UpdateWorker
+import com.karma.android.update.Updater
 import java.text.DateFormat
 import java.util.Date
 import uniffi.karma_mobile_ffi.KarmaCore
@@ -142,8 +149,54 @@ fun StatusScreen(core: KarmaCore, refresh: Int) {
                 },
             ) { Text(stringResource(R.string.guard_arm)) }
         }
+
+        SectionTitle(stringResource(R.string.updates_title))
+        UpdateStatusSection(tick) { localRefresh++ }
+
         Text(stringResource(R.string.supervisor_advice), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 16.dp))
     }
+}
+
+/**
+ * Installed version, the last check, and a check that anyone using the phone may start: the
+ * updater only installs a higher version signed by the same certificate, so no password is
+ * needed. Turning automatic updates off and allowing installs stay with the administrator.
+ */
+@Composable
+private fun UpdateStatusSection(tick: Int, onRefresh: () -> Unit) {
+    val context = LocalContext.current
+    val status = remember(tick) { UpdateSettings.status(context) }
+    val canInstall = remember(tick) { UpdateInstaller.canInstall(context) }
+    val format = remember { DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT) }
+
+    Text(stringResource(R.string.update_installed_version, BuildConfig.VERSION_NAME))
+    Text(
+        if (status.checkedAtMs == 0L) {
+            stringResource(R.string.update_never_checked)
+        } else {
+            stringResource(R.string.update_last_check, format.format(Date(status.checkedAtMs)), stringResource(updateOutcomeLabel(status.outcome, status.version != null)), status.version ?: "")
+        },
+        style = MaterialTheme.typography.bodySmall,
+    )
+    Text(stringResource(R.string.update_anyone_explanation), style = MaterialTheme.typography.bodySmall)
+    if (!canInstall) {
+        Text(stringResource(R.string.update_needs_administrator), style = MaterialTheme.typography.bodySmall)
+    }
+    OutlinedButton(onClick = {
+        UpdateWorker.checkNow(context)
+        Toast.makeText(context, R.string.update_checking, Toast.LENGTH_SHORT).show()
+        onRefresh()
+    }) { Text(stringResource(R.string.update_check_now)) }
+    TextButton(onClick = onRefresh) { Text(stringResource(R.string.update_refresh)) }
+}
+
+private fun updateOutcomeLabel(outcome: Updater.Outcome?, found: Boolean): Int = when (outcome) {
+    Updater.Outcome.UP_TO_DATE -> R.string.update_outcome_up_to_date
+    Updater.Outcome.INSTALLING -> R.string.update_outcome_installing
+    Updater.Outcome.NETWORK_FAILED -> if (found) R.string.update_outcome_download_failed else R.string.update_outcome_network
+    Updater.Outcome.VERIFICATION_FAILED -> R.string.update_outcome_verification
+    Updater.Outcome.INSTALL_BLOCKED -> R.string.update_outcome_blocked
+    null -> R.string.update_outcome_unknown
 }
 
 /** Opens the first of [intents] the system accepts, or explains that none could be opened. */
