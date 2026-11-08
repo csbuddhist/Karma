@@ -146,7 +146,7 @@ Karma should be used only for content protection by device owners, guardians, or
 
 ## Android (Developer Preview)
 
-The Android client lives in `apps/karma-android` and shares the desktop's Rust decision core (`crates/karma-mobile-ffi`), model, and policy format. The current APK, [android-v0.1.3](https://github.com/csbuddhist/Karma/releases/tag/android-v0.1.3), is a developer preview: it has been verified on an Android 15 emulator but has not yet passed real-device testing against the [Android acceptance checklist](docs/android-acceptance.md).
+The Android client lives in `apps/karma-android` and shares the desktop's Rust decision core (`crates/karma-mobile-ffi`), model, and policy format. The current APK, [android-v0.1.4](https://github.com/csbuddhist/Karma/releases/tag/android-v0.1.4), is a developer preview: it has been verified on an Android 15 emulator but has not yet passed real-device testing against the [Android acceptance checklist](docs/android-acceptance.md).
 
 - **Screen recognition**: frames come from the accessibility service's `takeScreenshot()` (at most 2 fps, slower on still screens, paused after 30 seconds without change, and kept at 1 fps while the screen keeps changing); ONNX Runtime with XNNPACK runs viddexa-nano, and multi-frame fusion is identical to the desktop. Continuously changing areas such as a video playing in a small in-page player are cropped and classified on their own, without having to go full screen. Screenshots are only scaled to the model input in memory; they are never saved or uploaded.
 - **Closing the source app**: Karma goes to the home screen and shows a full-screen overlay with the reason and the remaining cooldown; reopening the app during the cooldown closes it again at once. Under Device Owner the app can also be suspended.
@@ -157,7 +157,7 @@ The Android client lives in `apps/karma-android` and shares the desktop's Rust d
 
 Installation:
 
-1. Download `Karma-android-v0.1.3.apk` from [android-v0.1.3](https://github.com/csbuddhist/Karma/releases/tag/android-v0.1.3) and check it against `SHA256SUMS-android-v0.1.3.txt` on the same page.
+1. Download `Karma-android-v0.1.4.apk` from [android-v0.1.4](https://github.com/csbuddhist/Karma/releases/tag/android-v0.1.4) and check it against `SHA256SUMS-android-v0.1.4.txt` on the same page.
 2. Open the APK on the phone to install it (allow your browser or file manager to install unknown apps).
 3. Open Karma, set the administrator password, write down the recovery codes, then follow the setup checklist to enable the accessibility service, device admin, unrestricted battery use, and notifications. On Android 13 and later, if the accessibility switch is greyed out, first choose "Allow restricted settings" from the ⋮ menu in App info.
 4. Add app and website rules on the Administrator tab, then arm the settings guard.
