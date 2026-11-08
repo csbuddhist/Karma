@@ -33,7 +33,7 @@ import uniffi.karma_mobile_ffi.updateDownloadLimits
  * Nothing about the device or its use is sent; requests carry only a generic user agent.
  */
 object Updater {
-    enum class Outcome { UP_TO_DATE, INSTALLING, NETWORK_FAILED, VERIFICATION_FAILED, INSTALL_BLOCKED }
+    enum class Outcome { UP_TO_DATE, INSTALLING, INSTALLED, NETWORK_FAILED, VERIFICATION_FAILED, INSTALL_BLOCKED }
 
     private const val CONNECT_TIMEOUT_MS = 20_000
     private const val READ_TIMEOUT_MS = 60_000

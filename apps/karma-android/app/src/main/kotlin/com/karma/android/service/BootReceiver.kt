@@ -13,6 +13,7 @@ class BootReceiver : BroadcastReceiver() {
         com.karma.android.update.UpdateWorker.schedule(context)
         if (intent.action == Intent.ACTION_MY_PACKAGE_REPLACED) {
             com.karma.android.update.Updater.clear(context)
+            com.karma.android.update.UpdateSettings.recordInstalled(context)
             com.karma.android.update.Updater.audit(context, "update_install", "installed")
         }
     }

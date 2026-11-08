@@ -174,7 +174,9 @@ private fun UpdateStatusSection(tick: Int, onRefresh: () -> Unit) {
         if (status.checkedAtMs == 0L) {
             stringResource(R.string.update_never_checked)
         } else {
-            stringResource(R.string.update_last_check, format.format(Date(status.checkedAtMs)), stringResource(updateOutcomeLabel(status.outcome, status.version != null)), status.version ?: "")
+            // An update installed before this fix may still read "installing" its own version.
+            val outcome = if (status.outcome == Updater.Outcome.INSTALLING && status.version == BuildConfig.VERSION_NAME) Updater.Outcome.INSTALLED else status.outcome
+            stringResource(R.string.update_last_check, format.format(Date(status.checkedAtMs)), stringResource(updateOutcomeLabel(outcome, status.version != null)), status.version ?: "")
         },
         style = MaterialTheme.typography.bodySmall,
     )
@@ -193,6 +195,7 @@ private fun UpdateStatusSection(tick: Int, onRefresh: () -> Unit) {
 private fun updateOutcomeLabel(outcome: Updater.Outcome?, found: Boolean): Int = when (outcome) {
     Updater.Outcome.UP_TO_DATE -> R.string.update_outcome_up_to_date
     Updater.Outcome.INSTALLING -> R.string.update_outcome_installing
+    Updater.Outcome.INSTALLED -> R.string.update_outcome_installed
     Updater.Outcome.NETWORK_FAILED -> if (found) R.string.update_outcome_download_failed else R.string.update_outcome_network
     Updater.Outcome.VERIFICATION_FAILED -> R.string.update_outcome_verification
     Updater.Outcome.INSTALL_BLOCKED -> R.string.update_outcome_blocked

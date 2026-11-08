@@ -144,6 +144,7 @@
     <string name="update_checking">Checking for updates…</string>
     <string name="update_outcome_up_to_date">up to date</string>
     <string name="update_outcome_installing">installing version</string>
+    <string name="update_outcome_installed">updated to version</string>
     <string name="update_outcome_network">GitHub and Gitee could not be reached</string>
     <string name="update_outcome_download_failed">download failed for version</string>
     <string name="update_outcome_verification">checksum or signature did not match for version</string>

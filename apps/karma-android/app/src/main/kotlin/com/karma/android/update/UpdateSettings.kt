@@ -50,6 +50,14 @@ object UpdateSettings {
             .apply()
     }
 
+    /** Called once Android has replaced the app, so the status no longer says "installing". */
+    internal fun recordInstalled(context: Context) {
+        prefs(context).edit()
+            .putString(KEY_OUTCOME, Updater.Outcome.INSTALLED.name)
+            .putString(KEY_VERSION, com.karma.android.BuildConfig.VERSION_NAME)
+            .apply()
+    }
+
     internal fun recordInstallFailure(context: Context) {
         prefs(context).edit().putString(KEY_OUTCOME, Updater.Outcome.INSTALL_BLOCKED.name).apply()
     }
