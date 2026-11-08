@@ -6,6 +6,7 @@
 //! and metadata cross the boundary — never pixels or recognized text — and
 //! every call carries its own timestamp, so decisions are reproducible.
 
+mod app_schedule;
 mod auth;
 mod engine;
 mod packages;

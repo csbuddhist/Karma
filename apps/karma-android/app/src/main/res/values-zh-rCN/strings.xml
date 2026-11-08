@@ -91,6 +91,16 @@
     <string name="add_app">添加应用规则</string>
     <string name="rule_block">禁止</string>
     <string name="rule_allow">允许</string>
+    <string name="edit">编辑</string>
+    <string name="rule_schedule">时段</string>
+    <string name="schedule_mode_allow">每天仅在以下时段允许使用</string>
+    <string name="schedule_mode_block">每天在以下时段禁止使用</string>
+    <string name="schedule_add_window">添加时段</string>
+    <string name="schedule_hint">时间精确到分钟。结束时间早于开始时间表示跨越午夜（例如 22:00–07:00）。不在允许时段内、或处于禁止时段内时，应用会被关闭。</string>
+    <string name="schedule_invalid">时段的开始和结束不能是同一分钟。</string>
+    <string name="schedule_summary_allow">每天仅 %1$s 允许</string>
+    <string name="schedule_summary_block">每天 %1$s 禁止</string>
+    <string name="schedule_separator">、</string>
     <string name="remove">移除</string>
     <string name="admin_websites">网站</string>
     <string name="website_host">网站，例如 example.com</string>

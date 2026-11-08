@@ -1,5 +1,6 @@
 package com.karma.android.ui
 
+import android.app.TimePickerDialog
 import android.content.Context
 import android.content.Intent
 import android.widget.Toast
@@ -12,6 +13,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -19,6 +21,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -61,6 +64,7 @@ fun AdminScreen(core: KarmaCore, token: String, onLocked: () -> Unit) {
     var cooldown by remember(revision) { mutableStateOf(policy.cooldownSeconds.toFloat()) }
     var site by remember { mutableStateOf("") }
     var pickApp by remember { mutableStateOf(false) }
+    var scheduling by remember { mutableStateOf<PolicyDocument.AppSchedule?>(null) }
     var newPassword by remember { mutableStateOf("") }
     var codes by remember { mutableStateOf<List<String>?>(null) }
     var confirmUninstall by remember { mutableStateOf(false) }
@@ -109,6 +113,13 @@ fun AdminScreen(core: KarmaCore, token: String, onLocked: () -> Unit) {
                 "${rule.label} (${rule.packageName})",
                 stringResource(if (rule.block) R.string.rule_block else R.string.rule_allow),
             ) { save { removeAppRule(rule.packageName) } }
+        }
+        policy.appSchedules.forEach { schedule ->
+            RuleRow(
+                "${schedule.label} (${schedule.packageName})",
+                scheduleSummary(schedule),
+                onEdit = { scheduling = schedule },
+            ) { save { removeAppSchedule(schedule.packageName) } }
         }
         OutlinedButton(onClick = { pickApp = true }) { Text(stringResource(R.string.add_app)) }
 
@@ -195,7 +206,18 @@ fun AdminScreen(core: KarmaCore, token: String, onLocked: () -> Unit) {
                 pickApp = false
                 save { setAppRule(packageName, label, block) }
             },
+            onSchedule = { packageName, label ->
+                pickApp = false
+                scheduling = policy.appSchedules.firstOrNull { it.packageName == packageName }
+                    ?: PolicyDocument.AppSchedule(packageName, label, allow = true, windows = listOf(PolicyDocument.TimeWindow("08:00", "09:00")))
+            },
         )
+    }
+    scheduling?.let { initial ->
+        AppScheduleDialog(initial, onDismiss = { scheduling = null }) { schedule ->
+            scheduling = null
+            save { setAppSchedule(schedule) }
+        }
     }
     codes?.let { RecoveryCodesDialog(it) { codes = null } }
     if (confirmUninstall) {
@@ -261,12 +283,13 @@ private fun SwitchRow(label: String, checked: Boolean, onChange: (Boolean) -> Un
 }
 
 @Composable
-private fun RuleRow(title: String, effect: String, onRemove: () -> Unit) {
+private fun RuleRow(title: String, effect: String, onEdit: (() -> Unit)? = null, onRemove: () -> Unit) {
     Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Column(modifier = Modifier.weight(1f)) {
             Text(title, style = MaterialTheme.typography.bodyMedium)
             Text(effect, style = MaterialTheme.typography.bodySmall)
         }
+        onEdit?.let { TextButton(onClick = it) { Text(stringResource(R.string.edit)) } }
         TextButton(onClick = onRemove) { Text(stringResource(R.string.remove)) }
     }
 }
@@ -295,7 +318,7 @@ private fun AuditList(core: KarmaCore) {
 }
 
 @Composable
-private fun AppPickerDialog(onDismiss: () -> Unit, onPick: (String, String, Boolean) -> Unit) {
+private fun AppPickerDialog(onDismiss: () -> Unit, onPick: (String, String, Boolean) -> Unit, onSchedule: (String, String) -> Unit) {
     val context = LocalContext.current
     val apps = remember {
         val pm = context.packageManager
@@ -315,10 +338,90 @@ private fun AppPickerDialog(onDismiss: () -> Unit, onPick: (String, String, Bool
                         Text(label, modifier = Modifier.weight(1f))
                         TextButton(onClick = { onPick(packageName, label, true) }) { Text(stringResource(R.string.rule_block)) }
                         TextButton(onClick = { onPick(packageName, label, false) }) { Text(stringResource(R.string.rule_allow)) }
+                        TextButton(onClick = { onSchedule(packageName, label) }) { Text(stringResource(R.string.rule_schedule)) }
                     }
                 }
             }
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.cancel)) } },
+    )
+}
+
+@Composable
+private fun scheduleSummary(schedule: PolicyDocument.AppSchedule): String {
+    val windows = schedule.windows.joinToString(stringResource(R.string.schedule_separator)) { "${it.start}–${it.end}" }
+    return stringResource(if (schedule.allow) R.string.schedule_summary_allow else R.string.schedule_summary_block, windows)
+}
+
+/** Edits the daily windows of one app, to the minute. */
+@Composable
+private fun AppScheduleDialog(
+    initial: PolicyDocument.AppSchedule,
+    onDismiss: () -> Unit,
+    onSave: (PolicyDocument.AppSchedule) -> Unit,
+) {
+    val context = LocalContext.current
+    var allow by remember { mutableStateOf(initial.allow) }
+    var windows by remember { mutableStateOf(initial.windows) }
+    val valid = windows.isNotEmpty() && windows.all { it.start != it.end }
+
+    /** Opens the system time picker (24-hour) for one end of window [index]. */
+    fun pick(index: Int, start: Boolean) {
+        val current = if (start) windows[index].start else windows[index].end
+        TimePickerDialog(
+            context,
+            { _, hour, minute ->
+                val value = "%02d:%02d".format(hour, minute)
+                windows = windows.mapIndexed { i, window ->
+                    if (i != index) window else if (start) window.copy(start = value) else window.copy(end = value)
+                }
+            },
+            current.substringBefore(':').toIntOrNull() ?: 0,
+            current.substringAfter(':').toIntOrNull() ?: 0,
+            true,
+        ).show()
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(initial.label) },
+        text = {
+            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                listOf(true to R.string.schedule_mode_allow, false to R.string.schedule_mode_block).forEach { (mode, label) ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth().selectable(selected = allow == mode, onClick = { allow = mode }),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(selected = allow == mode, onClick = { allow = mode })
+                        Text(stringResource(label))
+                    }
+                }
+                windows.forEachIndexed { index, window ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedButton(onClick = { pick(index, start = true) }) { Text(window.start) }
+                        Text("–", modifier = Modifier.padding(horizontal = 4.dp))
+                        OutlinedButton(onClick = { pick(index, start = false) }) { Text(window.end) }
+                        if (windows.size > 1) {
+                            TextButton(onClick = { windows = windows.filterIndexed { i, _ -> i != index } }) {
+                                Text(stringResource(R.string.remove))
+                            }
+                        }
+                    }
+                }
+                if (windows.size < PolicyDocument.MAX_WINDOWS) {
+                    TextButton(onClick = { windows = windows + PolicyDocument.TimeWindow("08:00", "09:00") }) {
+                        Text(stringResource(R.string.schedule_add_window))
+                    }
+                }
+                Text(stringResource(R.string.schedule_hint), style = MaterialTheme.typography.bodySmall)
+                if (!valid) {
+                    Text(stringResource(R.string.schedule_invalid), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        },
+        confirmButton = {
+            Button(enabled = valid, onClick = { onSave(initial.copy(allow = allow, windows = windows)) }) { Text(stringResource(R.string.save)) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.cancel)) } },
     )
 }

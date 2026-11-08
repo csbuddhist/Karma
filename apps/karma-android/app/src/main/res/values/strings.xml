@@ -92,6 +92,16 @@
     <string name="add_app">Add an app rule</string>
     <string name="rule_block">Block</string>
     <string name="rule_allow">Allow</string>
+    <string name="edit">Edit</string>
+    <string name="rule_schedule">Times</string>
+    <string name="schedule_mode_allow">Allow only during these times each day</string>
+    <string name="schedule_mode_block">Block during these times each day</string>
+    <string name="schedule_add_window">Add a time range</string>
+    <string name="schedule_hint">Times are exact to the minute. An end time earlier than the start continues past midnight (for example 22:00–07:00). Outside its allowed times, or inside its blocked times, the app is closed.</string>
+    <string name="schedule_invalid">A time range cannot start and end at the same minute.</string>
+    <string name="schedule_summary_allow">Allowed daily %1$s only</string>
+    <string name="schedule_summary_block">Blocked daily %1$s</string>
+    <string name="schedule_separator">", "</string>
     <string name="remove">Remove</string>
     <string name="admin_websites">Websites</string>
     <string name="website_host">Website, such as example.com</string>

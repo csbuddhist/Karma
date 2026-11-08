@@ -14,6 +14,12 @@ class PolicyDocument(json: String) {
     data class AppRule(val packageName: String, val label: String, val block: Boolean)
     data class SiteRule(val host: String, val block: Boolean)
 
+    /** A daily `HH:MM` window; an end not after the start continues past midnight. */
+    data class TimeWindow(val start: String, val end: String)
+
+    /** [allow]: the app may be used only inside [windows]; otherwise it is closed inside them. */
+    data class AppSchedule(val packageName: String, val label: String, val allow: Boolean, val windows: List<TimeWindow>)
+
     var protectionEnabled: Boolean
         get() = root.optBoolean("protectionEnabled", true)
         set(value) {
@@ -46,6 +52,7 @@ class PolicyDocument(json: String) {
 
     fun setAppRule(packageName: String, label: String, block: Boolean) {
         removeAppRule(packageName)
+        removeAppSchedule(packageName)
         array("applications").put(
             JSONObject()
                 .put("id", "android:$packageName")
@@ -59,6 +66,49 @@ class PolicyDocument(json: String) {
 
     fun removeAppRule(packageName: String) = removeWhere("applications") {
         it.optString("executable").equals(packageName, ignoreCase = true) && it.optString("action") in setOf("allow", "block")
+    }
+
+    /** Daily time windows per app (`android.appSchedules`), enforced by the Rust core. */
+    val appSchedules: List<AppSchedule>
+        get() {
+            val array = root.optJSONObject("android")?.optJSONArray("appSchedules") ?: return emptyList()
+            return (0 until array.length()).mapNotNull { array.optJSONObject(it) }.map { rule ->
+                val windows = rule.optJSONArray("windows")
+                AppSchedule(
+                    rule.optString("package"),
+                    rule.optString("name"),
+                    rule.optString("mode") == "allow",
+                    (0 until (windows?.length() ?: 0)).mapNotNull { windows?.optJSONObject(it) }
+                        .map { TimeWindow(it.optString("start"), it.optString("end")) },
+                )
+            }
+        }
+
+    /** Replaces any rule for the app: one app has either an always-on rule or a schedule. */
+    fun setAppSchedule(schedule: AppSchedule) {
+        removeAppRule(schedule.packageName)
+        removeAppSchedule(schedule.packageName)
+        val windows = JSONArray()
+        schedule.windows.forEach { windows.put(JSONObject().put("start", it.start).put("end", it.end)) }
+        val android = section("android")
+        val rules = android.optJSONArray("appSchedules") ?: JSONArray().also { android.put("appSchedules", it) }
+        rules.put(
+            JSONObject()
+                .put("package", schedule.packageName)
+                .put("name", schedule.label.take(128).ifBlank { schedule.packageName })
+                .put("mode", if (schedule.allow) "allow" else "block")
+                .put("windows", windows),
+        )
+    }
+
+    fun removeAppSchedule(packageName: String) {
+        val array = root.optJSONObject("android")?.optJSONArray("appSchedules") ?: return
+        val kept = JSONArray()
+        for (index in 0 until array.length()) {
+            val item = array.opt(index)
+            if (!(item is JSONObject && item.optString("package").equals(packageName, ignoreCase = true))) kept.put(item)
+        }
+        section("android").put("appSchedules", kept)
     }
 
     val siteRules: List<SiteRule>
@@ -108,5 +158,8 @@ class PolicyDocument(json: String) {
         const val DEFAULT_COOLDOWN = 60
         const val MIN_COOLDOWN = 10
         const val MAX_COOLDOWN = 3600
+        /** Limits the Rust core enforces for `appSchedules`. */
+        const val MAX_APP_SCHEDULES = 64
+        const val MAX_WINDOWS = 8
     }
 }

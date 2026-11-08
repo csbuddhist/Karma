@@ -68,6 +68,21 @@ class KarmaAccessibilityService : AccessibilityService() {
         }
     }
 
+    /**
+     * Re-evaluates the foreground app without a screenshot, so time windows and schedules
+     * close an app that stays open (and sends no window change) when its blocked time begins.
+     */
+    private val recheck = object : Runnable {
+        override fun run() {
+            val packageName = foregroundPackage
+            if (packageName != null && foregroundClass != PackageClass.EXEMPT) {
+                val context = currentContext(packageName, foregroundClass, secure = false)
+                worker.post { enforce(packageName, core.observeContext(context)) }
+            }
+            main.postDelayed(this, CONTEXT_RECHECK_MS)
+        }
+    }
+
     override fun onServiceConnected() {
         core = CoreBootstrap.get(this)
         enforcer = Enforcer(this, core)
@@ -81,6 +96,7 @@ class KarmaAccessibilityService : AccessibilityService() {
         audit("accessibility_connected", "observed")
         worker.post { loadClassifier() }
         main.post(tick)
+        main.postDelayed(recheck, CONTEXT_RECHECK_MS)
         // A browser already in front when the service (re)connects sends no window change.
         main.post {
             rootInActiveWindow?.packageName?.toString()?.let { onForegroundChanged(it, null, SystemClock.elapsedRealtime()) }
@@ -308,6 +324,7 @@ class KarmaAccessibilityService : AccessibilityService() {
         connected = false
         MonitorStatus.update { it.copy(serviceConnected = false) }
         main.removeCallbacks(tick)
+        main.removeCallbacks(recheck)
         audit("accessibility_disconnected", "observed")
         if (GuardState.isArmed(this) && !GuardState.inMaintenance()) {
             Alerts.protectionWeakened(this, getString(R.string.alert_accessibility_disabled))
@@ -329,5 +346,7 @@ class KarmaAccessibilityService : AccessibilityService() {
     private companion object {
         /** Blacked-out browser frames in a row treated as a secure window before Android 14. */
         const val SECURE_FRAMES_WITHOUT_CONFIRMATION = 3
+        /** How often the foreground app is re-evaluated against time rules. */
+        const val CONTEXT_RECHECK_MS = 15_000L
     }
 }

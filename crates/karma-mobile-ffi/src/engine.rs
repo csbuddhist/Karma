@@ -13,6 +13,7 @@ use karma_policy::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::app_schedule::AppSchedules;
 use crate::packages::{
     is_exempt, is_known_browser, is_known_video, normalize_package, with_builtin_applications,
 };
@@ -26,6 +27,8 @@ const DEFAULT_COOLDOWN_SECONDS: u64 = 60;
 const MIN_COOLDOWN_SECONDS: u64 = 10;
 const MAX_COOLDOWN_SECONDS: u64 = 3600;
 const MINUTES_PER_WEEK: u32 = 10_080;
+const MINUTES_PER_DAY: u32 = 1440;
+const MS_PER_MINUTE: i64 = 60_000;
 /// Moving regions classified besides the whole frame, as on the desktop.
 pub const MAX_FOCUS_REGIONS: usize = 2;
 
@@ -44,6 +47,7 @@ pub struct CompiledPolicy {
     applications: ApplicationPolicy,
     context: ContextPolicy,
     schedules: NetworkSchedulePolicy,
+    app_schedules: AppSchedules,
     secure_window: SecureWindowAction,
     cooldown_ms: i64,
 }
@@ -86,6 +90,7 @@ impl CompiledPolicy {
             context: ContextPolicy::from_value(&merged).map_err(invalid)?,
             schedules: NetworkSchedulePolicy::from_value(&schedule_view(&merged))
                 .map_err(invalid)?,
+            app_schedules: AppSchedules::from_value(android)?,
             secure_window,
             cooldown_ms: (cooldown_seconds * 1000) as i64,
         })
@@ -325,6 +330,24 @@ impl Engine {
                 "applications",
             ));
         }
+        let minute_of_day = (context.minute_of_week % MINUTES_PER_DAY) as u16;
+        if let Some(minutes) = self
+            .policy
+            .app_schedules
+            .closed_for(&package, minute_of_day)
+        {
+            // The closure lasts no longer than the closed period, so the app opens
+            // again at the minute its window begins even with a longer cooldown.
+            let lifts_at_ms = (now - now.rem_euclid(MS_PER_MINUTE))
+                .saturating_add(i64::from(minutes) * MS_PER_MINUTE);
+            return Stage::Decided(self.close_until(
+                &package,
+                now,
+                lifts_at_ms,
+                MobileReason::TimeWindowBlocked,
+                "app-schedule",
+            ));
+        }
         if let Some(rule_id) = self
             .policy
             .schedule_blocks(&package, context.minute_of_week)
@@ -394,6 +417,36 @@ impl Engine {
         policy_id: &str,
     ) -> Evaluation {
         let until_ms = now.saturating_add(self.policy.cooldown_ms);
+        self.close_until_ms(package, until_ms, action, reason, policy_id)
+    }
+
+    /// Closes `package` with a cooldown that ends by `limit_ms` at the latest.
+    fn close_until(
+        &mut self,
+        package: &str,
+        now: i64,
+        limit_ms: i64,
+        reason: MobileReason,
+        policy_id: &str,
+    ) -> Evaluation {
+        let until_ms = now.saturating_add(self.policy.cooldown_ms).min(limit_ms);
+        self.close_until_ms(
+            package,
+            until_ms,
+            MobileAction::CloseGracefully,
+            reason,
+            policy_id,
+        )
+    }
+
+    fn close_until_ms(
+        &mut self,
+        package: &str,
+        until_ms: i64,
+        action: MobileAction,
+        reason: MobileReason,
+        policy_id: &str,
+    ) -> Evaluation {
         self.cooldowns.insert(
             package.to_owned(),
             Cooldown {
@@ -708,6 +761,67 @@ mod tests {
         assert_eq!(
             engine.observe_context(&notes).decision.action,
             MobileAction::Allow
+        );
+    }
+
+    #[test]
+    fn app_schedule_closes_the_app_outside_its_allowed_window() {
+        let mut engine = engine(
+            json!({"android": {"cooldownSeconds": 600, "appSchedules": [{
+                "package": "com.example.game", "name": "Game", "mode": "allow",
+                "windows": [{"start": "19:30", "end": "20:00"}]
+            }]}}),
+        );
+        // Tuesday 19:29:15 local; the minute starts at 60_000 ms here.
+        let mut early = context("com.example.game", 75_000);
+        early.minute_of_week = 1440 + 19 * 60 + 29;
+        let result = engine.observe_context(&early);
+        assert_eq!(result.decision.action, MobileAction::CloseGracefully);
+        assert_eq!(result.decision.reason, MobileReason::TimeWindowBlocked);
+        assert_eq!(result.decision.policy_id, "app-schedule");
+        // The 10-minute cooldown is cut short at 19:30 sharp.
+        assert_eq!(result.decision.expires_at_ms, Some(120_000));
+
+        let mut on_time = context("com.example.game", 120_000);
+        on_time.minute_of_week = 1440 + 19 * 60 + 30;
+        assert_eq!(
+            engine.observe_context(&on_time).decision.action,
+            MobileAction::Allow
+        );
+    }
+
+    #[test]
+    fn app_schedule_block_window_overrides_an_allowed_app() {
+        let mut engine = engine(json!({
+            "applications": [{"id": "a", "name": "Chat", "executable": "com.example.chat",
+                "category": "custom", "action": "allow", "enabled": true}],
+            "android": {"appSchedules": [{
+                "package": "com.example.chat", "mode": "block",
+                "windows": [{"start": "22:00", "end": "07:00"}]
+            }]}
+        }));
+        let mut day = context("com.example.chat", 5);
+        day.minute_of_week = 3 * 1440 + 9 * 60;
+        assert_eq!(
+            engine.observe_context(&day).decision.action,
+            MobileAction::Allow
+        );
+        let mut night = context("com.example.chat", 10);
+        night.minute_of_week = 3 * 1440 + 23 * 60;
+        assert_eq!(
+            engine.observe_context(&night).decision.reason,
+            MobileReason::TimeWindowBlocked
+        );
+    }
+
+    #[test]
+    fn invalid_app_schedules_are_rejected() {
+        assert!(
+            CompiledPolicy::compile(&json!({"android": {"appSchedules": [{
+                "package": "com.example.game", "mode": "allow",
+                "windows": [{"start": "25:00", "end": "26:00"}]
+            }]}}))
+            .is_err()
         );
     }
 
