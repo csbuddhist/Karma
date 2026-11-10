@@ -62,10 +62,12 @@ fun AdminScreen(core: KarmaCore, token: String, onLocked: () -> Unit) {
     var image by remember(revision) { mutableStateOf(policy.imageEnabled) }
     var secureClose by remember(revision) { mutableStateOf(policy.closeSecureBrowserWindows) }
     var cooldown by remember(revision) { mutableStateOf(policy.cooldownSeconds.toFloat()) }
-    var site by remember { mutableStateOf("") }
+    var blockedSite by remember { mutableStateOf("") }
+    var allowedSite by remember { mutableStateOf("") }
     var pickApp by remember { mutableStateOf(false) }
     var scheduling by remember { mutableStateOf<PolicyDocument.AppSchedule?>(null) }
     var newPassword by remember { mutableStateOf("") }
+    var confirmPassword by remember { mutableStateOf("") }
     var codes by remember { mutableStateOf<List<String>?>(null) }
     var confirmUninstall by remember { mutableStateOf(false) }
 
@@ -124,35 +126,39 @@ fun AdminScreen(core: KarmaCore, token: String, onLocked: () -> Unit) {
         OutlinedButton(onClick = { pickApp = true }) { Text(stringResource(R.string.add_app)) }
 
         SectionTitle(stringResource(R.string.admin_websites))
-        policy.siteRules.forEach { rule ->
-            RuleRow(rule.host, stringResource(if (rule.block) R.string.rule_block else R.string.rule_allow)) {
-                save { removeSiteRule(rule.host) }
-            }
-        }
-        OutlinedTextField(
-            value = site,
-            onValueChange = { site = it },
-            label = { Text(stringResource(R.string.website_host)) },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
+        Text(stringResource(R.string.website_hint), style = MaterialTheme.typography.bodySmall)
+        SiteList(
+            title = stringResource(R.string.website_blocklist),
+            hosts = policy.siteRules.filter { it.block }.map { it.host },
+            input = blockedSite,
+            onInput = { blockedSite = it },
+            addLabel = stringResource(R.string.website_add_block),
+            onAdd = { save { setSiteRule(blockedSite, block = true) }; blockedSite = "" },
+            onRemove = { host -> save { removeSiteRule(host) } },
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(enabled = site.isNotBlank(), onClick = { save { setSiteRule(site, block = true) }; site = "" }) {
-                Text(stringResource(R.string.rule_block))
-            }
-            OutlinedButton(enabled = site.isNotBlank(), onClick = { save { setSiteRule(site, block = false) }; site = "" }) {
-                Text(stringResource(R.string.rule_allow))
-            }
-        }
+        SiteList(
+            title = stringResource(R.string.website_allowlist),
+            hosts = policy.siteRules.filter { !it.block }.map { it.host },
+            input = allowedSite,
+            onInput = { allowedSite = it },
+            addLabel = stringResource(R.string.website_add_allow),
+            onAdd = { save { setSiteRule(allowedSite, block = false) }; allowedSite = "" },
+            onRemove = { host -> save { removeSiteRule(host) } },
+        )
 
         SectionTitle(stringResource(R.string.admin_audit))
         AuditList(core)
 
         SectionTitle(stringResource(R.string.admin_account))
         PasswordField(newPassword, { newPassword = it }, stringResource(R.string.new_password))
-        Button(enabled = newPassword.isNotEmpty(), onClick = {
+        PasswordField(confirmPassword, { confirmPassword = it }, stringResource(R.string.confirm_password))
+        if (confirmPassword.isNotEmpty() && confirmPassword != newPassword) {
+            Text(stringResource(R.string.error_password_mismatch), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+        }
+        Button(enabled = newPassword.isNotEmpty() && confirmPassword == newPassword, onClick = {
             val password = newPassword
             newPassword = ""
+            confirmPassword = ""
             scope.launch {
                 val result = withContext(Dispatchers.Default) {
                     runCatching { core.changeAdminPassword(token, password, System.currentTimeMillis()) }
@@ -292,6 +298,35 @@ private fun RuleRow(title: String, effect: String, onEdit: (() -> Unit)? = null,
         onEdit?.let { TextButton(onClick = it) { Text(stringResource(R.string.edit)) } }
         TextButton(onClick = onRemove) { Text(stringResource(R.string.remove)) }
     }
+}
+
+/** One website list: its rules, then a field and button that add a domain to it. */
+@Composable
+private fun SiteList(
+    title: String,
+    hosts: List<String>,
+    input: String,
+    onInput: (String) -> Unit,
+    addLabel: String,
+    onAdd: () -> Unit,
+    onRemove: (String) -> Unit,
+) {
+    Text(title, style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 12.dp))
+    if (hosts.isEmpty()) Text(stringResource(R.string.website_list_empty), style = MaterialTheme.typography.bodySmall)
+    hosts.forEach { host ->
+        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(host, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+            TextButton(onClick = { onRemove(host) }) { Text(stringResource(R.string.remove)) }
+        }
+    }
+    OutlinedTextField(
+        value = input,
+        onValueChange = onInput,
+        label = { Text(stringResource(R.string.website_host)) },
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth(),
+    )
+    OutlinedButton(enabled = input.isNotBlank(), onClick = onAdd) { Text(addLabel) }
 }
 
 @Composable

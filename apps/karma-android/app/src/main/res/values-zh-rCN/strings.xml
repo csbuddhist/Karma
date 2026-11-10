@@ -102,7 +102,13 @@
     <string name="schedule_summary_block">每天 %1$s 禁止</string>
     <string name="schedule_separator">、</string>
     <string name="remove">移除</string>
-    <string name="admin_websites">网站</string>
+    <string name="admin_websites">网站黑白名单</string>
+    <string name="website_hint">规则同时适用于子域名。把网站加入另一个名单会将它从原名单移出。</string>
+    <string name="website_blocklist">黑名单 · 打开即关闭</string>
+    <string name="website_allowlist">白名单 · 放行，不会因图像或标题被关闭</string>
+    <string name="website_add_block">加入黑名单</string>
+    <string name="website_add_allow">加入白名单</string>
+    <string name="website_list_empty">暂无网站。</string>
     <string name="website_host">网站，例如 example.com</string>
     <string name="admin_audit">活动日志</string>
     <string name="audit_empty">暂无事件。</string>

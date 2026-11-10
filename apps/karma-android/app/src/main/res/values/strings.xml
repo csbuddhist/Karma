@@ -103,7 +103,13 @@
     <string name="schedule_summary_block">Blocked daily %1$s</string>
     <string name="schedule_separator">", "</string>
     <string name="remove">Remove</string>
-    <string name="admin_websites">Websites</string>
+    <string name="admin_websites">Website blocklist and allowlist</string>
+    <string name="website_hint">A rule also covers its subdomains. Adding a site to the other list moves it there.</string>
+    <string name="website_blocklist">Blocklist · closed as soon as it opens</string>
+    <string name="website_allowlist">Allowlist · never closed by image or title checks</string>
+    <string name="website_add_block">Add to blocklist</string>
+    <string name="website_add_allow">Add to allowlist</string>
+    <string name="website_list_empty">No websites yet.</string>
     <string name="website_host">Website, such as example.com</string>
     <string name="admin_audit">Activity log</string>
     <string name="audit_empty">No events yet.</string>
