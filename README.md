@@ -159,7 +159,7 @@ Karma 只应由设备所有者、监护人或组织在合法授权范围内用�
 
 ## Android 版（开发预览）
 
-Android 客户端位于 `apps/karma-android`，与桌面端共享同一套 Rust 决策核心（`crates/karma-mobile-ffi`）、同一模型和同一策略格式。当前 APK [android-v0.1.5](https://github.com/csbuddhist/Karma/releases/tag/android-v0.1.5) 是开发预览版：已在 Android 15 模拟器上验证，尚未完成 [Android 验收清单](docs/android-acceptance.md) 中的真机验收。
+Android 客户端位于 `apps/karma-android`，与桌面端共享同一套 Rust 决策核心（`crates/karma-mobile-ffi`）、同一模型和同一策略格式。当前 APK [android-v0.1.6](https://github.com/csbuddhist/Karma/releases/tag/android-v0.1.6) 是开发预览版：已在 Android 15 模拟器上验证，尚未完成 [Android 验收清单](docs/android-acceptance.md) 中的真机验收。
 
 功能介绍见 [Android 版功能](#android-版功能开发预览)。
 
@@ -168,7 +168,7 @@ Android 客户端位于 `apps/karma-android`，与桌面端共享同一套 Rust 
 
 安装：
 
-1. 从 [android-v0.1.5](https://github.com/csbuddhist/Karma/releases/tag/android-v0.1.5) 下载 `Karma-android-v0.1.5.apk`，可用同页的 `SHA256SUMS-android-v0.1.5.txt` 核对。
+1. 从 [android-v0.1.6](https://github.com/csbuddhist/Karma/releases/tag/android-v0.1.6) 下载 `Karma-android-v0.1.6.apk`，可用同页的 `SHA256SUMS-android-v0.1.6.txt` 核对。
 2. 在手机上打开 APK 安装（需允许浏览器或文件管理器“安装未知应用”）。
 3. 打开 Karma，设置管理员密码并抄下恢复码，再按“设置向导”依次启用无障碍服务、设备管理器、不限制电池使用和通知。Android 13 及以上如果无障碍开关是灰色的，先在“应用信息”右上角菜单中选择“允许受限设置”。
 4. 在“管理员”页添加应用和网址规则，最后启用“设置看门”。
