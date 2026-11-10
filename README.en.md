@@ -2,7 +2,7 @@
 
 [中文](README.md) · [Technical Overview](TECHNICAL.md) · [Windows Installation and Testing Guide (Chinese)](docs/windows-installation-guide.md)
 
-Karma is a local pornography-protection and digital-wellbeing application for Windows (Android is in developer preview; macOS is planned). It continuously monitors every display, closes the source application when it detects high-risk images or videos, and provides website and application allowlists/blocklists, blocking schedules, two-level passwords, audit logs, and protection against casual termination. All recognition runs on the device; screen content is never uploaded.
+Karma is a local pornography-protection and digital-wellbeing application for Windows (Android is in developer preview; macOS is planned). It continuously monitors every display, closes the source application when it detects high-risk images or videos, and provides website and application allowlists/blocklists, blocking schedules, two-level passwords, audit logs, and protection against casual termination. The Android client also provides screen recognition, website and app allowlists/blocklists, daily usage times, and uninstall protection. All recognition runs on the device; screen content is never uploaded.
 
 ![Karma management console: Protection Overview](docs/images/console-overview-en.png)
 
@@ -35,6 +35,19 @@ Karma is a local pornography-protection and digital-wellbeing application for Wi
 - **Secure automatic updates**: GitHub Releases and their Gitee mirror are checked periodically, and only developer-signed packages with matching hashes and a strictly higher version are accepted; downgrades are refused.
 - **Policy backups**: export policy to JSON; imports are validated for structure and correctness.
 - **Chinese and English UI**: the console language is switchable, and the console starts in the background at sign-in by default; closing its window only hides it while protection continues.
+
+### Android Features (Developer Preview)
+
+The Android client shares the desktop's decision core, recognition model, and policy format; see [Android (Developer Preview)](#android-developer-preview) for installation.
+
+- **Screen recognition**: frames are taken on the device through the accessibility service (at most 2 fps, slower on still screens, paused after 30 seconds without change) and checked with the same model and multi-frame fusion as the desktop; a video playing in a small in-page player is cropped and checked on its own. Screenshots are processed in memory only, never saved or uploaded.
+- **Closing the source app**: Karma goes to the home screen and shows the reason and the remaining cooldown; reopening the app during the cooldown closes it again at once. Under Device Owner the app can also be suspended.
+- **Website blocklist and allowlist**: Administrator → Website blocklist and allowlist manages two lists. A blocklisted site is closed as soon as it opens in a browser; an allowlisted site is allowed and never closed by image or title checks. Rules cover subdomains, and a full URL can be pasted.
+- **App rules and daily times**: an app can be always blocked or always allowed, or, under Administrator → Add an app rule → Times, allowed only during or blocked during daily time ranges set to the minute (ranges may cross midnight); an app left open is closed within about 15 seconds of its blocked time starting.
+- **Title keywords and private windows**: the browser's page title is read and a matching keyword closes it (Traditional Chinese spellings match too); private browser windows that refuse screenshots are closed by default. The desktop `schedules` apply as well.
+- **Exit prevention**: administrator password (entered twice when changed, 30-second lockout after 5 failures) plus one-time recovery codes; device admin blocks a direct uninstall; the settings guard backs out of any system settings, security-center, or uninstall window showing Karma and asks for the password; optional Device Owner mode adds stronger uninstall and tamper protection.
+- **Secure automatic updates**: twice a day on Wi-Fi, Karma checks GitHub and its Gitee mirror and installs only a higher-version APK whose checksum matches and which is signed by the same certificate; anyone can check for updates at once under Status → Updates without a password. This is the Android client's only network access; nothing is uploaded.
+- **English and Chinese interface**: follows the system language; on Android 13 and later it can also be set under App info → Language.
 
 ## Installation
 
@@ -148,11 +161,9 @@ Karma should be used only for content protection by device owners, guardians, or
 
 The Android client lives in `apps/karma-android` and shares the desktop's Rust decision core (`crates/karma-mobile-ffi`), model, and policy format. The current APK, [android-v0.1.5](https://github.com/csbuddhist/Karma/releases/tag/android-v0.1.5), is a developer preview: it has been verified on an Android 15 emulator but has not yet passed real-device testing against the [Android acceptance checklist](docs/android-acceptance.md).
 
-- **Screen recognition**: frames come from the accessibility service's `takeScreenshot()` (at most 2 fps, slower on still screens, paused after 30 seconds without change, and kept at 1 fps while the screen keeps changing); ONNX Runtime with XNNPACK runs viddexa-nano, and multi-frame fusion is identical to the desktop. Continuously changing areas such as a video playing in a small in-page player are cropped and classified on their own, without having to go full screen. Screenshots are only scaled to the model input in memory; they are never saved or uploaded.
-- **Closing the source app**: Karma goes to the home screen and shows a full-screen overlay with the reason and the remaining cooldown; reopening the app during the cooldown closes it again at once. Under Device Owner the app can also be suspended.
-- **Context rules**: app allow/block lists, address-bar website allow/block lists, page-title keywords (the browser's page title is read, a keyword anywhere in it matches, and Traditional Chinese spellings match too), and time schedules (the desktop `schedules`). Under Administrator → Add an app rule → Times, a single app can also be allowed only during, or blocked during, daily time ranges set to the minute (ranges may cross midnight); an app left open is closed when its blocked time begins. Private browser windows that refuse screenshots are closed by default.
-- **Exit prevention**: administrator password (Argon2id, 30-second lockout after 5 failures) plus one-time recovery codes; device admin blocks a direct uninstall; the settings guard backs out of any system settings, security-center, or uninstall window showing Karma and asks for the password; optional Device Owner mode adds stronger uninstall and tamper protection.
-- **Automatic updates**: twice a day on Wi-Fi, Karma checks GitHub and its Gitee mirror for a newer APK and downloads it; it installs only when the checksum matches the release's `SHA256SUMS` file and the APK is signed by the same certificate as the installed version. The first update shows the system confirmation; later ones (Android 12 and later), and every update under Device Owner, install silently. Anyone can check for and install an update at once under Status → Updates without a password; only a higher version is ever installed. Allowing Karma to install apps and turning automatic updates off stay under Administrator → Updates. This is the Android client's only network access; nothing is uploaded.
+See [Android features](#android-features-developer-preview) for what it does.
+
+- **Implementation**: frames come from the accessibility service's `takeScreenshot()` (kept at 1 fps while the screen keeps changing) and ONNX Runtime with XNNPACK runs viddexa-nano; the administrator password is stored with Argon2id. The first automatic update shows the system confirmation; later ones (Android 12 and later), and every update under Device Owner, install silently. Allowing Karma to install apps and turning automatic updates off stay under Administrator → Updates.
 - **Requirements**: Android 11 (API 30) or later on arm64; x86_64 for emulators. The interface is in English and Simplified Chinese and follows the system language; on Android 13 and later it can also be set under App info → Language.
 
 Installation:
