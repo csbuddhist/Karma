@@ -26,8 +26,8 @@ use karma_policy::{
     MAX_MISJUDGED_TITLES, MINUTES_PER_DAY, MINUTES_PER_WEEK, NetworkRestriction,
     NetworkSchedulePolicy, RememberedTitle, RepeatOffenderRule, TitleReason, active_bans,
     allow_application, is_banned, is_browser_executable, normalize_executable, policy_weakenings,
-    record_closure, remember_title, remember_titles_enabled, rememberable_title_key, title_digest,
-    title_key,
+    record_closure, remember_title, remember_titles_enabled, rememberable_title_key,
+    remembered_title_expired, title_digest, title_key,
 };
 use rand::{RngCore, rngs::OsRng};
 use serde_json::{Value, json};
@@ -496,6 +496,7 @@ impl ServiceCore {
             return failure(request_id, ServiceErrorCode::ReplayDetected);
         }
         refresh_uninstall_request(&mut runtime, now_ms);
+        runtime.forget_expired_titles(now_ms);
         let mut result = self.dispatch(&mut runtime, request.request, now_ms);
         // Failed authentication and authorization attempts are audit events too.
         // Commit those events even when dispatch returned a failure.
@@ -519,6 +520,7 @@ impl ServiceCore {
             .runtime
             .lock()
             .map_err(|_| ServiceErrorCode::Internal)?;
+        runtime.forget_expired_titles(now_ms);
         record_disposition(&mut runtime, report, now_ms)?;
         persist(&mut runtime)
     }
@@ -1704,6 +1706,29 @@ impl RuntimeState {
         self.pending.push(Change::RepeatOffenders(
             self.stored.repeat_offenders.clone(),
         ));
+    }
+
+    /// Forgets every remembered title older than its lifetime, so it stops
+    /// closing windows and leaves the console list.
+    fn forget_expired_titles(&mut self, now_ms: i64) {
+        if !self
+            .stored
+            .remembered_titles
+            .iter()
+            .any(|record| remembered_title_expired(record, now_ms))
+        {
+            return;
+        }
+        let (expired, kept) = std::mem::take(&mut self.stored.remembered_titles)
+            .into_iter()
+            .partition(|record| remembered_title_expired(record, now_ms));
+        self.stored.remembered_titles = kept;
+        self.pending.extend(
+            expired
+                .into_iter()
+                .map(|record: RememberedTitle| Change::DeleteTitle(record.id)),
+        );
+        self.rebuild_title_digests();
     }
 
     fn forget_title(&mut self, index: usize) {
@@ -3294,6 +3319,35 @@ mod tests {
                 .iter()
                 .all(|record| !record.outcome.contains("Hot Video"))
         );
+    }
+
+    #[test]
+    fn remembered_titles_are_forgotten_five_hours_after_they_were_remembered() {
+        let directory = tempfile::tempdir().unwrap();
+        let core = open_core(directory.path(), 0);
+        configure_policy(&core, remembered_title_policy());
+        close_by_image(&core, "image-1", Some(PORN_TITLE), 42, 1_000);
+        let lifetime = karma_policy::REMEMBERED_TITLE_LIFETIME_MS;
+
+        // Shortly before the lifetime ends the title still closes windows.
+        let before = 1_000 + lifetime - 10;
+        let still = context_observation_at("still", before, PORN_TITLE, None, 43);
+        assert!(matches!(
+            submit_context_at(&core, "still-nonce", still, before),
+            ServiceResult::DispositionRequired { .. }
+        ));
+
+        // Once it has expired it is gone from enforcement, the agent's
+        // digests, and the database.
+        let after = 1_001 + lifetime;
+        let expired = context_observation_at("expired", after, PORN_TITLE, None, 44);
+        assert!(matches!(
+            submit_context_at(&core, "expired-nonce", expired, after),
+            ServiceResult::Acknowledged
+        ));
+        let enforcement = agent_enforcement_at(&core, "agent-policy-expired", after + 1);
+        assert!(enforcement.remembered_title_digests.is_empty());
+        assert!(disk_state(directory.path()).remembered_titles.is_empty());
     }
 
     #[test]

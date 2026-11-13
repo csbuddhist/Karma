@@ -13,6 +13,9 @@ pub const MAX_REMEMBERED_TITLES: usize = 5000;
 const TITLE_DIGEST_BYTES: usize = 16;
 /// Titles shorter than this after normalization are too generic to remember.
 const MIN_TITLE_KEY_CHARS: usize = 2;
+/// How long a remembered title closes windows: it is forgotten five hours
+/// after it was last remembered.
+pub const REMEMBERED_TITLE_LIFETIME_MS: i64 = 5 * 60 * 60 * 1000;
 /// Upper bound on titles marked as misjudged; the oldest are dropped first,
 /// which only lets them be remembered again.
 pub const MAX_MISJUDGED_TITLES: usize = 1000;
@@ -59,18 +62,52 @@ pub fn title_key(title: &str) -> String {
 /// The matching key for `title`, or `None` when the title is too generic to
 /// remember: empty, very short, or only the application's own name.
 pub fn rememberable_title_key(executable: &str, title: &str) -> Option<String> {
+    rememberable_title_key_with_names(executable, &[], title)
+}
+
+/// Like `rememberable_title_key`, also rejecting a title that is one of the
+/// application's `display_names` (such as its version resource's file
+/// description or product name). Remembering a program's own name would
+/// close the program every time it opens, whatever it shows.
+pub fn rememberable_title_key_with_names(
+    executable: &str,
+    display_names: &[String],
+    title: &str,
+) -> Option<String> {
     let key = title_key(title);
-    if key.chars().count() < MIN_TITLE_KEY_CHARS {
+    if key.chars().count() < MIN_TITLE_KEY_CHARS
+        || is_application_name_title(executable, display_names, title)
+    {
         return None;
+    }
+    Some(key)
+}
+
+/// Whether `title` is only the application's name: its executable's file
+/// name, with or without the extension, or one of its `display_names`.
+/// Case, width, whitespace and punctuation are ignored, so "QQ Music"
+/// matches `QQMusic.exe` and "Google Chrome" matches that product name.
+pub fn is_application_name_title(executable: &str, display_names: &[String], title: &str) -> bool {
+    let title = name_key(title);
+    if title.is_empty() {
+        return false;
     }
     let file_name = executable.rsplit(['\\', '/']).next().unwrap_or(executable);
     let stem = file_name
         .rsplit_once('.')
         .map_or(file_name, |(stem, _)| stem);
-    if key == title_key(stem) || key == title_key(file_name) {
-        return None;
-    }
-    Some(key)
+    [stem, file_name]
+        .into_iter()
+        .chain(display_names.iter().map(String::as_str))
+        .any(|name| name_key(name) == title)
+}
+
+/// `title_key` with every character that is not a letter or digit removed.
+fn name_key(name: &str) -> String {
+    title_key(name)
+        .chars()
+        .filter(|character| character.is_alphanumeric())
+        .collect()
 }
 
 /// Whether `recognition.rememberTitlesEnabled` is on (the default).
@@ -103,6 +140,11 @@ pub fn remember_title(records: &mut Vec<RememberedTitle>, entry: RememberedTitle
     true
 }
 
+/// Whether `record` has outlived `REMEMBERED_TITLE_LIFETIME_MS` at `now_ms`.
+pub fn remembered_title_expired(record: &RememberedTitle, now_ms: i64) -> bool {
+    now_ms.saturating_sub(record.remembered_at_ms) >= REMEMBERED_TITLE_LIFETIME_MS
+}
+
 /// Opaque matching identity of `title` shown by `executable` (normalized):
 /// lowercase hex of a truncated SHA-256 over the executable and title key.
 /// The agent matches foreground windows against digests, so remembered
@@ -131,8 +173,9 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        MAX_REMEMBERED_TITLES, RememberedTitle, remember_title, remember_titles_enabled,
-        rememberable_title_key, title_digest, title_key,
+        MAX_REMEMBERED_TITLES, REMEMBERED_TITLE_LIFETIME_MS, RememberedTitle,
+        is_application_name_title, remember_title, remember_titles_enabled, rememberable_title_key,
+        rememberable_title_key_with_names, remembered_title_expired, title_digest, title_key,
     };
 
     const CHROME: &str = r"c:\program files\google\chrome\application\chrome.exe";
@@ -167,6 +210,36 @@ mod tests {
             rememberable_title_key(CHROME, "某视频 - Google Chrome").as_deref(),
             Some("某视频 - google chrome")
         );
+    }
+
+    #[test]
+    fn a_title_that_is_the_program_name_is_not_remembered() {
+        let names = vec!["Google Chrome".to_owned(), "微信".to_owned()];
+        for title in [
+            "Google Chrome",
+            " google  CHROME ",
+            "Ｇｏｏｇｌｅ Chrome",
+            "微信",
+            "Chrome!",
+        ] {
+            assert!(is_application_name_title(CHROME, &names, title), "{title}");
+            assert_eq!(
+                rememberable_title_key_with_names(CHROME, &names, title),
+                None,
+                "{title}"
+            );
+        }
+        assert!(is_application_name_title(
+            r"c:\program files\qqmusic\qqmusic.exe",
+            &[],
+            "QQ Music"
+        ));
+        assert_eq!(
+            rememberable_title_key_with_names(CHROME, &names, "某视频 - Google Chrome").as_deref(),
+            Some("某视频 - google chrome")
+        );
+        assert!(!is_application_name_title(CHROME, &names, "微信读书"));
+        assert!(!is_application_name_title(CHROME, &names, "---"));
     }
 
     #[test]
@@ -223,6 +296,21 @@ mod tests {
                 .iter()
                 .any(|record| record.id == format!("t{MAX_REMEMBERED_TITLES}"))
         );
+    }
+
+    #[test]
+    fn remembered_titles_expire_five_hours_after_they_were_remembered() {
+        let record = entry("t1", "Title", 1_000);
+        assert!(!remembered_title_expired(&record, 1_000));
+        assert!(!remembered_title_expired(
+            &record,
+            1_000 + REMEMBERED_TITLE_LIFETIME_MS - 1
+        ));
+        assert!(remembered_title_expired(
+            &record,
+            1_000 + REMEMBERED_TITLE_LIFETIME_MS
+        ));
+        assert_eq!(REMEMBERED_TITLE_LIFETIME_MS, 18_000_000);
     }
 
     #[test]

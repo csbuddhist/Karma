@@ -34,8 +34,10 @@ pub use network_schedule::{
     is_browser_executable,
 };
 pub use remembered_title::{
-    MAX_MISJUDGED_TITLES, MAX_REMEMBERED_TITLES, RememberedTitle, TitleReason, remember_title,
-    remember_titles_enabled, rememberable_title_key, title_digest, title_key,
+    MAX_MISJUDGED_TITLES, MAX_REMEMBERED_TITLES, REMEMBERED_TITLE_LIFETIME_MS, RememberedTitle,
+    TitleReason, is_application_name_title, remember_title, remember_titles_enabled,
+    rememberable_title_key, rememberable_title_key_with_names, remembered_title_expired,
+    title_digest, title_key,
 };
 pub use repeat_offender::{
     DEFAULT_REPEAT_OFFENDER_BAN_MINUTES, DEFAULT_REPEAT_OFFENDER_STRIKE_LIMIT,

@@ -22,12 +22,13 @@ use karma_ipc::{
     RequestEnvelope, ServiceRequest, ServiceResult,
 };
 use karma_policy::{
-    ApplicationEffect, ApplicationPolicy, ContextPolicy, normalize_executable, title_digest,
+    ApplicationEffect, ApplicationPolicy, ContextPolicy, normalize_executable,
+    rememberable_title_key_with_names, title_digest,
 };
 use karma_windows::{
     AttributionResult, FrameWorkerReport, FrameWorkerStatus, MonitorSnapshot, Rect,
-    SourceAttributor, WindowCandidate, WindowsRuntimeApartment, browser_host, foreground_window,
-    inspect_process, window_title,
+    SourceAttributor, WindowCandidate, WindowsRuntimeApartment, browser_host,
+    executable_display_names, foreground_window, inspect_process, window_title,
 };
 use karma_windows_ipc::send_request;
 use rand::{RngCore, rngs::OsRng};
@@ -215,6 +216,8 @@ pub struct SourceContext {
     window_handle: isize,
     /// Title of the attributed window when the frame was prepared.
     window_title: String,
+    /// Names the executable presents itself under (version resource).
+    display_names: Arc<[String]>,
 }
 
 pub struct AgentInferenceSink {
@@ -232,7 +235,7 @@ pub struct AgentInferenceSink {
 
 struct WindowsSourceIdentityProvider {
     monitor_bounds: Rect,
-    cached_process: Option<ProcessIdentity>,
+    cached_process: Option<(ProcessIdentity, Arc<[String]>)>,
 }
 
 impl WindowsSourceIdentityProvider {
@@ -249,30 +252,33 @@ impl WindowsSourceIdentityProvider {
             return None;
         };
         let title = window_title(foreground.handle);
-        if self
+        if let Some((identity, display_names)) = self
             .cached_process
             .as_ref()
-            .is_some_and(|process| process.process_id == attributed.pid)
+            .filter(|(process, _)| process.process_id == attributed.pid)
         {
-            let identity = self.cached_process.clone()?;
             return Some(SourceContext {
-                identity,
+                identity: identity.clone(),
                 window_handle: foreground.handle,
                 window_title: title,
+                display_names: Arc::clone(display_names),
             });
         }
         let process = inspect_process(attributed.pid).ok().flatten()?;
+        let display_names: Arc<[String]> =
+            executable_display_names(&process.executable_name).into();
         let identity = ProcessIdentity {
             process_id: process.process_id,
             started_at_ms: process.started_at_ms,
             executable_name: process.executable_name,
             executable_sha256: None,
         };
-        self.cached_process = Some(identity.clone());
+        self.cached_process = Some((identity.clone(), Arc::clone(&display_names)));
         Some(SourceContext {
             identity,
             window_handle: foreground.handle,
             window_title: title,
+            display_names,
         })
     }
 }
@@ -424,9 +430,13 @@ impl OcrSummarySink for AgentInferenceSink {
                 .is_browser(&source.identity.executable_name)
                 .then(|| browser_host(source.window_handle))
                 .flatten(),
+            window_title: rememberable_title(
+                &source.identity.executable_name,
+                &source.display_names,
+                source.window_title,
+            ),
             source: Some(source.identity),
             evidence_pending,
-            window_title: sendable_title(source.window_title),
         };
         if sender.try_send(observation).is_ok() {
             self.last_disposition_at_ms = frame.captured_at_ms();
@@ -755,6 +765,15 @@ fn learned_enforcement_applies(
         .is_some_and(|digest| enforcement.remembered_title_digests.contains(&digest))
 }
 
+/// The title to report with an image observation, which the service may
+/// remember, or `None` when it is only the program's own name: remembering
+/// that would close the program every time it opens.
+fn rememberable_title(executable: &str, display_names: &[String], title: String) -> Option<String> {
+    sendable_title(title).filter(|title| {
+        rememberable_title_key_with_names(executable, display_names, title).is_some()
+    })
+}
+
 /// The title to report with an image observation, or `None` when it would
 /// fail protocol validation and cost the observation itself.
 fn sendable_title(title: String) -> Option<String> {
@@ -1025,6 +1044,21 @@ mod tests {
             || {},
         ));
         assert_eq!(reads, 0);
+    }
+
+    #[test]
+    fn a_title_that_is_only_the_program_name_is_not_offered_for_remembering() {
+        let chrome = r"C:\Program Files\Google\Chrome\Application\chrome.exe";
+        let names = ["Google Chrome".to_owned()];
+        assert_eq!(
+            rememberable_title(chrome, &names, "Google Chrome".into()),
+            None
+        );
+        assert_eq!(rememberable_title(chrome, &[], "chrome".into()), None);
+        assert_eq!(
+            rememberable_title(chrome, &names, "视频 - Google Chrome".into()).as_deref(),
+            Some("视频 - Google Chrome")
+        );
     }
 
     #[test]

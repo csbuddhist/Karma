@@ -38,7 +38,7 @@ pub use gpu_scaler::{GpuFrameScaler, GpuScalerError};
 pub use native::{
     ForegroundWindowSnapshot, MonitorHandle, MonitorSnapshot, ProcessSnapshot, WgcCaptureTarget,
     WindowsAdapterError, WindowsRuntimeApartment, browser_host, enumerate_active_monitors,
-    foreground_window, inspect_process, window_title,
+    executable_display_names, foreground_window, inspect_process, window_title,
 };
 #[cfg(windows)]
 pub use staging_reader::StagingTextureReader;

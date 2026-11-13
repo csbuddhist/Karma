@@ -9,6 +9,10 @@ use windows::{
             CloseHandle, ERROR_INVALID_PARAMETER, FILETIME, GetLastError, HANDLE, LPARAM, RECT,
         },
         Graphics::Gdi::{EnumDisplayMonitors, HDC, HMONITOR},
+        Storage::FileSystem::{
+            FILE_VER_GET_LOCALISED, GetFileVersionInfoExW, GetFileVersionInfoSizeExW,
+            VerQueryValueW,
+        },
         System::Threading::{
             GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
             QueryFullProcessImageNameW,
@@ -32,7 +36,7 @@ use windows::{
             },
         },
     },
-    core::{self, PWSTR},
+    core::{self, HSTRING, PWSTR},
 };
 
 use crate::MappedFrameError;
@@ -360,6 +364,93 @@ pub fn inspect_process(process_id: u32) -> Result<Option<ProcessSnapshot>, Windo
         started_at_ms: filetime_to_unix_ms(creation)?,
         executable_name,
     }))
+}
+
+/// Largest version resource read for display names; real resources are a
+/// few kilobytes.
+const MAX_VERSION_INFO_BYTES: u32 = 1024 * 1024;
+/// Language blocks inspected per version resource.
+const MAX_VERSION_TRANSLATIONS: usize = 8;
+
+/// The names an executable presents itself under: `FileDescription` and
+/// `ProductName` from every language block of its version resource,
+/// localized for the current UI language where the file supports it. Empty
+/// when the file has no readable version resource.
+pub fn executable_display_names(path: &str) -> Vec<String> {
+    let path = HSTRING::from(path);
+    let mut ignored = 0_u32;
+    let size = unsafe { GetFileVersionInfoSizeExW(FILE_VER_GET_LOCALISED, &path, &mut ignored) };
+    if size == 0 || size > MAX_VERSION_INFO_BYTES {
+        return Vec::new();
+    }
+    let mut block = vec![0_u8; size as usize];
+    if unsafe {
+        GetFileVersionInfoExW(
+            FILE_VER_GET_LOCALISED,
+            &path,
+            None,
+            size,
+            block.as_mut_ptr().cast(),
+        )
+    }
+    .is_err()
+    {
+        return Vec::new();
+    }
+    let mut translations: Vec<(u16, u16)> = version_value(&block, "\\VarFileInfo\\Translation", 1)
+        .map(|bytes| {
+            bytes
+                .chunks_exact(4)
+                .take(MAX_VERSION_TRANSLATIONS)
+                .map(|pair| {
+                    (
+                        u16::from_le_bytes([pair[0], pair[1]]),
+                        u16::from_le_bytes([pair[2], pair[3]]),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    // Common fallbacks for resources without a translation table:
+    // US English and language-neutral, in Unicode or Western code pages.
+    translations.extend([(0x0409, 0x04b0), (0x0409, 0x04e4), (0x0000, 0x04b0)]);
+    let mut names = Vec::new();
+    for (language, code_page) in translations {
+        for field in ["FileDescription", "ProductName"] {
+            let query = format!("\\StringFileInfo\\{language:04x}{code_page:04x}\\{field}");
+            let Some(bytes) = version_value(&block, &query, 2) else {
+                continue;
+            };
+            let units: Vec<u16> = bytes
+                .chunks_exact(2)
+                .map(|unit| u16::from_le_bytes([unit[0], unit[1]]))
+                .take_while(|unit| *unit != 0)
+                .collect();
+            let name = String::from_utf16_lossy(&units).trim().to_owned();
+            if !name.is_empty() && !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
+    names
+}
+
+/// The bytes `VerQueryValueW` returns for `query`. It reports string values
+/// in UTF-16 units and binary values in bytes, so callers pass the size of
+/// one unit; the result is clamped to the block.
+fn version_value<'a>(block: &'a [u8], query: &str, unit_bytes: usize) -> Option<&'a [u8]> {
+    let query = HSTRING::from(query);
+    let mut pointer = std::ptr::null_mut::<c_void>();
+    let mut length = 0_u32;
+    let found = unsafe { VerQueryValueW(block.as_ptr().cast(), &query, &mut pointer, &mut length) }
+        .as_bool();
+    if !found || pointer.is_null() || length == 0 {
+        return None;
+    }
+    let start = (pointer as usize).checked_sub(block.as_ptr() as usize)?;
+    let available = block.len().checked_sub(start)?;
+    let wanted = (length as usize).saturating_mul(unit_bytes).min(available);
+    Some(&block[start..start + wanted])
 }
 
 fn filetime_to_unix_ms(value: FILETIME) -> Result<i64, WindowsAdapterError> {

@@ -177,7 +177,13 @@ The unified engine supports:
   Sources and licenses are listed in `assets/keyword-lists/NOTICE.md`.
 - Remembered window titles: when explicit image detection closes an application, the Service
   remembers that window's title (the page title in browsers) and canonical host; the same
-  application showing the same title again is closed on sight. The console's Content
+  application showing the same title again is closed on sight. A title that is only the
+  program's own name (its executable file name, or the file description or product name in its
+  version resource, ignoring case, width, whitespace and punctuation) is not remembered, since that
+  would close the program every time it opens; the Agent makes this check from the version
+  resource, and the Service independently excludes the executable file name. Each title is
+  deleted automatically 5 hours after it was last remembered: it stops closing windows and leaves
+  the console list. The console's Content
   Recognition page lists remembered titles with why each was remembered (image risk score and the threshold at the time; titles from v0.2.6 or earlier show "not recorded"), deletes them, and can switch the behavior off. A misjudged title can be marked **Misjudged**: it is forgotten and never remembered again, though a window closed by a later misjudgment is still closed. Misjudged titles are listed separately, encrypted like remembered titles, and can be remembered again.
 - Temporary allowances, remaining usage time, and cooldown periods.
 - Corrections for screen locking, sleep, time-zone changes, and daylight saving time.
@@ -255,7 +261,7 @@ By default, only the following are recorded:
 - Model version, risk level, and normalized score.
 - Policy ID, reason code, and component health status.
 
-By default, screen captures, window contents, full URLs, user input, and dynamically generated site certificates are not recorded. The Windows Agent processes the active window title and browser address transiently in memory, sends only the canonical host plus a bounded title to the local Service for independent policy validation, and never persists either value in audit or evidence records. The one exception is the remembered-title feature (on by default): after explicit image detection successfully closes an application, the Service stores that window's title, canonical host, and executable path so it can close the same page again. They are encrypted with AES-256-GCM, under a key derived from the DPAPI-protected evidence key, inside the Service's ACL-protected SQLite database (`C:\ProgramData\Karma\service-state.db`). At most 5,000 titles are kept, oldest first out. The Agent receives only 128-bit digests, never the titles themselves. The administrator can search and review them in the console; deleting a title or disabling the feature requires the super password when configured. Titles never enter the audit log.
+By default, screen captures, window contents, full URLs, user input, and dynamically generated site certificates are not recorded. The Windows Agent processes the active window title and browser address transiently in memory, sends only the canonical host plus a bounded title to the local Service for independent policy validation, and never persists either value in audit or evidence records. The one exception is the remembered-title feature (on by default): after explicit image detection successfully closes an application, the Service stores that window's title, canonical host, and executable path so it can close the same page again. They are encrypted with AES-256-GCM, under a key derived from the DPAPI-protected evidence key, inside the Service's ACL-protected SQLite database (`C:\ProgramData\Karma\service-state.db`). Each title is deleted 5 hours after it was last remembered, and at most 5,000 are kept, oldest first out. The Agent receives only 128-bit digests, never the titles themselves. The administrator can search and review them in the console; deleting a title or disabling the feature requires the super password when configured. Titles never enter the audit log.
 
 ## Screen Capture
 
