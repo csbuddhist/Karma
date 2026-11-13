@@ -168,4 +168,23 @@
     <string name="update_outcome_unknown">未知</string>
     <string name="update_ready_title">Karma 更新已就绪</string>
     <string name="update_ready_text">点击安装已校验的更新。</string>
+    <string name="backup_title">设置备份</string>
+    <string name="backup_explanation">把规则导出为文件，或从文件恢复。无需密码：文件用管理员密码加密，无法查看或修改。在其他手机上或用旧管理员密码导出的文件，需要管理员才能导入。</string>
+    <string name="backup_export">导出设置</string>
+    <string name="backup_import">导入设置</string>
+    <string name="backup_exported">设置已导出</string>
+    <string name="backup_imported">设置已导入</string>
+    <string name="backup_import_confirm_title">导入设置？</string>
+    <string name="backup_import_confirm_text">文件中的规则将替换当前规则。</string>
+    <string name="backup_admin_title">需要管理员密码</string>
+    <string name="backup_admin_text">该文件是在其他手机上或用旧管理员密码导出的。请输入本机管理员密码；如果导出时的密码不同，再填写导出时的密码。</string>
+    <string name="backup_current_password">本机管理员密码</string>
+    <string name="backup_file_password">导出时的管理员密码（如不同）</string>
+    <string name="backup_error_key_not_ready">管理员需要先登录一次，才能导出设置。</string>
+    <string name="backup_error_invalid_file">这不是 Karma 设置文件。</string>
+    <string name="backup_error_other_password">该文件使用其他管理员密码加密。</string>
+    <string name="backup_error_rejected">文件已被修改或损坏，无法导入。</string>
+    <string name="backup_error_rejected_password">文件已被修改，或导出时的密码不正确。</string>
+    <string name="backup_error_invalid_policy">文件中的设置无效。</string>
+    <string name="backup_error_storage">无法读取或写入文件。</string>
 </resources>

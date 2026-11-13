@@ -2,7 +2,7 @@ use karma_ai::{ClassifierOutput, VIDDEXA_LABELS, ViddexaRiskMapper};
 use karma_domain::{Action, ModelVersions, MonitorId, OcrRisk, RiskObservation};
 use karma_mobile_ffi::{
     AuthError, ClassifierProbabilities, CoreError, ForegroundContext, KarmaCore, MobileAction,
-    MobileReason,
+    MobileReason, SettingsError,
 };
 use karma_policy::RiskState;
 
@@ -206,4 +206,107 @@ fn platform_audit_rejects_free_text() {
         core.query_audit(0, 10)[0].kind,
         "platform:settings_watchdog"
     );
+}
+
+#[test]
+fn settings_files_round_trip_without_a_session_but_resist_tampering_and_other_passwords() {
+    const BLOCK_GAME: &str = r#"{"applications":[{"id":"g","name":"Game","executable":"com.example.game","category":"game","action":"block","enabled":true}]}"#;
+    let dir = tempfile::tempdir().unwrap();
+    let core = open(&dir);
+    assert_eq!(core.export_settings(1), Err(SettingsError::NotEnrolled));
+    let token = core
+        .enroll_admin(PASSWORD.into(), 1_000)
+        .unwrap()
+        .session
+        .token;
+    core.set_policy(token.clone(), BLOCK_GAME.into(), 1_001)
+        .unwrap();
+
+    // Anyone may export; the file does not reveal the policy.
+    let exported = core.export_settings(2_000).unwrap();
+    assert!(!exported.windows(16).any(|w| w == b"com.example.game"));
+
+    core.set_policy(token.clone(), "{}".into(), 2_001).unwrap();
+    assert_eq!(
+        core.observe_context(context("com.example.game", 2_500))
+            .reason,
+        MobileReason::DefaultAllow
+    );
+    drop(core);
+
+    // Anyone may import a file sealed under the current password, after a restart too.
+    let core = open(&dir);
+    assert_eq!(core.import_settings(exported.clone(), 3_000), Ok(3));
+    assert_eq!(
+        core.observe_context(context("com.example.game", 3_500))
+            .reason,
+        MobileReason::ApplicationBlocked
+    );
+
+    let mut tampered = exported.clone();
+    let last = tampered.len() - 1;
+    tampered[last] ^= 1;
+    assert_eq!(
+        core.import_settings(tampered, 4_000),
+        Err(SettingsError::Rejected)
+    );
+    assert_eq!(
+        core.import_settings(BLOCK_GAME.as_bytes().to_vec(), 4_001),
+        Err(SettingsError::InvalidFile)
+    );
+
+    // A new password invalidates earlier files for everyone but the administrator.
+    let token = core
+        .verify_admin_password(PASSWORD.into(), 5_000)
+        .unwrap()
+        .token;
+    core.change_admin_password(token.clone(), "a brand new password".into(), 5_001)
+        .unwrap();
+    assert_eq!(
+        core.import_settings(exported.clone(), 6_000),
+        Err(SettingsError::NeedsAdministrator)
+    );
+    assert_eq!(
+        core.import_settings_as_administrator(
+            "forged".into(),
+            PASSWORD.into(),
+            exported.clone(),
+            6_001
+        ),
+        Err(SettingsError::SessionExpired)
+    );
+    assert_eq!(
+        core.import_settings_as_administrator(
+            token.clone(),
+            "a brand new password".into(),
+            exported.clone(),
+            6_002
+        ),
+        Err(SettingsError::Rejected)
+    );
+    assert_eq!(
+        core.import_settings_as_administrator(token, PASSWORD.into(), exported, 6_003),
+        Ok(4)
+    );
+    // Files exported now use the new password.
+    let fresh = core.export_settings(7_000).unwrap();
+    assert_eq!(core.import_settings(fresh, 7_001), Ok(5));
+
+    let audit: Vec<(String, String)> = core
+        .query_audit(0, 100)
+        .into_iter()
+        .map(|event| (event.kind, event.outcome))
+        .collect();
+    for expected in [
+        ("settings_exported", "success"),
+        ("settings_imported", "success"),
+        ("settings_imported", "rejected"),
+        ("settings_imported", "other_password"),
+        ("settings_imported_by_administrator", "success"),
+    ] {
+        assert!(
+            audit.contains(&(expected.0.into(), expected.1.into())),
+            "missing {expected:?}"
+        );
+    }
 }

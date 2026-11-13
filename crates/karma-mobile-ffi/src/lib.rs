@@ -10,6 +10,7 @@ mod app_schedule;
 mod auth;
 mod engine;
 mod packages;
+mod settings_file;
 mod store;
 mod types;
 mod update;
@@ -28,11 +29,13 @@ pub use packages::{
 pub use types::{
     AdminSession, AuditEventRecord, AuthError, ClassifierProbabilities, CoreError, CoreStatus,
     Enrollment, ForegroundContext, MobileAction, MobileDecision, MobileReason, PackageClass,
+    SettingsError,
 };
 
 pub use update::{AndroidRelease, ReleaseSource};
 
 use crate::auth::Sessions;
+use crate::settings_file::{ExportKey, SealedFile};
 use crate::store::{PersistedState, SealedStore};
 
 uniffi::setup_scaffolding!();
@@ -135,6 +138,46 @@ impl Inner {
         self.state.recovery_code_hashes = hashes;
         Ok(codes)
     }
+
+    /// Compiles and stores `policy` as the next revision.
+    fn store_policy(&mut self, policy: Value, kind: &str, now_ms: i64) -> Result<u64, CoreError> {
+        if !policy.is_object() {
+            return Err(CoreError::InvalidPolicy);
+        }
+        let compiled = CompiledPolicy::compile(&policy)?;
+        self.engine.set_policy(compiled);
+        self.state.policy = policy;
+        self.state.policy_revision = self.state.policy_revision.saturating_add(1);
+        self.audit(now_ms, kind, "success", None, None);
+        self.persist()?;
+        Ok(self.state.policy_revision)
+    }
+
+    /// Stores the policy of an opened settings file, or audits why it was refused.
+    fn finish_import(
+        &mut self,
+        opened: Result<Value, SettingsError>,
+        kind: &str,
+        now_ms: i64,
+    ) -> Result<u64, SettingsError> {
+        let result = opened.and_then(|policy| {
+            self.store_policy(policy, kind, now_ms)
+                .map_err(|error| match error {
+                    CoreError::Storage | CoreError::InvalidKey => SettingsError::Storage,
+                    _ => SettingsError::InvalidPolicy,
+                })
+        });
+        if let Err(error) = &result {
+            let outcome = match error {
+                SettingsError::Rejected => "rejected",
+                SettingsError::NeedsAdministrator => "other_password",
+                _ => "failed",
+            };
+            self.audit(now_ms, kind, outcome, None, None);
+            let _ = self.persist();
+        }
+        result
+    }
 }
 
 /// The Karma decision core for one device user.
@@ -233,6 +276,8 @@ impl KarmaCore {
         }
         auth::validate_new_password(&password)?;
         inner.state.password_hash = Some(auth::hash_secret(&password)?);
+        inner.state.export_key =
+            Some(ExportKey::derive(&password).map_err(|_| AuthError::Storage)?);
         let recovery_codes = inner.new_recovery_codes()?;
         inner.audit(now_ms, "administrator_enrolled", "success", None, None);
         inner.persist().map_err(|_| AuthError::Storage)?;
@@ -251,6 +296,13 @@ impl KarmaCore {
         let password = Zeroizing::new(password);
         let mut inner = self.lock();
         inner.authenticate_password(&password, now_ms)?;
+        // States from before settings files gain the key at the next sign-in.
+        if inner.state.export_key.is_none() {
+            if let Ok(key) = ExportKey::derive(&password) {
+                inner.state.export_key = Some(key);
+                let _ = inner.persist();
+            }
+        }
         Ok(inner.sessions.issue(now_ms))
     }
 
@@ -297,6 +349,8 @@ impl KarmaCore {
         inner.sessions.authorize(&session_token, now_ms)?;
         auth::validate_new_password(&new_password)?;
         inner.state.password_hash = Some(auth::hash_secret(&new_password)?);
+        inner.state.export_key =
+            Some(ExportKey::derive(&new_password).map_err(|_| AuthError::Storage)?);
         inner.audit(
             now_ms,
             "administrator_password_changed",
@@ -373,16 +427,67 @@ impl KarmaCore {
             .map_err(|_| CoreError::Unauthorized)?;
         let policy: Value =
             serde_json::from_str(&policy_json).map_err(|_| CoreError::InvalidPolicy)?;
-        if !policy.is_object() {
-            return Err(CoreError::InvalidPolicy);
+        inner.store_policy(policy, "policy_changed", now_ms)
+    }
+
+    /// The policy as a settings file sealed with the administrator password's
+    /// key. Anyone may export: the file can be neither read nor changed
+    /// without the password.
+    pub fn export_settings(&self, now_ms: i64) -> Result<Vec<u8>, SettingsError> {
+        let mut inner = self.lock();
+        if inner.state.password_hash.is_none() {
+            return Err(SettingsError::NotEnrolled);
         }
-        let compiled = CompiledPolicy::compile(&policy)?;
-        inner.engine.set_policy(compiled);
-        inner.state.policy = policy;
-        inner.state.policy_revision = inner.state.policy_revision.saturating_add(1);
-        inner.audit(now_ms, "policy_changed", "success", None, None);
-        inner.persist()?;
-        Ok(inner.state.policy_revision)
+        let key = inner
+            .state
+            .export_key
+            .clone()
+            .ok_or(SettingsError::KeyNotReady)?;
+        let file = settings_file::seal(&key, &inner.state.policy, now_ms)?;
+        inner.audit(now_ms, "settings_exported", "success", None, None);
+        let _ = inner.persist();
+        Ok(file)
+    }
+
+    /// Replaces the policy with a settings file exported under the current
+    /// administrator password. Anyone may import such a file; files sealed
+    /// with another password need [`Self::import_settings_as_administrator`].
+    pub fn import_settings(&self, file: Vec<u8>, now_ms: i64) -> Result<u64, SettingsError> {
+        let sealed = SealedFile::parse(&file)?;
+        let mut inner = self.lock();
+        if inner.state.password_hash.is_none() {
+            return Err(SettingsError::NotEnrolled);
+        }
+        let opened = match inner.state.export_key.clone() {
+            Some(key) => sealed.open_with_key(&key),
+            None => Err(SettingsError::NeedsAdministrator),
+        };
+        inner.finish_import(opened, "settings_imported", now_ms)
+    }
+
+    /// Replaces the policy with a settings file from another device or an
+    /// earlier password, opened with the password it was sealed with.
+    pub fn import_settings_as_administrator(
+        &self,
+        session_token: String,
+        file_password: String,
+        file: Vec<u8>,
+        now_ms: i64,
+    ) -> Result<u64, SettingsError> {
+        let file_password = Zeroizing::new(file_password);
+        let sealed = SealedFile::parse(&file)?;
+        self.lock()
+            .sessions
+            .authorize(&session_token, now_ms)
+            .map_err(|_| SettingsError::SessionExpired)?;
+        // Key derivation is slow; keep the core unlocked meanwhile.
+        let opened = sealed.open_with_password(&file_password);
+        let mut inner = self.lock();
+        inner
+            .sessions
+            .authorize(&session_token, now_ms)
+            .map_err(|_| SettingsError::SessionExpired)?;
+        inner.finish_import(opened, "settings_imported_by_administrator", now_ms)
     }
 
     /// Ends the cooldown of `package_name` early (administrator override).

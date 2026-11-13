@@ -17,6 +17,7 @@ use serde_json::Value;
 use zeroize::Zeroizing;
 
 use crate::engine::Cooldown;
+use crate::settings_file::ExportKey;
 use crate::types::{AuditEventRecord, CoreError};
 
 const STATE_FILE: &str = "karma-core.state";
@@ -43,6 +44,10 @@ pub struct PersistedState {
     pub policy_revision: u64,
     pub cooldowns: BTreeMap<String, Cooldown>,
     pub audit: VecDeque<AuditEventRecord>,
+    /// Settings-file key of the current password; states written before
+    /// settings files existed have none until the password is entered.
+    #[serde(default)]
+    pub export_key: Option<ExportKey>,
 }
 
 impl Default for PersistedState {
@@ -56,6 +61,7 @@ impl Default for PersistedState {
             policy_revision: 0,
             cooldowns: BTreeMap::new(),
             audit: VecDeque::new(),
+            export_key: None,
         }
     }
 }
@@ -164,6 +170,14 @@ mod tests {
         assert_eq!(store.load().unwrap(), state);
         let raw = fs::read(dir.path().join(STATE_FILE)).unwrap();
         assert!(!raw.windows(18).any(|w| w == b"secret-hash-marker"));
+    }
+
+    #[test]
+    fn states_from_before_settings_files_load_without_an_export_key() {
+        let mut legacy = serde_json::to_value(PersistedState::default()).unwrap();
+        legacy.as_object_mut().unwrap().remove("export_key");
+        let state: PersistedState = serde_json::from_value(legacy).unwrap();
+        assert!(state.export_key.is_none());
     }
 
     #[test]

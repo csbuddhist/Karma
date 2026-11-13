@@ -204,3 +204,23 @@ pub enum AuthError {
     #[error("state storage is unavailable")]
     Storage,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error, uniffi::Error)]
+pub enum SettingsError {
+    #[error("no administrator password is set")]
+    NotEnrolled,
+    #[error("the administrator must sign in once before settings can be exported")]
+    KeyNotReady,
+    #[error("the file is not a Karma settings file")]
+    InvalidFile,
+    #[error("the file was protected with another administrator password")]
+    NeedsAdministrator,
+    #[error("the file was changed or the password is wrong")]
+    Rejected,
+    #[error("the settings in the file are invalid")]
+    InvalidPolicy,
+    #[error("the administrator session expired")]
+    SessionExpired,
+    #[error("state storage is unavailable")]
+    Storage,
+}

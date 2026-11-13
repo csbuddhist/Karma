@@ -169,4 +169,23 @@
     <string name="update_outcome_unknown">unknown</string>
     <string name="update_ready_title">Karma update ready</string>
     <string name="update_ready_text">Tap to install the verified update.</string>
+    <string name="backup_title">Settings backup</string>
+    <string name="backup_explanation">Export the rules to a file, or restore them from one. No password is needed: the file is encrypted with the administrator password, so it cannot be read or changed. A file exported on another phone or under an earlier administrator password needs the administrator.</string>
+    <string name="backup_export">Export settings</string>
+    <string name="backup_import">Import settings</string>
+    <string name="backup_exported">Settings exported</string>
+    <string name="backup_imported">Settings imported</string>
+    <string name="backup_import_confirm_title">Import settings?</string>
+    <string name="backup_import_confirm_text">The rules in the file replace the current rules.</string>
+    <string name="backup_admin_title">Administrator password needed</string>
+    <string name="backup_admin_text">This file was exported on another phone or under an earlier administrator password. Enter the administrator password of this phone, and the password the file was exported with if it is different.</string>
+    <string name="backup_current_password">Administrator password of this phone</string>
+    <string name="backup_file_password">Password the file was exported with (if different)</string>
+    <string name="backup_error_key_not_ready">The administrator needs to sign in once before settings can be exported.</string>
+    <string name="backup_error_invalid_file">This is not a Karma settings file.</string>
+    <string name="backup_error_other_password">This file was encrypted with a different administrator password.</string>
+    <string name="backup_error_rejected">The file was changed or damaged and cannot be imported.</string>
+    <string name="backup_error_rejected_password">The file was changed, or the password it was exported with is wrong.</string>
+    <string name="backup_error_invalid_policy">The settings in the file are not valid.</string>
+    <string name="backup_error_storage">The file could not be read or written.</string>
 </resources>
