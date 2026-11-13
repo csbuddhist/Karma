@@ -41,11 +41,12 @@ Karma is a local pornography-protection and digital-wellbeing application for Wi
 The Android client shares the desktop's decision core, recognition model, and policy format; see [Android (Developer Preview)](#android-developer-preview) for installation.
 
 - **Screen recognition**: frames are taken on the device through the accessibility service (at most 2 fps, slower on still screens, paused after 30 seconds without change) and checked with the same model and multi-frame fusion as the desktop; a video playing in a small in-page player is cropped and checked on its own. Screenshots are processed in memory only, never saved or uploaded.
-- **Closing the source app**: Karma goes to the home screen and shows the reason and the remaining cooldown; reopening the app during the cooldown closes it again at once. Under Device Owner the app can also be suspended.
+- **Closing the source app**: Karma goes to the home screen and shows the reason and the remaining cooldown; after OK is tapped the notice counts down 10 seconds before it disappears. Reopening the app during the cooldown closes it again at once. Under Device Owner the app can also be suspended.
 - **Website blocklist and allowlist**: Administrator → Website blocklist and allowlist manages two lists. A blocklisted site is closed as soon as it opens in a browser; an allowlisted site is allowed and never closed by image or title checks. Rules cover subdomains, and a full URL can be pasted.
 - **App rules and daily times**: an app can be always blocked or always allowed, or, under Administrator → Add an app rule → Times, allowed only during or blocked during daily time ranges set to the minute (ranges may cross midnight); an app left open is closed within about 15 seconds of its blocked time starting.
 - **Title keywords and private windows**: the browser's page title is read and a matching keyword closes it (Traditional Chinese spellings match too); private browser windows that refuse screenshots are closed by default. The desktop `schedules` apply as well.
 - **Exit prevention**: administrator password (entered twice when changed, 30-second lockout after 5 failures) plus one-time recovery codes; device admin blocks a direct uninstall; the settings guard backs out of any system settings, security-center, or uninstall window showing Karma and asks for the password; optional Device Owner mode adds stronger uninstall and tamper protection.
+- **Settings backup**: anyone can export or import the rules under Status → Settings backup without entering a password; the exported file is encrypted with the administrator password, so it cannot be read or changed. A file exported on another phone or under an earlier administrator password needs this phone's administrator password (and the one it was exported with) to import.
 - **Secure automatic updates**: twice a day on Wi-Fi, Karma checks GitHub and its Gitee mirror and installs only a higher-version APK whose checksum matches and which is signed by the same certificate; anyone can check for updates at once under Status → Updates without a password. This is the Android client's only network access; nothing is uploaded.
 - **English and Chinese interface**: follows the system language; on Android 13 and later it can also be set under App info → Language.
 
@@ -159,7 +160,7 @@ Karma should be used only for content protection by device owners, guardians, or
 
 ## Android (Developer Preview)
 
-The Android client lives in `apps/karma-android` and shares the desktop's Rust decision core (`crates/karma-mobile-ffi`), model, and policy format. The current APK, [android-v0.1.6](https://github.com/csbuddhist/Karma/releases/tag/android-v0.1.6), is a developer preview: it has been verified on an Android 15 emulator but has not yet passed real-device testing against the [Android acceptance checklist](docs/android-acceptance.md).
+The Android client lives in `apps/karma-android` and shares the desktop's Rust decision core (`crates/karma-mobile-ffi`), model, and policy format. The current APK, [android-v0.1.7](https://github.com/csbuddhist/Karma/releases/tag/android-v0.1.7), is a developer preview: it has been verified on an Android 15 emulator but has not yet passed real-device testing against the [Android acceptance checklist](docs/android-acceptance.md).
 
 See [Android features](#android-features-developer-preview) for what it does.
 
@@ -168,7 +169,7 @@ See [Android features](#android-features-developer-preview) for what it does.
 
 Installation:
 
-1. Download `Karma-android-v0.1.6.apk` from [android-v0.1.6](https://github.com/csbuddhist/Karma/releases/tag/android-v0.1.6) and check it against `SHA256SUMS-android-v0.1.6.txt` on the same page.
+1. Download `Karma-android-v0.1.7.apk` from [android-v0.1.7](https://github.com/csbuddhist/Karma/releases/tag/android-v0.1.7) and check it against `SHA256SUMS-android-v0.1.7.txt` on the same page.
 2. Open the APK on the phone to install it (allow your browser or file manager to install unknown apps).
 3. Open Karma, set the administrator password, write down the recovery codes, then follow the setup checklist to enable the accessibility service, device admin, unrestricted battery use, and notifications. On Android 13 and later, if the accessibility switch is greyed out, first choose "Allow restricted settings" from the ⋮ menu in App info.
 4. Add app and website rules on the Administrator tab, then arm the settings guard.
