@@ -20,13 +20,16 @@ import uniffi.karma_mobile_ffi.MobileDecision
  * Full-screen accessibility overlay shown after a closure: the reason, the time left in
  * the cooldown, and the administrator unlock entry. It covers whatever is on screen
  * while the app is sent home, so nothing more of the blocked content is visible.
+ * "OK" does not close it at once: the overlay counts down [DISMISS_DELAY_MS] first.
  */
 class BlockOverlay(private val service: AccessibilityService) {
     private val windowManager = service.getSystemService(WindowManager::class.java)
     private val handler = Handler(Looper.getMainLooper())
     private var view: View? = null
     private var countdown: TextView? = null
+    private var dismissButton: Button? = null
     private var expiresAtMs: Long? = null
+    private var dismissAtMs: Long? = null
 
     private val tick = object : Runnable {
         override fun run() {
@@ -36,6 +39,14 @@ class BlockOverlay(private val service: AccessibilityService) {
                 service.getString(R.string.overlay_cooldown, seconds / 60, seconds % 60)
             } else {
                 ""
+            }
+            dismissAtMs?.let { at ->
+                val left = at - System.currentTimeMillis()
+                if (left <= 0) {
+                    hideNow()
+                    return
+                }
+                dismissButton?.text = service.getString(R.string.overlay_dismiss_countdown, (left + 999) / 1000)
             }
             handler.postDelayed(this, 1000)
         }
@@ -62,10 +73,10 @@ class BlockOverlay(private val service: AccessibilityService) {
             layout.addView(text(service.getString(R.string.overlay_title), 24f, Color.WHITE))
             layout.addView(text(service.getString(decision.reason.label()), 16f, Color.rgb(220, 220, 225)))
             countdown = text("", 14f, Color.rgb(170, 170, 180)).also(layout::addView)
-            layout.addView(Button(service).apply {
+            dismissButton = Button(service).apply {
                 text = service.getString(R.string.overlay_dismiss)
-                setOnClickListener { hide() }
-            })
+                setOnClickListener { startDismissCountdown() }
+            }.also(layout::addView)
             layout.addView(Button(service).apply {
                 text = service.getString(R.string.overlay_unlock)
                 setOnClickListener {
@@ -94,6 +105,16 @@ class BlockOverlay(private val service: AccessibilityService) {
         }
     }
 
+    /** Disables "OK" and closes the overlay once the countdown has run out. */
+    private fun startDismissCountdown() {
+        if (dismissAtMs != null) return
+        dismissAtMs = System.currentTimeMillis() + DISMISS_DELAY_MS
+        dismissButton?.isEnabled = false
+        // Restart the tick so the countdown shows at once and the auto-hide cannot cut it short.
+        handler.removeCallbacksAndMessages(null)
+        handler.post(tick)
+    }
+
     fun hide() {
         handler.post { hideNow() }
     }
@@ -103,9 +124,13 @@ class BlockOverlay(private val service: AccessibilityService) {
         view?.let { runCatching { windowManager.removeView(it) } }
         view = null
         countdown = null
+        dismissButton = null
+        dismissAtMs = null
     }
 
     companion object {
-        private const val AUTO_HIDE_MS = 8_000L
+        /** Closes an overlay nobody taps, so a phone left alone is not covered for long. */
+        private const val AUTO_HIDE_MS = 30_000L
+        private const val DISMISS_DELAY_MS = 10_000L
     }
 }

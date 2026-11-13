@@ -130,6 +130,7 @@
     <string name="overlay_title">This app was closed</string>
     <string name="overlay_cooldown">It can be opened again in %1$d:%2$02d</string>
     <string name="overlay_dismiss">OK</string>
+    <string name="overlay_dismiss_countdown">Closing in %1$d s</string>
     <string name="overlay_unlock">Administrator unlock</string>
 
     <string name="reason_default_allow">Allowed</string>
