@@ -61,7 +61,7 @@ Android 版与桌面端共享同一套决策核心、识别模型和策略格式
 
 ### 使用安装器（推荐）
 
-1. 从 [v0.4.1 Windows Test Build](https://github.com/csbuddhist/Karma/releases/tag/v0.4.1) 下载单文件安装器 `Karma-windows-x64-test-v0.4.1-setup.exe`。
+1. 从 [v0.4.2 Windows Test Build](https://github.com/csbuddhist/Karma/releases/tag/v0.4.2) 下载单文件安装器 `Karma-windows-x64-test-v0.4.2-setup.exe`。
 2. 右键安装器，选择“以管理员身份运行”。安装器会把程序安装到 `C:\Program Files\Karma`，校验全部文件哈希，注册并启动 `KarmaService`，创建桌面和开始菜单快捷方式。安装器内置微软官方 Visual C++ 2015–2022 x64 运行库，校验微软签名后，仅在本机运行库缺失或低于 14.44 时静默安装。
 3. 从桌面的“Karma 家庭保护”或开始菜单的“Karma 管理控制台”打开控制台，首次连接后创建至少 10 个字符的管理员密码。
 4. 建议随后在“系统设置”中设置超级密码，交由监督人保管。
