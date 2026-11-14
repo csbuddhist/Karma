@@ -3,6 +3,7 @@ package com.karma.android.guard
 import android.accessibilityservice.AccessibilityService
 import android.content.Intent
 import android.view.accessibility.AccessibilityNodeInfo
+import com.karma.android.AppLanguage
 import com.karma.android.R
 import com.karma.android.ui.UnlockActivity
 import uniffi.karma_mobile_ffi.AuditEventRecord
@@ -18,7 +19,8 @@ import uniffi.karma_mobile_ffi.KarmaCore
 class SettingsWatchdog(private val service: AccessibilityService, private val core: KarmaCore) {
     private var lastScanMs = 0L
     private val appLabel = service.getString(R.string.app_name)
-    private val serviceLabel = service.getString(R.string.accessibility_service_label)
+    // Settings shows the label in the system language, which may differ from Karma's own.
+    private val serviceLabels = AppLanguage.allTranslations(service, R.string.accessibility_service_label)
 
     fun isGuardedPackage(packageName: String): Boolean = GUARDED_PACKAGES.contains(packageName)
 
@@ -64,7 +66,7 @@ class SettingsWatchdog(private val service: AccessibilityService, private val co
     private fun matches(value: String?): Boolean =
         value != null && (
             value.equals(appLabel, ignoreCase = true) ||
-                value.equals(serviceLabel, ignoreCase = true) ||
+                serviceLabels.any { value.equals(it, ignoreCase = true) } ||
                 value.contains(service.packageName)
             )
 

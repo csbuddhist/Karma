@@ -12,6 +12,7 @@ import android.view.WindowManager
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
+import com.karma.android.AppLanguage
 import com.karma.android.R
 import com.karma.android.ui.UnlockActivity
 import uniffi.karma_mobile_ffi.MobileDecision
@@ -36,7 +37,7 @@ class BlockOverlay(private val service: AccessibilityService) {
             val remaining = (expiresAtMs ?: 0L) - System.currentTimeMillis()
             countdown?.text = if (remaining > 0) {
                 val seconds = (remaining + 999) / 1000
-                service.getString(R.string.overlay_cooldown, seconds / 60, seconds % 60)
+                AppLanguage.localized(service).getString(R.string.overlay_cooldown, seconds / 60, seconds % 60)
             } else {
                 ""
             }
@@ -46,7 +47,7 @@ class BlockOverlay(private val service: AccessibilityService) {
                     hideNow()
                     return
                 }
-                dismissButton?.text = service.getString(R.string.overlay_dismiss_countdown, (left + 999) / 1000)
+                dismissButton?.text = AppLanguage.localized(service).getString(R.string.overlay_dismiss_countdown, (left + 999) / 1000)
             }
             handler.postDelayed(this, 1000)
         }
@@ -55,6 +56,7 @@ class BlockOverlay(private val service: AccessibilityService) {
     fun show(packageName: String, decision: MobileDecision) {
         handler.post {
             hideNow()
+            val strings = AppLanguage.localized(service)
             expiresAtMs = decision.expiresAtMs
             val layout = LinearLayout(service).apply {
                 orientation = LinearLayout.VERTICAL
@@ -70,15 +72,15 @@ class BlockOverlay(private val service: AccessibilityService) {
                 gravity = Gravity.CENTER
                 setPadding(0, 16, 0, 16)
             }
-            layout.addView(text(service.getString(R.string.overlay_title), 24f, Color.WHITE))
-            layout.addView(text(service.getString(decision.reason.label()), 16f, Color.rgb(220, 220, 225)))
+            layout.addView(text(strings.getString(R.string.overlay_title), 24f, Color.WHITE))
+            layout.addView(text(strings.getString(decision.reason.label()), 16f, Color.rgb(220, 220, 225)))
             countdown = text("", 14f, Color.rgb(170, 170, 180)).also(layout::addView)
             dismissButton = Button(service).apply {
-                text = service.getString(R.string.overlay_dismiss)
+                text = strings.getString(R.string.overlay_dismiss)
                 setOnClickListener { startDismissCountdown() }
             }.also(layout::addView)
             layout.addView(Button(service).apply {
-                text = service.getString(R.string.overlay_unlock)
+                text = strings.getString(R.string.overlay_unlock)
                 setOnClickListener {
                     hide()
                     service.startActivity(

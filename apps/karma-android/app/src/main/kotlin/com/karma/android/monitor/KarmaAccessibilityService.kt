@@ -11,6 +11,7 @@ import android.os.SystemClock
 import android.provider.Settings
 import android.view.Display
 import android.view.accessibility.AccessibilityEvent
+import com.karma.android.AppLanguage
 import com.karma.android.R
 import com.karma.android.guard.DeviceOwnerPolicies
 import com.karma.android.guard.GuardState
@@ -327,7 +328,7 @@ class KarmaAccessibilityService : AccessibilityService() {
         main.removeCallbacks(recheck)
         audit("accessibility_disconnected", "observed")
         if (GuardState.isArmed(this) && !GuardState.inMaintenance()) {
-            Alerts.protectionWeakened(this, getString(R.string.alert_accessibility_disabled))
+            Alerts.protectionWeakened(this, AppLanguage.localized(this).getString(R.string.alert_accessibility_disabled))
         }
         return super.onUnbind(intent)
     }

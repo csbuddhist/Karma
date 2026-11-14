@@ -49,7 +49,7 @@ The Android client shares the desktop's decision core, recognition model, and po
 - **Exit prevention**: administrator password (entered twice when changed, 30-second lockout after 5 failures) plus one-time recovery codes; device admin blocks a direct uninstall; the settings guard backs out of any system settings, security-center, or uninstall window showing Karma and asks for the password; optional Device Owner mode adds stronger uninstall and tamper protection.
 - **Settings backup**: anyone can export or import the rules under Status → Settings backup without entering a password; the exported file is encrypted with the administrator password, so it cannot be read or changed. A file exported on another phone or under an earlier administrator password needs this phone's administrator password (and the one it was exported with) to import.
 - **Secure automatic updates**: twice a day on Wi-Fi, Karma checks GitHub and its Gitee mirror and installs only a higher-version APK whose checksum matches and which is signed by the same certificate; anyone can check for updates at once under Status → Updates without a password. This is the Android client's only network access; nothing is uploaded.
-- **English and Chinese interface**: follows the system language; on Android 13 and later it can also be set under App info → Language.
+- **English and Chinese interface**: choose Follow the system, English, or 简体中文 under Status → Language (also on the first-run setup page); no password is needed and the change applies at once. On Android 13 and later the same choice is also available under App info → Language, and the two stay in sync.
 
 ## Installation
 
@@ -167,7 +167,7 @@ The Android client lives in `apps/karma-android` and shares the desktop's Rust d
 See [Android features](#android-features-developer-preview) for what it does.
 
 - **Implementation**: frames come from the accessibility service's `takeScreenshot()` (kept at 1 fps while the screen keeps changing) and ONNX Runtime with XNNPACK runs viddexa-nano; the administrator password is stored with Argon2id. The first automatic update shows the system confirmation; later ones (Android 12 and later), and every update under Device Owner, install silently. Allowing Karma to install apps and turning automatic updates off stay under Administrator → Updates.
-- **Requirements**: Android 11 (API 30) or later on arm64; x86_64 for emulators. The interface is in English and Simplified Chinese and follows the system language; on Android 13 and later it can also be set under App info → Language.
+- **Requirements**: Android 11 (API 30) or later on arm64; x86_64 for emulators. The interface is in English and Simplified Chinese and can be switched under Status → Language without a password.
 
 Installation:
 

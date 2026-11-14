@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInstaller
 import android.os.Build
+import com.karma.android.AppLanguage
 import com.karma.android.KarmaApp
 import com.karma.android.R
 import com.karma.android.guard.DeviceOwnerPolicies
@@ -68,12 +69,13 @@ object UpdateInstaller {
         val manager = context.getSystemService(NotificationManager::class.java)
         if (!manager.areNotificationsEnabled()) return
         val open = PendingIntent.getActivity(context, 1, confirm, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val strings = AppLanguage.localized(context)
         manager.notify(
             NOTIFICATION_ID,
             Notification.Builder(context, KarmaApp.CHANNEL_ALERTS)
                 .setSmallIcon(R.drawable.ic_stat_karma)
-                .setContentTitle(context.getString(R.string.update_ready_title))
-                .setContentText(context.getString(R.string.update_ready_text))
+                .setContentTitle(strings.getString(R.string.update_ready_title))
+                .setContentText(strings.getString(R.string.update_ready_text))
                 .setContentIntent(open)
                 .setAutoCancel(true)
                 .build(),

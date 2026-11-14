@@ -8,6 +8,7 @@ import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import com.karma.android.AppLanguage
 import com.karma.android.R
 import com.karma.android.guard.DeviceOwnerPolicies
 import com.karma.android.guard.GuardState
@@ -35,7 +36,7 @@ class WatchdogWorker(context: Context, params: WorkerParameters) : CoroutineWork
             val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             val signature = problems.joinToString(",")
             if (problems.isNotEmpty() && prefs.getString(KEY_LAST, "") != signature) {
-                Alerts.protectionWeakened(context, problems.joinToString("\n") { context.getString(it) })
+                Alerts.protectionWeakened(context, problems.joinToString("\n") { AppLanguage.localized(context).getString(it) })
                 runCatching {
                     CoreBootstrap.get(context).recordAudit(
                         AuditEventRecord(System.currentTimeMillis(), "watchdog_check", "protection_weakened", null, null, null),

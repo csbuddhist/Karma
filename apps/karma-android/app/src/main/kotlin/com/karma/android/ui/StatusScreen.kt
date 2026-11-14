@@ -150,6 +150,9 @@ fun StatusScreen(core: KarmaCore, refresh: Int) {
             ) { Text(stringResource(R.string.guard_arm)) }
         }
 
+        SectionTitle(stringResource(R.string.language_title))
+        LanguageSection()
+
         SectionTitle(stringResource(R.string.backup_title))
         SettingsBackupSection(core) { localRefresh++ }
 

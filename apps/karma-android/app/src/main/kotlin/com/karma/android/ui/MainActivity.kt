@@ -1,5 +1,6 @@
 package com.karma.android.ui
 
+import android.content.Context
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -23,6 +24,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.karma.android.AppLanguage
 import com.karma.android.R
 import com.karma.android.security.CoreBootstrap
 import com.karma.android.service.MonitorForegroundService
@@ -30,6 +32,10 @@ import uniffi.karma_mobile_ffi.KarmaCore
 
 class MainActivity : ComponentActivity() {
     private var resumes by mutableIntStateOf(0)
+
+    override fun attachBaseContext(newBase: Context) {
+        super.attachBaseContext(AppLanguage.localized(newBase))
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)

@@ -44,6 +44,8 @@ fun SetupScreen(core: KarmaCore, onEnrolled: () -> Unit) {
         Text(stringResource(R.string.setup_title), style = MaterialTheme.typography.headlineSmall)
         Text(stringResource(R.string.setup_explanation))
         Text(stringResource(R.string.privacy_promise), style = MaterialTheme.typography.bodySmall)
+        Text(stringResource(R.string.language_title), style = MaterialTheme.typography.titleMedium)
+        LanguageSection()
         PasswordField(password, { password = it }, stringResource(R.string.new_password))
         PasswordField(confirm, { confirm = it }, stringResource(R.string.confirm_password))
         error?.let { Text(it, color = MaterialTheme.colorScheme.error) }

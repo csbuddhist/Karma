@@ -5,6 +5,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import com.karma.android.AppLanguage
 import com.karma.android.KarmaApp
 import com.karma.android.R
 import com.karma.android.ui.MainActivity
@@ -18,7 +19,7 @@ object Alerts {
         if (!manager.areNotificationsEnabled()) return
         val notification = Notification.Builder(context, KarmaApp.CHANNEL_ALERTS)
             .setSmallIcon(R.drawable.ic_stat_karma)
-            .setContentTitle(context.getString(R.string.alert_title))
+            .setContentTitle(AppLanguage.localized(context).getString(R.string.alert_title))
             .setContentText(message)
             .setStyle(Notification.BigTextStyle().bigText(message))
             .setContentIntent(openApp(context))

@@ -3,6 +3,7 @@ package com.karma.android.guard
 import android.app.admin.DeviceAdminReceiver
 import android.content.Context
 import android.content.Intent
+import com.karma.android.AppLanguage
 import com.karma.android.R
 import com.karma.android.security.CoreBootstrap
 import com.karma.android.service.Alerts
@@ -23,12 +24,12 @@ class KarmaDeviceAdminReceiver : DeviceAdminReceiver() {
     }
 
     override fun onDisableRequested(context: Context, intent: Intent): CharSequence =
-        context.getString(R.string.device_admin_disable_warning)
+        AppLanguage.localized(context).getString(R.string.device_admin_disable_warning)
 
     override fun onDisabled(context: Context, intent: Intent) {
         audit(context, "device_admin_disabled")
         if (!GuardState.inMaintenance()) {
-            Alerts.protectionWeakened(context, context.getString(R.string.alert_device_admin_disabled))
+            Alerts.protectionWeakened(context, AppLanguage.localized(context).getString(R.string.alert_device_admin_disabled))
         }
     }
 

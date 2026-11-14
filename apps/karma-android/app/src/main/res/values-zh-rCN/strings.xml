@@ -187,4 +187,7 @@
     <string name="backup_error_rejected_password">文件已被修改，或导出时的密码不正确。</string>
     <string name="backup_error_invalid_policy">文件中的设置无效。</string>
     <string name="backup_error_storage">无法读取或写入文件。</string>
+    <string name="language_title">语言 · Language</string>
+    <string name="language_system">跟随系统</string>
+    <string name="language_explanation">只更改 Karma 的显示语言，不需要密码。</string>
 </resources>

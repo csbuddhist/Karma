@@ -9,6 +9,7 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
+import com.karma.android.AppLanguage
 import com.karma.android.KarmaApp
 import com.karma.android.R
 
@@ -21,10 +22,11 @@ class MonitorForegroundService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val strings = AppLanguage.localized(this)
         val builder = Notification.Builder(this, KarmaApp.CHANNEL_STATUS)
             .setSmallIcon(R.drawable.ic_stat_karma)
-            .setContentTitle(getString(R.string.status_notification_title))
-            .setContentText(getString(R.string.status_notification_text))
+            .setContentTitle(strings.getString(R.string.status_notification_title))
+            .setContentText(strings.getString(R.string.status_notification_text))
             .setContentIntent(Alerts.openApp(this))
             .setOngoing(true)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
