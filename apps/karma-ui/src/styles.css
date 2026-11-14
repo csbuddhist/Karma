@@ -459,3 +459,14 @@ select, .field input, .toolbar input { height: 39px; padding: 0 11px; color: var
 
 .update-preference > div { min-width: 0; flex: 1; }
 .audit-filter { display: flex; gap: 8px; margin-bottom: 6px; }
+
+.time-zone-value { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; }
+.time-zone-value strong { font-size: 24px; letter-spacing: .01em; }
+.time-zone-value span { color: var(--muted); font-size: 13px; }
+.time-zone-clock { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.time-zone-actions { display: flex; gap: 10px; margin-top: 14px; }
+.time-zone-summary { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 0; }
+.time-zone-summary div { padding: 12px 14px; border-radius: 10px; background: var(--paper); border: 1px solid var(--line); }
+.time-zone-summary dt { color: var(--muted); font-size: 11px; }
+.time-zone-summary dd { margin: 4px 0 0; font-size: 14px; font-weight: 600; }
+.field + .time-zone-clock { margin-top: 12px; }

@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { disable, enable } from "@tauri-apps/plugin-autostart";
-import type { ApplicationRule, AuthorizationStatus, InstalledApplication, ConsoleState, NetworkStatus, NetworkTarget, RememberedTitle, RememberedTitlePage, ScheduleAction, ScheduleBlock, ScheduleRule } from "./types";
+import type { ApplicationRule, AuthorizationStatus, InstalledApplication, ConsoleState, NetworkStatus, NetworkTarget, RememberedTitle, RememberedTitlePage, ScheduleAction, ScheduleBlock, ScheduleRule, TimeZoneSettings, TimeZoneStatus } from "./types";
 
 const browserFallbackKey = "karma-ui-browser-state";
 const browserPasswordKey = "karma-ui-browser-password";
@@ -39,6 +39,8 @@ export const defaultConsoleState: ConsoleState = {
     { id: "player", name: "播放器", executable: "受支持播放器", category: "player", action: "content_only", enabled: true },
   ],
   schedules: [],
+  timeZone: { realUtcOffsetMinutes: null },
+  timeZoneStatus: browserTimeZoneStatus({ realUtcOffsetMinutes: null }),
   evidence: [],
   audit: [],
   network: { restricted: false, activeRuleIds: [], restrictedUntilMs: null, restoredUntilMs: null },
@@ -46,6 +48,22 @@ export const defaultConsoleState: ConsoleState = {
   misjudgedTitleTotal: 0,
   activeBans: [],
 };
+
+/** The operating system's current UTC offset as the webview sees it. */
+export function browserSystemUtcOffsetMinutes(): number {
+  // getTimezoneOffset counts minutes west of UTC; avoid returning -0.
+  return 0 - new Date().getTimezoneOffset();
+}
+
+function browserTimeZoneStatus(zone: TimeZoneSettings): TimeZoneStatus {
+  const system = browserSystemUtcOffsetMinutes();
+  return { systemUtcOffsetMinutes: system, realUtcOffsetMinutes: zone.realUtcOffsetMinutes, effectiveUtcOffsetMinutes: zone.realUtcOffsetMinutes ?? system };
+}
+
+function normalizeTimeZone(value: unknown): TimeZoneSettings {
+  const offset = (value as Partial<TimeZoneSettings> | null | undefined)?.realUtcOffsetMinutes;
+  return { realUtcOffsetMinutes: typeof offset === "number" && Number.isInteger(offset) ? offset : null };
+}
 
 export const repeatOffenderLimits = {
   windowMinutes: { min: 1, max: 1440 },
@@ -61,7 +79,7 @@ export function isTauriConsole(): boolean {
   return isTauri();
 }
 
-const runtimeStateKeys = ["serviceConnected", "agentConnected", "monitors", "evidence", "audit", "network", "rememberedTitleTotal", "misjudgedTitleTotal", "activeBans", "productVersion", "superPasswordSet", "uninstall", "update"];
+const runtimeStateKeys = ["serviceConnected", "agentConnected", "monitors", "evidence", "audit", "network", "rememberedTitleTotal", "misjudgedTitleTotal", "activeBans", "productVersion", "superPasswordSet", "uninstall", "update", "timeZoneStatus"];
 
 function stripRuntimeState(value: Record<string, unknown>): Record<string, unknown> {
   const stripped = { ...value };
@@ -144,6 +162,8 @@ export function mergeImportedPolicy(current: ConsoleState, imported: Partial<Con
     superPasswordSet: current.superPasswordSet,
     uninstall: current.uninstall,
     update: current.update,
+    timeZone: imported.timeZone === undefined ? current.timeZone : normalizeTimeZone(imported.timeZone),
+    timeZoneStatus: current.timeZoneStatus,
   });
 }
 
@@ -188,6 +208,7 @@ export async function loadConsole(sessionToken: string, runtimeOnly = false): Pr
 }
 
 function hydrateConsoleState(value: Partial<ConsoleState>): ConsoleState {
+  const timeZone = normalizeTimeZone(value.timeZone);
   return {
     ...defaultConsoleState,
     ...value,
@@ -202,6 +223,9 @@ function hydrateConsoleState(value: Partial<ConsoleState>): ConsoleState {
     websites: value.websites ?? [],
     applicationCategories: value.applicationCategories ?? [],
     schedules: (value.schedules ?? []).map(normalizeSchedule),
+    timeZone,
+    // The Service reports the zones it enforces; the browser preview derives them.
+    timeZoneStatus: isTauri() && value.timeZoneStatus ? value.timeZoneStatus : browserTimeZoneStatus(timeZone),
     network: { ...defaultConsoleState.network, ...(value.network ?? {}) },
     rememberedTitleTotal: isTauri() ? value.rememberedTitleTotal ?? 0 : browserTitles().length,
     misjudgedTitleTotal: isTauri() ? value.misjudgedTitleTotal ?? 0 : 0,

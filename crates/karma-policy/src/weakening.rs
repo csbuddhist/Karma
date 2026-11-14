@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::{
     ApplicationEffect, ApplicationPolicy, ContextPolicy, MINUTES_PER_WEEK, NetworkSchedulePolicy,
-    RepeatOffenderRule, WebsiteRuleAction, network_schedule::NetworkRestriction,
+    RepeatOffenderRule, TimeZonePolicy, WebsiteRuleAction, network_schedule::NetworkRestriction,
 };
 
 /// One way a policy change lowers protection.
@@ -33,6 +33,9 @@ pub enum Weakening {
     ScheduleRelaxed,
     /// Repeat-offender bans now need more closures or a shorter window.
     RepeatOffenderRelaxed,
+    /// The real-life time zone was set, changed, or cleared. Every schedule is
+    /// read in that zone, so moving it shifts when protection applies.
+    TimeZoneChanged,
 }
 
 /// Every way `new` is weaker than `old`, sorted and without duplicates. Both
@@ -105,6 +108,11 @@ pub fn policy_weakenings(old: &Value, new: &Value) -> Vec<Weakening> {
         || new_rule.ban_ms < old_rule.ban_ms
     {
         found.push(Weakening::RepeatOffenderRelaxed);
+    }
+    if TimeZonePolicy::from_value(old).unwrap_or_default()
+        != TimeZonePolicy::from_value(new).unwrap_or_default()
+    {
+        found.push(Weakening::TimeZoneChanged);
     }
     found
 }
@@ -431,6 +439,32 @@ mod tests {
         );
         assert!(
             weakenings(|policy| policy["repeatOffender"]["banMinutes"] = json!(180)).is_empty()
+        );
+    }
+
+    #[test]
+    fn setting_changing_or_clearing_the_real_time_zone_is_weaker() {
+        let set = |policy: &mut Value| policy["timeZone"] = json!({"realUtcOffsetMinutes": 480});
+        assert_eq!(weakenings(set), vec![Weakening::TimeZoneChanged]);
+        let mut old = base();
+        set(&mut old);
+        let mut moved = old.clone();
+        moved["timeZone"]["realUtcOffsetMinutes"] = json!(-300);
+        assert_eq!(
+            policy_weakenings(&old, &moved),
+            vec![Weakening::TimeZoneChanged]
+        );
+        let mut cleared = old.clone();
+        cleared["timeZone"]["realUtcOffsetMinutes"] = Value::Null;
+        assert_eq!(
+            policy_weakenings(&old, &cleared),
+            vec![Weakening::TimeZoneChanged]
+        );
+        assert!(policy_weakenings(&old, &old.clone()).is_empty());
+        // An explicit "not set" equals a missing section.
+        assert!(
+            weakenings(|policy| policy["timeZone"] = json!({"realUtcOffsetMinutes": null}))
+                .is_empty()
         );
     }
 

@@ -10,6 +10,7 @@ mod remembered_title;
 mod repeat_offender;
 mod risk;
 mod schedule;
+mod time_zone;
 mod weakening;
 
 pub use application::{
@@ -49,4 +50,8 @@ pub use repeat_offender::{
 };
 pub use risk::{RiskOutcome, RiskState};
 pub use schedule::{MinuteRange, ScheduleError, WeeklySchedule};
+pub use time_zone::{
+    MAX_UTC_OFFSET_MINUTES, MIN_UTC_OFFSET_MINUTES, TimeZoneError, TimeZonePolicy,
+    UTC_OFFSET_STEP_MINUTES,
+};
 pub use weakening::{Weakening, policy_weakenings};

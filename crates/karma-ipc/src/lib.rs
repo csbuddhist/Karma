@@ -846,6 +846,20 @@ pub struct ServiceStatus {
     pub uninstall: Option<UninstallStatus>,
     #[serde(default)]
     pub update: UpdateStatus,
+    #[serde(default)]
+    pub time_zone: TimeZoneStatus,
+}
+
+/// The time zones the Service knows about. Offsets count minutes east of UTC.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TimeZoneStatus {
+    /// The operating system's current UTC offset.
+    pub system_utc_offset_minutes: i32,
+    /// The real-life time zone a super administrator set, if any.
+    pub real_utc_offset_minutes: Option<i32>,
+    /// The offset every time-based setting uses right now.
+    pub effective_utc_offset_minutes: i32,
 }
 
 /// A requested uninstall: the administrator password may authorize it from

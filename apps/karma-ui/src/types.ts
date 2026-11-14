@@ -7,6 +7,7 @@ export type PageKey =
   | "websites"
   | "applications"
   | "schedule"
+  | "timeZone"
   | "evidence"
   | "audit"
   | "settings";
@@ -184,6 +185,9 @@ export interface AuditDetail {
   thresholdMillis?: number;
   /** Matched title keyword, masked by the Service, for `title_keyword` closures. */
   keyword?: string;
+  /** Real-life time zones before and after a `time_zone_changed` event. */
+  fromUtcOffsetMinutes?: number | null;
+  toUtcOffsetMinutes?: number | null;
 }
 
 export interface AuditItem {
@@ -215,6 +219,20 @@ export interface AuthorizationStatus {
   update: UpdateStatus;
 }
 
+/** UTC offsets count minutes east of UTC: UTC+08:00 is 480, UTC−05:00 is −300. */
+export interface TimeZoneSettings {
+  /** The real-life time zone a super administrator set; null follows the system. */
+  realUtcOffsetMinutes: number | null;
+}
+
+/** The time zones as the Service sees them; runtime state, never saved. */
+export interface TimeZoneStatus {
+  systemUtcOffsetMinutes: number;
+  realUtcOffsetMinutes: number | null;
+  /** The offset every time-based setting and displayed time uses. */
+  effectiveUtcOffsetMinutes: number;
+}
+
 export interface ConsoleState extends AuthorizationStatus {
   protectionEnabled: boolean;
   launchAtStartup: boolean;
@@ -231,6 +249,8 @@ export interface ConsoleState extends AuthorizationStatus {
   applicationCategories: ApplicationCategory[];
   applications: ApplicationRule[];
   schedules: ScheduleRule[];
+  timeZone: TimeZoneSettings;
+  timeZoneStatus: TimeZoneStatus;
   evidence: EvidenceItem[];
   audit: AuditItem[];
   network: NetworkStatus;

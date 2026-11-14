@@ -19,8 +19,10 @@ import {
   Copy,
   ChevronDown,
   ChevronRight,
+  Clock,
   CircleAlert,
   Download,
+  Earth,
   Eye,
   EyeOff,
   FileClock,
@@ -145,6 +147,7 @@ import type {
   ScheduleAction,
   ScheduleBlock,
   ScheduleRule,
+  TimeZoneStatus,
   WebsiteRule,
 } from "./types";
 
@@ -196,6 +199,7 @@ const navItems: Array<{
   { key: "websites", label: "nav.websites", icon: Globe2 },
   { key: "applications", label: "nav.applications", icon: AppWindow },
   { key: "schedule", label: "nav.schedule", icon: CalendarClock },
+  { key: "timeZone", label: "nav.timeZone", icon: Earth },
   { key: "evidence", label: "nav.evidence", icon: Image },
   { key: "audit", label: "nav.audit", icon: FileClock },
   { key: "settings", label: "nav.settings", icon: Settings },
@@ -209,6 +213,7 @@ const pageMeta: Record<PageKey, { title: MessageKey; subtitle: MessageKey }> = {
   websites: { title: "page.websites.title", subtitle: "page.websites.subtitle" },
   applications: { title: "page.applications.title", subtitle: "page.applications.subtitle" },
   schedule: { title: "page.schedule.title", subtitle: "page.schedule.subtitle" },
+  timeZone: { title: "page.timeZone.title", subtitle: "page.timeZone.subtitle" },
   evidence: { title: "page.evidence.title", subtitle: "page.evidence.subtitle" },
   audit: { title: "page.audit.title", subtitle: "page.audit.subtitle" },
   settings: { title: "page.settings.title", subtitle: "page.settings.subtitle" },
@@ -437,9 +442,47 @@ function isAttributedExecutable(path: string): boolean {
   return (/^[a-z]:\\./.test(normalized) || normalized.startsWith("\\\\")) && normalized.endsWith(".exe");
 }
 
-function useShortDateTime(): Intl.DateTimeFormat {
+/** The UTC offset, in minutes east of UTC, in which the console shows and reads times. */
+const TimeZoneOffsetContext = createContext(0);
+const MS_PER_MINUTE = 60_000;
+const MS_PER_DAY = 86_400_000;
+const shortDateTimeOptions: Intl.DateTimeFormatOptions = { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false };
+const fullDateTimeOptions: Intl.DateTimeFormatOptions = { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false };
+const timeOfDayOptions: Intl.DateTimeFormatOptions = { hour: "2-digit", minute: "2-digit", hour12: false };
+const weekdayDateTimeOptions: Intl.DateTimeFormatOptions = { weekday: "short", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false };
+
+interface ZonedFormat { format(ms: number): string }
+
+/** Formats instants as wall-clock time at `offsetMinutes`, independent of the webview's own zone. */
+function zonedFormat(locale: Locale, options: Intl.DateTimeFormatOptions, offsetMinutes: number): ZonedFormat {
+  const format = new Intl.DateTimeFormat(locale, { ...options, timeZone: "UTC" });
+  return { format: (ms: number) => format.format(ms + offsetMinutes * MS_PER_MINUTE) };
+}
+
+/** Formats times in the real-life time zone, or the system zone until one is set. */
+function useZonedFormat(options: Intl.DateTimeFormatOptions, offsetMinutes?: number): ZonedFormat {
   const { locale } = useI18n();
-  return useMemo(() => new Intl.DateTimeFormat(locale, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }), [locale]);
+  const contextOffset = useContext(TimeZoneOffsetContext);
+  const offset = offsetMinutes ?? contextOffset;
+  return useMemo(() => zonedFormat(locale, options, offset), [locale, options, offset]);
+}
+
+function useShortDateTime(): ZonedFormat {
+  return useZonedFormat(shortDateTimeOptions);
+}
+
+/** "−5", "+8", "+5:30": the short form people use for a time zone. */
+function formatShortUtcOffset(minutes: number): string {
+  const sign = minutes < 0 ? "−" : "+";
+  const absolute = Math.abs(minutes);
+  return `${sign}${Math.floor(absolute / 60)}${absolute % 60 ? `:${String(absolute % 60).padStart(2, "0")}` : ""}`;
+}
+
+/** "UTC+08:00", "UTC−05:00", "UTC+05:45". */
+function formatUtcOffset(minutes: number): string {
+  const sign = minutes < 0 ? "−" : "+";
+  const absolute = Math.abs(minutes);
+  return `UTC${sign}${String(Math.floor(absolute / 60)).padStart(2, "0")}:${String(absolute % 60).padStart(2, "0")}`;
 }
 
 /** Risk scores within this many points of the threshold are flagged as possible misjudgments. */
@@ -1107,15 +1150,15 @@ function scheduleDraftError(draft: ScheduleDraft): MessageKey | undefined {
   return undefined;
 }
 
-function formatNetworkTime(ms: number, locale: Locale): string {
-  const date = new Date(ms);
-  const now = new Date();
-  const sameDay = date.toDateString() === now.toDateString();
-  return new Intl.DateTimeFormat(locale, sameDay ? { hour: "2-digit", minute: "2-digit", hour12: false } : { weekday: "short", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(date);
+function formatNetworkTime(ms: number, locale: Locale, offsetMinutes: number): string {
+  const day = (instant: number) => Math.floor((instant + offsetMinutes * MS_PER_MINUTE) / MS_PER_DAY);
+  const sameDay = day(ms) === day(Date.now());
+  return zonedFormat(locale, sameDay ? timeOfDayOptions : weekdayDateTimeOptions, offsetMinutes).format(ms);
 }
 
 function NetworkStatusCard({ state, sessionToken, onNetworkChange }: { state: ConsoleState; sessionToken: string; onNetworkChange: (network: NetworkStatus) => void }) {
   const { locale, t } = useI18n();
+  const offset = useContext(TimeZoneOffsetContext);
   const [open, setOpen] = useState(false);
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -1144,12 +1187,12 @@ function NetworkStatusCard({ state, sessionToken, onNetworkChange }: { state: Co
     icon = <WifiOff />;
     tone = "amber";
     title = t("network.restrictedTitle");
-    detail = network.restrictedUntilMs ? t("network.restrictedUntil", { time: formatNetworkTime(network.restrictedUntilMs, locale) }) : t("network.restrictedOngoing");
+    detail = network.restrictedUntilMs ? t("network.restrictedUntil", { time: formatNetworkTime(network.restrictedUntilMs, locale, offset) }) : t("network.restrictedOngoing");
   } else if (network.restoredUntilMs) {
     icon = <Wifi />;
     tone = "blue";
     title = t("network.restoredTitle");
-    detail = t("network.restoredUntil", { time: formatNetworkTime(network.restoredUntilMs, locale) });
+    detail = t("network.restoredUntil", { time: formatNetworkTime(network.restoredUntilMs, locale, offset) });
   }
   return (
     <Card>
@@ -1225,7 +1268,7 @@ function Schedule({ state, update, sessionToken, onNetworkChange }: { state: Con
       <NetworkStatusCard state={state} sessionToken={sessionToken} onNetworkChange={onNetworkChange} />
       <div className="two-column schedule-layout">
         <Card>
-          <div className="card-heading"><div><h2>{t(editingId ? "schedule.editTitle" : "schedule.newTitle")}</h2><p>{t("schedule.description")}</p></div></div>
+          <div className="card-heading"><div><h2>{t(editingId ? "schedule.editTitle" : "schedule.newTitle")}</h2><p>{t("schedule.description")}</p><p>{t("schedule.timeZoneNote", { offset: formatUtcOffset(state.timeZoneStatus.effectiveUtcOffsetMinutes) })}</p></div></div>
           <label className="field"><span>{t("schedule.name")}</span><input value={draft.name} onChange={(event) => patch({ name: event.target.value })} /></label>
           <label className="field"><span>{t("schedule.action")}</span><select value={draft.action} onChange={(event) => chooseAction(event.target.value as ScheduleAction)}>{scheduleActions.map((action) => <option key={action.value} value={action.value}>{t(action.label)}</option>)}</select><small className="field-hint">{t(actionHint)}</small></label>
           <label className="field"><span>{t("schedule.target")}</span><select value={draft.target} onChange={(event) => patch({ target: event.target.value as NetworkTarget })}>{networkTargets.filter((target) => draft.action === "block_network" || target.value !== "all_network").map((target) => <option key={target.value} value={target.value}>{t(target.label)}</option>)}</select><small className="field-hint">{t(targetHint)}</small></label>
@@ -1314,9 +1357,12 @@ function evidenceTimestamp(value: string): number | undefined {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
-function parseLocalDateTime(value: string): number | undefined {
-  if (!value) return undefined;
-  const parsed = new Date(value).getTime();
+/** Reads a `datetime-local` value as wall-clock time at `offsetMinutes`. */
+function parseZonedDateTime(value: string, offsetMinutes: number): number | undefined {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?/.exec(value);
+  if (!match) return undefined;
+  const [, year, month, day, hour, minute, second = "0"] = match;
+  const parsed = Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second)) - offsetMinutes * MS_PER_MINUTE;
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
@@ -1343,9 +1389,10 @@ function Evidence({ state, update, sessionToken, onDeleted, onApplicationAllowed
   const [error, setError] = useState("");
   const [rangeFrom, setRangeFrom] = useState("");
   const [rangeTo, setRangeTo] = useState("");
-  const dateTimeFormat = useMemo(() => new Intl.DateTimeFormat(locale, { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }), [locale]);
-  const fromMs = parseLocalDateTime(rangeFrom);
-  const toMs = parseLocalDateTime(rangeTo);
+  const dateTimeFormat = useZonedFormat(fullDateTimeOptions);
+  const offset = useContext(TimeZoneOffsetContext);
+  const fromMs = parseZonedDateTime(rangeFrom, offset);
+  const toMs = parseZonedDateTime(rangeTo, offset);
   const invalidRange = fromMs !== undefined && toMs !== undefined && fromMs > toMs;
   const filterActive = fromMs !== undefined || toMs !== undefined;
   const items = useMemo(() => state.evidence
@@ -1501,6 +1548,7 @@ function auditText(item: AuditItem, t: Translate): { title: string; detail: stri
       detail: t("audit.closureDetail", { reason: closureReasonText(item.detail, t), outcome: isMessageKey(outcomeKey) ? t(outcomeKey) : item.outcome }),
     };
   }
+  if (item.kind === "time_zone_changed") return { title: t("auditKind.time_zone_changed"), detail: t("audit.timeZoneChanged", { from: timeZoneLabel(item.detail?.fromUtcOffsetMinutes, t), to: timeZoneLabel(item.detail?.toUtcOffsetMinutes, t) }) };
   if (item.kind === "repeat_offender_banned") return { title: t("audit.banned", { app }), detail: executable ?? "" };
   if (item.kind === "schedule_launch_blocked") return { title: t(item.outcome === "terminated" ? "audit.launchBlocked" : "audit.launchBlockFailed", { app }), detail: executable ?? "" };
   const kindKey = `auditKind.${item.kind}`;
@@ -1525,9 +1573,8 @@ function banStrikeSummary(audit: AuditItem[], ban: ActiveBan, windowMinutes: num
   return t("applications.banStrikes", { reasons: [...counts].map(([label, count]) => `${label} ×${count}`).join(" · ") });
 }
 
-function useAuditDateTime(): Intl.DateTimeFormat {
-  const { locale } = useI18n();
-  return useMemo(() => new Intl.DateTimeFormat(locale, { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }), [locale]);
+function useAuditDateTime(): ZonedFormat {
+  return useZonedFormat(fullDateTimeOptions);
 }
 
 function Audit({ state, update }: { state: ConsoleState; update: (state: ConsoleState) => void }) {
@@ -1741,7 +1788,8 @@ function countdown(until: number, now: number): string {
 }
 
 function UninstallCard({ state, sessionToken, onRefresh }: { state: ConsoleState; sessionToken: string; onRefresh: () => Promise<void> }) {
-  const { locale, t } = useI18n();
+  const { t } = useI18n();
+  const dateTime = useAuditDateTime();
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -1763,7 +1811,7 @@ function UninstallCard({ state, sessionToken, onRefresh }: { state: ConsoleState
   return <Card className="full-span">
     <div className="card-heading"><div><h2>{t("uninstall.title")}</h2><p>{t("uninstall.description")}</p></div><div className="setting-icon amber"><CalendarClock /></div></div>
     {!state.serviceConnected && <p className="field-hint">{t("authorization.serviceRequired")}</p>}
-    {pending && <div className="uninstall-status" role="status"><StatusPill tone={ready ? "good" : waiting ? "warn" : "muted"}>{t(waiting ? "uninstall.waiting" : ready ? "uninstall.ready" : "uninstall.expired")}</StatusPill><strong className="countdown">{waiting ? t("uninstall.waitRemaining", { time: countdown(pending.effectiveAtMs, now) }) : ready ? t("uninstall.windowRemaining", { time: countdown(pending.expiresAtMs, now) }) : t("uninstall.requestAgain")}</strong><small>{t("uninstall.window", { start: new Date(pending.effectiveAtMs).toLocaleString(locale), end: new Date(pending.expiresAtMs).toLocaleString(locale) })}</small>{ready && <p>{t("uninstall.instructions")}</p>}</div>}
+    {pending && <div className="uninstall-status" role="status"><StatusPill tone={ready ? "good" : waiting ? "warn" : "muted"}>{t(waiting ? "uninstall.waiting" : ready ? "uninstall.ready" : "uninstall.expired")}</StatusPill><strong className="countdown">{waiting ? t("uninstall.waitRemaining", { time: countdown(pending.effectiveAtMs, now) }) : ready ? t("uninstall.windowRemaining", { time: countdown(pending.expiresAtMs, now) }) : t("uninstall.requestAgain")}</strong><small>{t("uninstall.window", { start: dateTime.format(pending.effectiveAtMs), end: dateTime.format(pending.expiresAtMs) })}</small>{ready && <p>{t("uninstall.instructions")}</p>}</div>}
     <form className="uninstall-form" onSubmit={(event) => { event.preventDefault(); void perform(false); }}>
       {(!pending || (!waiting && !ready)) && <><label className="field"><span>{t("auth.password")}</span><input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} /></label><button className="primary-button" type="submit" disabled={busy || !state.serviceConnected || !password}>{t(busy ? "auth.verifying" : "uninstall.request")}</button></>}
       {pending && <button className="secondary-button" type="button" disabled={busy || !state.serviceConnected} onClick={() => void perform(true)}>{t("uninstall.cancel")}</button>}
@@ -1790,7 +1838,8 @@ const updateErrorKeys: Record<string, MessageKey> = {
 };
 
 function SoftwareUpdatesCard({ state, update, sessionToken, onRefresh }: { state: ConsoleState; update: (state: ConsoleState) => void; sessionToken: string; onRefresh: () => Promise<void> }) {
-  const { locale, t } = useI18n();
+  const { t } = useI18n();
+  const dateTime = useAuditDateTime();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const active = ["checking", "downloading", "installing"].includes(state.update.phase);
@@ -1803,12 +1852,59 @@ function SoftwareUpdatesCard({ state, update, sessionToken, onRefresh }: { state
   return <Card className="full-span">
     <div className="card-heading"><div><h2>{t("updates.title")}</h2><p>{t("updates.version", { version: state.productVersion || t("updates.unknownVersion") })}</p></div><div className="setting-icon blue"><Download /></div></div>
     <div className="setting-row update-preference"><div><strong>{t("updates.autoTitle")}</strong><p>{t("updates.autoDescription")}</p></div><Toggle checked={state.updates.autoInstall} onChange={(autoInstall) => update({ ...state, updates: { ...state.updates, autoInstall } })} label={t("updates.autoTitle")} /></div>
-    <div className="update-status"><div role="status"><strong>{t(updatePhaseKeys[state.update.phase])}</strong>{state.update.availableVersion && <small>{t("updates.available", { version: state.update.availableVersion })}</small>}{state.update.lastCheckedAtMs && <small>{t("updates.lastChecked", { time: new Date(state.update.lastCheckedAtMs).toLocaleString(locale) })}</small>}</div><button className="secondary-button" disabled={busy || active || !state.serviceConnected} onClick={() => void check()}><Download size={16} />{t(busy || active ? "updates.checking" : "updates.checkNow")}</button></div>
+    <div className="update-status"><div role="status"><strong>{t(updatePhaseKeys[state.update.phase])}</strong>{state.update.availableVersion && <small>{t("updates.available", { version: state.update.availableVersion })}</small>}{state.update.lastCheckedAtMs && <small>{t("updates.lastChecked", { time: dateTime.format(state.update.lastCheckedAtMs) })}</small>}</div><button className="secondary-button" disabled={busy || active || !state.serviceConnected} onClick={() => void check()}><Download size={16} />{t(busy || active ? "updates.checking" : "updates.checkNow")}</button></div>
     {state.update.lastError && <div className="form-error backup-feedback"><CircleAlert size={16} />{t(updateErrorKeys[state.update.lastError] ?? "updates.failed")}</div>}
     {!state.serviceConnected && <p className="field-hint">{t("authorization.serviceRequired")}</p>}
     <small className="field-hint">{t("updates.saveHint")}</small>
     {error && <div className="form-error backup-feedback"><CircleAlert size={16} />{error}</div>}
   </Card>;
+}
+
+/** Every UTC offset in civil use, in minutes east of UTC. */
+const civilUtcOffsets = [-720, -660, -600, -570, -540, -480, -420, -360, -300, -240, -210, -180, -120, -60, 0, 60, 120, 180, 210, 240, 270, 300, 330, 345, 360, 390, 420, 480, 525, 540, 570, 600, 630, 660, 720, 765, 780, 840];
+const clockOptions: Intl.DateTimeFormatOptions = { weekday: "short", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false };
+
+function timeZoneLabel(minutes: number | null | undefined, t: Translate): string {
+  return typeof minutes === "number" ? `${formatUtcOffset(minutes)} (${formatShortUtcOffset(minutes)})` : t("timeZone.notSet");
+}
+
+function TimeZonePage({ state, update }: { state: ConsoleState; update: (state: ConsoleState) => void }) {
+  const { t } = useI18n();
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => { const interval = window.setInterval(() => setNow(Date.now()), 1000); return () => window.clearInterval(interval); }, []);
+  const status: TimeZoneStatus = state.timeZoneStatus;
+  const system = status.systemUtcOffsetMinutes;
+  const real = state.timeZone.realUtcOffsetMinutes;
+  const systemClock = useZonedFormat(clockOptions, system);
+  const realClock = useZonedFormat(clockOptions, real ?? system);
+  const offsets = real === null || civilUtcOffsets.includes(real) ? civilUtcOffsets : [...civilUtcOffsets, real].sort((left, right) => left - right);
+  const pendingChange = real !== status.realUtcOffsetMinutes;
+  function choose(value: number | null) { update({ ...state, timeZone: { realUtcOffsetMinutes: value } }); }
+  return <div className="page-stack">
+    {real === null
+      ? <div className="notice warning"><CircleAlert size={19} /><div><strong>{t("timeZone.notSetTitle")}</strong><span>{t("timeZone.notSetDescription")}</span></div></div>
+      : real !== system && <div className="notice warning"><CircleAlert size={19} /><div><strong>{t("timeZone.mismatchTitle")}</strong><span>{t("timeZone.mismatchDescription", { system: formatUtcOffset(system), real: formatUtcOffset(real) })}</span></div></div>}
+    <div className="two-column">
+      <Card>
+        <div className="card-heading"><div><h2>{t("timeZone.systemTitle")}</h2><p>{t("timeZone.systemDescription")}</p></div><StatusPill tone="muted">{t("timeZone.readOnly")}</StatusPill></div>
+        <div className="time-zone-value"><strong>{formatUtcOffset(system)}</strong><span>{formatShortUtcOffset(system)}</span></div>
+        <div className="time-zone-clock"><Clock size={15} /><span>{t("timeZone.currentTime", { time: systemClock.format(now) })}</span></div>
+      </Card>
+      <Card>
+        <div className="card-heading"><div><h2>{t("timeZone.realTitle")}</h2><p>{t("timeZone.realDescription")}</p></div><StatusPill tone={real === null ? "warn" : "good"}>{t(real === null ? "timeZone.notSet" : "timeZone.set")}</StatusPill></div>
+        <label className="field"><span>{t("timeZone.realLabel")}</span><select value={real === null ? "" : String(real)} onChange={(event) => choose(event.target.value === "" ? null : Number(event.target.value))}><option value="">{t("timeZone.followSystem", { offset: formatUtcOffset(system) })}</option>{offsets.map((offset) => <option key={offset} value={offset}>{`${formatUtcOffset(offset)} (${formatShortUtcOffset(offset)})`}</option>)}</select><small className="field-hint">{t(state.superPasswordSet ? "timeZone.superRequired" : "timeZone.superNotSet")}</small></label>
+        <div className="time-zone-clock"><Clock size={15} /><span>{t("timeZone.currentTime", { time: realClock.format(now) })}</span></div>
+        <div className="time-zone-actions"><button className="secondary-button" disabled={real === system} onClick={() => choose(system)}><Earth size={16} />{t("timeZone.useSystem")}</button></div>
+      </Card>
+    </div>
+    <Card>
+      <div className="card-heading"><div><h2>{t("timeZone.scopeTitle")}</h2><p>{t("timeZone.scopeDescription")}</p></div><StatusPill tone={pendingChange ? "warn" : "good"}>{t(pendingChange ? "timeZone.pending" : "timeZone.inEffect")}</StatusPill></div>
+      <dl className="time-zone-summary">
+        <div><dt>{t("timeZone.effective")}</dt><dd>{timeZoneLabel(status.effectiveUtcOffsetMinutes, t)}</dd></div>
+        <div><dt>{t("timeZone.savedReal")}</dt><dd>{timeZoneLabel(status.realUtcOffsetMinutes, t)}</dd></div>
+      </dl>
+    </Card>
+  </div>;
 }
 
 function SettingsPage({ state, update, sessionToken, onRefresh }: { state: ConsoleState; update: (state: ConsoleState) => void; sessionToken: string; onRefresh: () => Promise<void> }) {
@@ -1882,7 +1978,7 @@ function mergeSavedRules(draft: ApplicationRule[], before: ApplicationRule[], af
 
 /** Restores the policy fields the Service last accepted, keeping runtime status current. */
 function withSavedPolicy(current: ConsoleState, saved: ConsoleState): ConsoleState {
-  return { ...current, protectionEnabled: saved.protectionEnabled, launchAtStartup: saved.launchAtStartup, updates: saved.updates, recognition: saved.recognition, repeatOffender: saved.repeatOffender, keywords: saved.keywords, titleKeywordAdditions: saved.titleKeywordAdditions, websites: saved.websites, applications: saved.applications, schedules: saved.schedules };
+  return { ...current, protectionEnabled: saved.protectionEnabled, launchAtStartup: saved.launchAtStartup, updates: saved.updates, recognition: saved.recognition, repeatOffender: saved.repeatOffender, keywords: saved.keywords, titleKeywordAdditions: saved.titleKeywordAdditions, websites: saved.websites, applications: saved.applications, schedules: saved.schedules, timeZone: saved.timeZone };
 }
 
 function AppContent() {
@@ -1923,7 +2019,7 @@ function AppContent() {
         if (!current) return;
         // Runtime refreshes never replace an administrator's policy draft or
         // change the revision against which that draft will be saved.
-        setState((previous) => ({ ...previous, serviceConnected: next.serviceConnected, agentConnected: next.agentConnected, monitors: next.monitors, network: next.network, evidence: next.evidence, audit: next.audit, rememberedTitleTotal: next.rememberedTitleTotal, misjudgedTitleTotal: next.misjudgedTitleTotal, activeBans: next.activeBans, productVersion: next.productVersion, superPasswordSet: next.superPasswordSet, uninstall: next.uninstall, update: next.update }));
+        setState((previous) => ({ ...previous, serviceConnected: next.serviceConnected, agentConnected: next.agentConnected, monitors: next.monitors, network: next.network, evidence: next.evidence, audit: next.audit, rememberedTitleTotal: next.rememberedTitleTotal, misjudgedTitleTotal: next.misjudgedTitleTotal, activeBans: next.activeBans, productVersion: next.productVersion, superPasswordSet: next.superPasswordSet, uninstall: next.uninstall, update: next.update, timeZoneStatus: next.timeZoneStatus }));
       }).catch((reason) => {
         if (!current) return;
         // A restarted service invalidates every in-memory session; return to the
@@ -2000,6 +2096,7 @@ function AppContent() {
     if (page === "websites") return <Websites state={state} update={update} />;
     if (page === "applications") return <Applications state={state} update={update} sessionToken={sessionToken} onBannedAllowed={applicationAllowed} />;
     if (page === "schedule") return <Schedule state={state} update={update} sessionToken={sessionToken} onNetworkChange={updateNetwork} />;
+    if (page === "timeZone") return <TimeZonePage state={state} update={update} />;
     if (page === "evidence") return <Evidence state={state} update={update} sessionToken={sessionToken} onDeleted={evidenceDeleted} onApplicationAllowed={applicationAllowed} />;
     if (page === "audit") return <Audit state={state} update={update} />;
     return <SettingsPage state={state} update={update} sessionToken={sessionToken} onRefresh={refreshAuthorization} />;
@@ -2012,7 +2109,7 @@ function AppContent() {
   const saveStatus = saveError ? <span className="sidebar-status error"><CircleAlert size={14} /><span>{saveError}</span></span>
     : dirty && !saving ? <span className="sidebar-status unsaved"><CircleAlert size={14} /><span>{t("common.unsavedChanges")}</span></span>
     : saveMessage ? <span className="sidebar-status saved"><Check size={14} /><span>{saveMessage}</span></span> : null;
-  return <div className="app-shell"><aside className="sidebar"><div className="brand-lockup sidebar-brand"><div className="brand-mark"><KarmaShieldIcon /></div><div><strong>KARMA</strong><span>{t("brand.short")}</span></div></div><nav>{navItems.map((item) => { const Icon = item.icon; return <button className={page === item.key ? "active" : ""} key={item.key} onClick={() => setPage(item.key)}><Icon size={19} /><span>{t(item.label)}</span>{item.key === "evidence" && state.evidence.length > 0 && <b>{state.evidence.length}</b>}</button>; })}<div className="sidebar-actions">{saveStatus}<button className={`primary-button sidebar-save${dirty ? " unsaved" : ""}`} disabled={!dirty || saving} title={dirty ? t("common.unsavedChanges") : undefined} onClick={save}><Save size={17} /><span>{t(saving ? "common.saving" : "common.saveSettings")}</span></button><button className="sidebar-lock" onClick={signOut}><Lock size={18} /><span>{t("common.lockConsole")}</span></button></div></nav><div className="sidebar-foot"><div className="mini-health"><span className={state.serviceConnected ? "online" : "offline"} /><div><strong>{t(state.serviceConnected ? "sidebar.serviceOnline" : "sidebar.serviceOffline")}</strong><small>{t(state.agentConnected ? "sidebar.agentOnline" : "sidebar.consoleOnly")}</small></div></div>{appVersion && <div className="sidebar-version">{t("sidebar.version", { version: appVersion })}</div>}</div></aside><main className="main"><header><div><span className="eyebrow">KARMA CONTROL</span><h1>{t(meta.title)}</h1><p>{t(meta.subtitle)}</p></div></header><div className="page-content">{content}</div></main></div>;
+  return <div className="app-shell"><aside className="sidebar"><div className="brand-lockup sidebar-brand"><div className="brand-mark"><KarmaShieldIcon /></div><div><strong>KARMA</strong><span>{t("brand.short")}</span></div></div><nav>{navItems.map((item) => { const Icon = item.icon; return <button className={page === item.key ? "active" : ""} key={item.key} onClick={() => setPage(item.key)}><Icon size={19} /><span>{t(item.label)}</span>{item.key === "evidence" && state.evidence.length > 0 && <b>{state.evidence.length}</b>}</button>; })}<div className="sidebar-actions">{saveStatus}<button className={`primary-button sidebar-save${dirty ? " unsaved" : ""}`} disabled={!dirty || saving} title={dirty ? t("common.unsavedChanges") : undefined} onClick={save}><Save size={17} /><span>{t(saving ? "common.saving" : "common.saveSettings")}</span></button><button className="sidebar-lock" onClick={signOut}><Lock size={18} /><span>{t("common.lockConsole")}</span></button></div></nav><div className="sidebar-foot"><div className="mini-health"><span className={state.serviceConnected ? "online" : "offline"} /><div><strong>{t(state.serviceConnected ? "sidebar.serviceOnline" : "sidebar.serviceOffline")}</strong><small>{t(state.agentConnected ? "sidebar.agentOnline" : "sidebar.consoleOnly")}</small></div></div>{appVersion && <div className="sidebar-version">{t("sidebar.version", { version: appVersion })}</div>}</div></aside><main className="main"><header><div><span className="eyebrow">KARMA CONTROL</span><h1>{t(meta.title)}</h1><p>{t(meta.subtitle)}</p></div></header><div className="page-content"><TimeZoneOffsetContext.Provider value={state.timeZoneStatus.effectiveUtcOffsetMinutes}>{content}</TimeZoneOffsetContext.Provider></div></main></div>;
 }
 
 export function App() {

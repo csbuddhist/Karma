@@ -19,15 +19,15 @@ use karma_ipc::{
     ActiveBan, AgentEnforcement, BootstrapStatus, CRITICAL_EVIDENCE_RISK_MILLIS,
     EnforcementSummary, EvidenceMetadata, NetworkStatus, RememberedTitleMetadata, RequestEnvelope,
     ResponseEnvelope, ServiceErrorCode, ServiceFailure, ServiceRequest, ServiceResult,
-    ServiceStatus, TitleReasonMetadata, UninstallStatus, UpdatePhase, UpdateStatus,
+    ServiceStatus, TimeZoneStatus, TitleReasonMetadata, UninstallStatus, UpdatePhase, UpdateStatus,
 };
 use karma_policy::{
     ApplicationCategories, ApplicationEffect, ApplicationPolicy, ContextPolicy, ContextVerdict,
     MAX_MISJUDGED_TITLES, MINUTES_PER_DAY, MINUTES_PER_WEEK, NetworkRestriction,
-    NetworkSchedulePolicy, RememberedTitle, RepeatOffenderRule, TitleReason, active_bans,
-    allow_application, is_banned, is_browser_executable, normalize_executable, policy_weakenings,
-    record_closure, remember_title, remember_titles_enabled, rememberable_title_key,
-    remembered_title_expired, title_digest, title_key,
+    NetworkSchedulePolicy, RememberedTitle, RepeatOffenderRule, TimeZonePolicy, TitleReason,
+    active_bans, allow_application, is_banned, is_browser_executable, normalize_executable,
+    policy_weakenings, record_closure, remember_title, remember_titles_enabled,
+    rememberable_title_key, remembered_title_expired, title_digest, title_key,
 };
 use rand::{RngCore, rngs::OsRng};
 use serde_json::{Value, json};
@@ -429,6 +429,30 @@ impl ServiceCore {
         Ok(())
     }
 
+    /// The UTC offset every time-based setting uses: the real-life time zone
+    /// a super administrator set, otherwise the operating system's zone.
+    fn effective_offset_seconds(&self, runtime: &RuntimeState, now_ms: i64) -> i32 {
+        // PutPolicy rejects every invalid time zone, so an unreadable stored
+        // section can only mean "not set".
+        TimeZonePolicy::from_value(&runtime.stored.policy)
+            .unwrap_or_default()
+            .effective_offset_seconds((self.local_offset)(now_ms))
+    }
+
+    fn time_zone_status(&self, runtime: &RuntimeState, now_ms: i64) -> TimeZoneStatus {
+        let real = TimeZonePolicy::from_value(&runtime.stored.policy)
+            .unwrap_or_default()
+            .real_utc_offset_minutes
+            .map(i32::from);
+        TimeZoneStatus {
+            system_utc_offset_minutes: (self.local_offset)(now_ms).div_euclid(60),
+            real_utc_offset_minutes: real,
+            effective_utc_offset_minutes: self
+                .effective_offset_seconds(runtime, now_ms)
+                .div_euclid(60),
+        }
+    }
+
     fn evaluate_network(
         &self,
         runtime: &mut RuntimeState,
@@ -454,7 +478,7 @@ impl ServiceCore {
         if !protection_enabled || schedule.is_empty() {
             return (NetworkStatus::default(), NetworkRestriction::default());
         }
-        let minute = local_minute_of_week(now_ms, (self.local_offset)(now_ms));
+        let minute = local_minute_of_week(now_ms, self.effective_offset_seconds(runtime, now_ms));
         let restriction = schedule.restriction_at(minute);
         if !restriction.is_restricted() {
             return (NetworkStatus::default(), restriction);
@@ -665,6 +689,7 @@ impl ServiceCore {
                     super_password_set: runtime.stored.super_password_hash.is_some(),
                     uninstall: runtime.stored.uninstall_request.map(uninstall_status),
                     update: runtime.update_status.clone(),
+                    time_zone: self.time_zone_status(runtime, now_ms),
                 }))
             }
             ServiceRequest::GetPolicy { session_token } => {
@@ -693,6 +718,10 @@ impl ServiceCore {
                     .map_err(|_| ServiceErrorCode::InvalidRequest)?;
                 RepeatOffenderRule::from_value(&policy)
                     .map_err(|_| ServiceErrorCode::InvalidRequest)?;
+                let new_zone = TimeZonePolicy::from_value(&policy)
+                    .map_err(|_| ServiceErrorCode::InvalidRequest)?;
+                let old_zone =
+                    TimeZonePolicy::from_value(&runtime.stored.policy).unwrap_or_default();
                 if runtime.stored.super_password_hash.is_some()
                     && !policy_weakenings(&runtime.stored.policy, &policy).is_empty()
                 {
@@ -703,6 +732,18 @@ impl ServiceCore {
                     audit(runtime, now_ms, "policy_weakening", "authorized");
                 }
                 runtime.set_policy(policy);
+                if new_zone != old_zone {
+                    audit_detail(
+                        runtime,
+                        now_ms,
+                        "time_zone_changed",
+                        "success",
+                        &json!({
+                            "fromUtcOffsetMinutes": old_zone.real_utc_offset_minutes,
+                            "toUtcOffsetMinutes": new_zone.real_utc_offset_minutes,
+                        }),
+                    );
+                }
                 audit(runtime, now_ms, "policy_updated", "success");
                 persist(runtime)?;
                 Ok(ServiceResult::PolicySaved {
@@ -5125,6 +5166,186 @@ mod tests {
             serde_json::from_str::<Value>(blocked[0].detail.as_deref().unwrap()).unwrap(),
             json!({"executable": r"c:\steam\steam.exe"})
         );
+    }
+
+    fn put(
+        core: &ServiceCore,
+        session: &str,
+        nonce: &str,
+        revision: u64,
+        policy: Value,
+        super_password: Option<&str>,
+        now_ms: i64,
+    ) -> ResponseEnvelope {
+        core.handle(
+            request(
+                nonce,
+                nonce,
+                ServiceRequest::PutPolicy {
+                    session_token: session.into(),
+                    expected_revision: revision,
+                    policy,
+                    super_password: super_password.map(Into::into),
+                },
+            ),
+            now_ms,
+        )
+    }
+
+    #[test]
+    fn schedules_follow_the_real_time_zone_instead_of_the_system_zone() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut policy = network_policy();
+        // The system says UTC+8 but the family lives in UTC-5.
+        policy["timeZone"] = json!({"realUtcOffsetMinutes": -300});
+        let start = local_ms(0, 12, 0);
+        let (core, session) = network_core(directory.path(), policy, start);
+
+        // Monday 19:30 on the system clock is Monday 06:30 in real life.
+        assert!(
+            !core
+                .network_enforcement(local_ms(0, 19, 30))
+                .unwrap()
+                .status
+                .restricted
+        );
+        // Monday 19:30 in UTC-5 is Tuesday 08:30 in UTC+8.
+        let real_evening = local_ms(1, 8, 30);
+        let enforcement = core.network_enforcement(real_evening).unwrap();
+        assert!(enforcement.status.restricted);
+        // The block ends at 21:00 real time, 90 minutes later.
+        assert_eq!(
+            enforcement.status.restricted_until_ms,
+            Some(real_evening + 90 * MS_PER_MINUTE)
+        );
+
+        let status = status_at(&core, &session, "zone-status", start);
+        assert_eq!(
+            status.time_zone,
+            TimeZoneStatus {
+                system_utc_offset_minutes: 480,
+                real_utc_offset_minutes: Some(-300),
+                effective_utc_offset_minutes: -300,
+            }
+        );
+    }
+
+    #[test]
+    fn without_a_real_time_zone_schedules_follow_the_system_zone() {
+        let directory = tempfile::tempdir().unwrap();
+        let start = local_ms(0, 12, 0);
+        let (core, session) = network_core(directory.path(), network_policy(), start);
+        assert!(
+            core.network_enforcement(local_ms(0, 19, 30))
+                .unwrap()
+                .status
+                .restricted
+        );
+        assert_eq!(
+            status_at(&core, &session, "system-zone", start).time_zone,
+            TimeZoneStatus {
+                system_utc_offset_minutes: 480,
+                real_utc_offset_minutes: None,
+                effective_utc_offset_minutes: 480,
+            }
+        );
+    }
+
+    #[test]
+    fn changing_the_real_time_zone_needs_the_super_password_and_is_audited() {
+        let directory = tempfile::tempdir().unwrap();
+        let start = local_ms(0, 12, 0);
+        let (core, session) = network_core(directory.path(), network_policy(), start);
+        let mut zoned = network_policy();
+        zoned["timeZone"] = json!({"realUtcOffsetMinutes": 330});
+        // Before a super password exists, the administrator may set it.
+        success(put(
+            &core,
+            &session,
+            "zone-set",
+            1,
+            zoned.clone(),
+            None,
+            start,
+        ));
+        set_super(&core, &session, start);
+
+        let mut moved = zoned.clone();
+        moved["timeZone"]["realUtcOffsetMinutes"] = json!(-300);
+        let mut cleared = zoned.clone();
+        cleared["timeZone"] = json!({"realUtcOffsetMinutes": null});
+        for (nonce, policy) in [("zone-move", moved.clone()), ("zone-clear", cleared)] {
+            assert_eq!(
+                put(&core, &session, nonce, 2, policy, None, start)
+                    .result
+                    .unwrap_err()
+                    .code,
+                ServiceErrorCode::SuperPasswordRequired
+            );
+        }
+        success(put(
+            &core,
+            &session,
+            "zone-move-super",
+            2,
+            moved,
+            Some("distinct-super-password"),
+            start,
+        ));
+        assert_eq!(
+            status_at(&core, &session, "zone-moved", start)
+                .time_zone
+                .real_utc_offset_minutes,
+            Some(-300)
+        );
+
+        let changes: Vec<_> = disk_state(directory.path())
+            .audit
+            .into_iter()
+            .filter(|record| record.kind == "time_zone_changed")
+            .map(|record| serde_json::from_str::<Value>(record.detail.as_deref().unwrap()).unwrap())
+            .collect();
+        assert_eq!(
+            changes,
+            vec![
+                json!({"fromUtcOffsetMinutes": null, "toUtcOffsetMinutes": 330}),
+                json!({"fromUtcOffsetMinutes": 330, "toUtcOffsetMinutes": -300}),
+            ]
+        );
+    }
+
+    #[test]
+    fn put_policy_rejects_invalid_real_time_zones() {
+        let directory = tempfile::tempdir().unwrap();
+        let start = local_ms(0, 12, 0);
+        let (core, session) = network_core(directory.path(), json!({}), start);
+        for (index, zone) in [
+            json!({"realUtcOffsetMinutes": 841}),
+            json!({"realUtcOffsetMinutes": -721}),
+            json!({"realUtcOffsetMinutes": 10}),
+            json!({"realUtcOffsetMinutes": "+08:00"}),
+            json!("UTC+8"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(
+                put(
+                    &core,
+                    &session,
+                    &format!("bad-zone-{index}"),
+                    1,
+                    json!({"timeZone": zone}),
+                    None,
+                    start,
+                )
+                .result
+                .unwrap_err()
+                .code,
+                ServiceErrorCode::InvalidRequest,
+                "{index}"
+            );
+        }
     }
 
     #[test]

@@ -31,7 +31,7 @@ fn synchronize_recognition_threshold(state: &mut serde_json::Value) {
 const EXPORT_SCHEMA: &str = "karma-policy-export";
 const EXPORT_VERSION: u32 = 1;
 const MAX_EXPORT_BYTES: usize = 1_048_576;
-const RUNTIME_STATE_KEYS: [&str; 13] = [
+const RUNTIME_STATE_KEYS: [&str; 14] = [
     "serviceConnected",
     "agentConnected",
     "monitors",
@@ -45,6 +45,7 @@ const RUNTIME_STATE_KEYS: [&str; 13] = [
     "superPasswordSet",
     "uninstall",
     "update",
+    "timeZoneStatus",
 ];
 
 fn strip_runtime_state(state: &mut serde_json::Value) {
@@ -98,6 +99,7 @@ fn parse_import_document(bytes: &[u8]) -> Option<serde_json::Value> {
     karma_policy::ApplicationCategories::from_value(&policy).ok()?;
     karma_policy::NetworkSchedulePolicy::from_value(&policy).ok()?;
     karma_policy::RepeatOffenderRule::from_value(&policy).ok()?;
+    karma_policy::TimeZonePolicy::from_value(&policy).ok()?;
     Some(policy)
 }
 
@@ -194,6 +196,15 @@ mod tests {
             br#"{"schema":"karma-policy-export","version":1,"exported_at_ms":1,
             "policy":{"repeatOffender":{"windowMinutes":20,"strikeLimit":100}}}"#;
         assert!(parse_import_document(invalid_repeat_offender).is_none());
+        let invalid_time_zone = br#"{"schema":"karma-policy-export","version":1,"exported_at_ms":1,
+            "policy":{"timeZone":{"realUtcOffsetMinutes":7}}}"#;
+        assert!(parse_import_document(invalid_time_zone).is_none());
+        let time_zone = br#"{"schema":"karma-policy-export","version":1,"exported_at_ms":1,
+            "policy":{"timeZone":{"realUtcOffsetMinutes":-300},
+            "timeZoneStatus":{"systemUtcOffsetMinutes":480}}}"#;
+        let policy = parse_import_document(time_zone).expect("valid time zone imports");
+        assert_eq!(policy["timeZone"]["realUtcOffsetMinutes"], -300);
+        assert!(policy.get("timeZoneStatus").is_none());
     }
 }
 
@@ -401,6 +412,7 @@ mod local_backend {
                 }
             ],
             "schedules": [],
+            "timeZone": { "realUtcOffsetMinutes": null },
             "evidence": [],
             "audit": [],
             "rememberedTitleTotal": 0,
@@ -1146,6 +1158,7 @@ mod service_backend {
                 {"id":"player","name":"播放器","executable":"受支持播放器","category":"player","action":"content_only","enabled":true}
             ],
             "schedules": [],
+            "timeZone": { "realUtcOffsetMinutes": null },
             "evidence": [],
             "audit": [],
             "rememberedTitleTotal": 0,
@@ -1292,6 +1305,11 @@ mod service_backend {
                 "lastCheckedAtMs": status.update.last_checked_at_ms,
                 "availableVersion": status.update.available_version,
                 "lastError": status.update.last_error
+            },
+            "timeZoneStatus": {
+                "systemUtcOffsetMinutes": status.time_zone.system_utc_offset_minutes,
+                "realUtcOffsetMinutes": status.time_zone.real_utc_offset_minutes,
+                "effectiveUtcOffsetMinutes": status.time_zone.effective_utc_offset_minutes
             }
         })
     }
